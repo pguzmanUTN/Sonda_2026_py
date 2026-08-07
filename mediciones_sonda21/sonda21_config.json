@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "carpeta_datos": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2",
+  "archivos_calibracion": {
+    "corto": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda21/sonda21-short.s1p",
+    "aire": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda21/sonda21-aire.s1p",
+    "agua": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda21/sonda21-agua25-06.s1p",
+    "alc_isoprop": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda21/sonda21-alcisoprop25-06.s1p"
+  },
+  "temperatura_agua_c": 25.0,
+  "temperatura_isoprop_cal_c": 25.0,
+  "materiales": [
+    {
+      "nombre": "sonda21-alc-etilico25-06",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda21/sonda21-alc-etilico25-06.s1p",
+      "modelo": "alcohol_etilico",
+      "temperatura": 25.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    },
+    {
+      "nombre": "sonda21-alcisoprop25-06",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda21/sonda21-alcisoprop25-06.s1p",
+      "modelo": "alcohol_isopropilico",
+      "temperatura": 25.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    }
+  ],
+  "carpeta_salida": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda21",
+  "nombre_informe_pdf": "etilico_25grados.pdf",
+  "f_min_ghz": 0.001,
+  "f_max_ghz": 2.0
+}
