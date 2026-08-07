@@ -264,6 +264,7 @@ class AppPermitividad(tk.Tk):
         self._materiales = []  # lista de dicts (fuente de verdad para la tabla)
         self._cola_analisis = None
         self._analisis_corriendo = False
+        self._evento_cancelar = None
         self._figuras_disponibles = {}  # {etiqueta: ruta_png}, se llena tras correr
         self._imagen_preview_tk = None  # referencia viva para que Tk no la libere
         self._pil_figura_seleccionada = None  # imagen PIL original, para reescalar si se agranda la ventana
@@ -329,6 +330,9 @@ class AppPermitividad(tk.Tk):
                                command=self._nueva_config)
         m_archivo.add_command(label="Abrir configuracion...", accelerator="Ctrl+O",
                                command=self._abrir_config)
+        self.m_recientes = tk.Menu(m_archivo, tearoff=False,
+                                    postcommand=self._refrescar_menu_recientes)
+        m_archivo.add_cascade(label="Abrir reciente", menu=self.m_recientes)
         m_archivo.add_command(label="Guardar configuracion", accelerator="Ctrl+S",
                                command=self._guardar_config)
         m_archivo.add_command(label="Guardar como...", command=self._guardar_config_como)
@@ -840,17 +844,24 @@ class AppPermitividad(tk.Tk):
             frm_acciones, text="▶  Ejecutar analisis", style="Ejecutar.TButton",
             command=self._ejecutar_analisis)
         self.boton_ejecutar.pack(side="left", padx=10)
+        self.boton_cancelar = ttk.Button(
+            frm_acciones, text="■  Cancelar", command=self._cancelar_analisis, state="disabled")
+        self.boton_cancelar.pack(side="left", padx=(0, 10))
         self.boton_abrir_salida = ttk.Button(
             frm_acciones, text="Abrir carpeta de salida", command=self._abrir_carpeta_salida)
         self.boton_abrir_salida.pack(side="left")
 
+        self.var_paso_actual = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.var_paso_actual, style="Ayuda.TLabel").grid(
+            row=7, column=0, columnspan=3, sticky="w", pady=(10, 0))
+
         self.barra_progreso = ttk.Progressbar(f, orient="horizontal", mode="determinate")
-        self.barra_progreso.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self.barra_progreso.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(2, 0))
 
         # --- Consola + vista previa, lado a lado ---
         frm_abajo = ttk.Frame(f)
-        frm_abajo.grid(row=8, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
-        f.rowconfigure(8, weight=1)
+        frm_abajo.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
+        f.rowconfigure(9, weight=1)
         frm_abajo.columnconfigure(0, weight=2)
         frm_abajo.columnconfigure(1, weight=3)
         frm_abajo.rowconfigure(0, weight=1)
@@ -865,6 +876,12 @@ class AppPermitividad(tk.Tk):
         scroll_consola = ttk.Scrollbar(frm_consola, orient="vertical", command=self.texto_consola.yview)
         scroll_consola.grid(row=0, column=1, sticky="ns")
         self.texto_consola.configure(yscrollcommand=scroll_consola.set)
+
+        frm_consola_botones = ttk.Frame(frm_consola)
+        frm_consola_botones.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Button(frm_consola_botones, text="Copiar", command=self._copiar_consola).pack(side="left")
+        ttk.Button(frm_consola_botones, text="Guardar como...",
+                   command=self._guardar_consola).pack(side="left", padx=(6, 0))
 
         frm_preview = ttk.LabelFrame(frm_abajo, text="Vista previa (permitividad medida vs. teorica)")
         frm_preview.grid(row=0, column=1, sticky="nsew")
@@ -1012,6 +1029,35 @@ class AppPermitividad(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Error al abrir", f"No se pudo abrir la configuracion:\n{exc}", parent=self)
 
+    def _refrescar_menu_recientes(self):
+        """Reconstruye el submenu 'Archivo > Abrir reciente' justo antes
+        de mostrarse (via postcommand), asi siempre refleja el historial
+        actual sin tener que acordarse de refrescarlo a mano desde cada
+        lugar donde se guarda/carga una configuracion."""
+        self.m_recientes.delete(0, "end")
+        recientes = [r for r in gf.rutas_recientes() if r != self.ruta_config_actual]
+        if not recientes:
+            self.m_recientes.add_command(label="(vacio)", state="disabled")
+            return
+        for ruta in recientes:
+            carpeta = os.path.basename(os.path.dirname(ruta))
+            etiqueta = f"{os.path.basename(ruta)}   \u2014   {carpeta}" if carpeta else os.path.basename(ruta)
+            self.m_recientes.add_command(
+                label=etiqueta, command=lambda r=ruta: self._abrir_config_reciente(r))
+        self.m_recientes.add_separator()
+        self.m_recientes.add_command(label="Limpiar lista", command=self._limpiar_recientes)
+
+    def _abrir_config_reciente(self, ruta):
+        if not self._confirmar_descartar_cambios():
+            return
+        try:
+            self._cargar_config_desde(ruta)
+        except Exception as exc:
+            messagebox.showerror("Error al abrir", f"No se pudo abrir la configuracion:\n{exc}", parent=self)
+
+    def _limpiar_recientes(self):
+        gf.limpiar_recientes()
+
     def _cargar_config_desde(self, ruta):
         config = gf.cargar_config(ruta)
         self._cargar_config_en_gui(config)
@@ -1047,6 +1093,8 @@ class AppPermitividad(tk.Tk):
                     "Hay un analisis corriendo. ¿Salir igual? (el proceso en curso se corta)",
                     parent=self):
                 return
+            if self._evento_cancelar is not None:
+                self._evento_cancelar.set()
         if self._confirmar_descartar_cambios():
             self.destroy()
 
@@ -1093,22 +1141,69 @@ class AppPermitividad(tk.Tk):
         self.texto_consola.delete("1.0", "end")
         self.texto_consola.configure(state="disabled")
         self.barra_progreso.configure(value=0, maximum=max(len(config['materiales']) + 2, 1))
+        self.var_paso_actual.set("")
         self._figuras_disponibles = {}
         self.combo_figuras.configure(values=[])
         self.var_figura_seleccionada.set("")
 
         self._analisis_corriendo = True
         self.boton_ejecutar.configure(state="disabled")
+        self.boton_cancelar.configure(state="normal")
         self._status("Corriendo analisis...")
 
-        _, self._cola_analisis = gf.lanzar_analisis_en_hilo(config)
+        _, self._cola_analisis, self._evento_cancelar = gf.lanzar_analisis_en_hilo(config)
         self.after(100, self._pollear_cola_analisis)
+
+    def _cancelar_analisis(self):
+        if not self._analisis_corriendo or self._evento_cancelar is None:
+            return
+        if self._evento_cancelar.is_set():
+            return  # ya se pidio, no hace falta preguntar de nuevo
+        if not messagebox.askyesno(
+                "Cancelar analisis",
+                "¿Cancelar el analisis en curso?\n\n"
+                "Se termina de procesar el material actual (no se corta a "
+                "mitad de un calculo) y se genera igual un informe PDF "
+                "parcial con lo que ya se alcanzo a calcular.",
+                parent=self):
+            return
+        self._evento_cancelar.set()
+        self.boton_cancelar.configure(state="disabled")
+        self._status("Cancelando... (termina el material actual y genera un informe parcial)")
+        self.var_paso_actual.set("Cancelando...")
 
     def _agregar_linea_consola(self, texto):
         self.texto_consola.configure(state="normal")
         self.texto_consola.insert("end", texto + "\n")
         self.texto_consola.see("end")
         self.texto_consola.configure(state="disabled")
+
+    def _copiar_consola(self):
+        texto = self.texto_consola.get("1.0", "end-1c")
+        if not texto.strip():
+            messagebox.showinfo("Copiar log", "La consola todavia esta vacia.", parent=self)
+            return
+        self.clipboard_clear()
+        self.clipboard_append(texto)
+        self._status("Log de la consola copiado al portapapeles.")
+
+    def _guardar_consola(self):
+        texto = self.texto_consola.get("1.0", "end-1c")
+        if not texto.strip():
+            messagebox.showinfo("Guardar log", "La consola todavia esta vacia.", parent=self)
+            return
+        ruta = filedialog.asksaveasfilename(
+            title="Guardar log como", parent=self, defaultextension=".txt",
+            filetypes=[("Texto", "*.txt"), ("Todos los archivos", "*.*")])
+        if not ruta:
+            return
+        try:
+            with open(ruta, "w", encoding="utf-8") as f:
+                f.write(texto)
+        except OSError as exc:
+            messagebox.showerror("Error al guardar", f"No se pudo guardar el log:\n{exc}", parent=self)
+            return
+        self._status(f"Log guardado: {ruta}")
 
     def _pollear_cola_analisis(self):
         try:
@@ -1118,10 +1213,15 @@ class AppPermitividad(tk.Tk):
                 if tipo == 'log':
                     self._agregar_linea_consola(evento[1])
                 elif tipo == 'progreso':
-                    _, paso, total = evento
+                    _, paso, total, etiqueta = evento
                     self.barra_progreso.configure(maximum=max(total, 1), value=paso)
+                    if etiqueta:
+                        self.var_paso_actual.set(etiqueta)
                 elif tipo == 'ok':
                     self._al_terminar_analisis_ok(evento[1])
+                    return
+                elif tipo == 'cancelado':
+                    self._al_terminar_analisis_cancelado(evento[1])
                     return
                 elif tipo == 'error':
                     self._al_terminar_analisis_error(evento[1], evento[2])
@@ -1132,16 +1232,17 @@ class AppPermitividad(tk.Tk):
         if self._analisis_corriendo:
             self.after(100, self._pollear_cola_analisis)
 
-    def _al_terminar_analisis_ok(self, resultado):
-        self._analisis_corriendo = False
-        self.boton_ejecutar.configure(state="normal")
-        self._status("Analisis terminado con exito.")
-        self._agregar_linea_consola("\n=== Analisis terminado con exito ===")
-
+    def _figuras_desde_resultado(self, resultado):
+        """Arma el dict {etiqueta: ruta_png} de figuras disponibles para
+        la vista previa a partir de un resultado de `ejecutar_analisis`
+        (usado tanto si termino OK como si se cancelo a mitad de camino,
+        para no duplicar esta logica en los dos lugares)."""
         figuras = {}
         chequeo = resultado.get('chequeo_calibracion') or {}
         if chequeo.get('figura'):
             figuras["Chequeo de calibracion (agua)"] = chequeo['figura']
+        if chequeo.get('figura_Gn'):
+            figuras["Diagnostico: Gn(f) (calibracion)"] = chequeo['figura_Gn']
         for r in resultado.get('resultados_materiales', []):
             # Ojo: antes tambien se listaban aca "<material> - S11
             # (modulo/fase)" y "<material> - S11 (Smith)". Se sacaron
@@ -1152,6 +1253,9 @@ class AppPermitividad(tk.Tk):
             # teorica de cada material, y el chequeo de calibracion.
             if r.get('figura'):
                 figuras[r['nombre']] = r['figura']
+        return figuras
+
+    def _mostrar_figuras_disponibles(self, figuras):
         self._figuras_disponibles = figuras
         self.combo_figuras.configure(values=list(figuras.keys()))
         if figuras:
@@ -1159,14 +1263,47 @@ class AppPermitividad(tk.Tk):
             self.var_figura_seleccionada.set(primera)
             self._mostrar_preview_seleccionada()
 
+    def _al_terminar_analisis_ok(self, resultado):
+        self._analisis_corriendo = False
+        self.boton_ejecutar.configure(state="normal")
+        self.boton_cancelar.configure(state="disabled")
+        self._status("Analisis terminado con exito.")
+        self.var_paso_actual.set("Listo.")
+        self._agregar_linea_consola("\n=== Analisis terminado con exito ===")
+
+        self._mostrar_figuras_disponibles(self._figuras_desde_resultado(resultado))
+
         messagebox.showinfo(
             "Listo", f"Analisis terminado.\nInforme PDF:\n{resultado.get('ruta_informe_pdf', '')}",
+            parent=self)
+
+    def _al_terminar_analisis_cancelado(self, resultado):
+        self._analisis_corriendo = False
+        self.boton_ejecutar.configure(state="normal")
+        self.boton_cancelar.configure(state="disabled")
+        self._status("Analisis cancelado por el usuario.")
+        self.var_paso_actual.set("Cancelado.")
+        self._agregar_linea_consola("\n=== Analisis cancelado por el usuario ===")
+
+        # Se dejan disponibles las figuras que se llegaron a generar antes
+        # de cancelar (chequeo de calibracion + los materiales que si se
+        # alcanzaron a procesar), para no perder ese trabajo parcial.
+        self._mostrar_figuras_disponibles(self._figuras_desde_resultado(resultado))
+
+        ruta_pdf = resultado.get('ruta_informe_pdf')
+        detalle_pdf = f"\nInforme PDF parcial:\n{ruta_pdf}" if ruta_pdf else ""
+        messagebox.showinfo(
+            "Analisis cancelado",
+            f"Se cancelo el analisis. Se conserva lo que ya se calculo "
+            f"({len(resultado.get('resultados_materiales', []))} material(es)).{detalle_pdf}",
             parent=self)
 
     def _al_terminar_analisis_error(self, mensaje, detalle):
         self._analisis_corriendo = False
         self.boton_ejecutar.configure(state="normal")
+        self.boton_cancelar.configure(state="disabled")
         self._status("Error durante el analisis.")
+        self.var_paso_actual.set("Error.")
         self._agregar_linea_consola(f"\n=== ERROR: {mensaje} ===\n{detalle}")
         messagebox.showerror("Error durante el analisis", mensaje, parent=self)
 

@@ -93,6 +93,13 @@ CONFIG_VERSION = 1
 _CARPETA_APP = Path.home() / ".permitividad_gui"
 _ARCHIVO_ULTIMA_CONFIG = _CARPETA_APP / "ultima_config.txt"
 
+# Ademas de "la ultima", se guarda un historial corto de configuraciones
+# usadas (mas nueva primero) para el menu "Archivo > Abrir reciente" de
+# la GUI. Es un archivo aparte de _ARCHIVO_ULTIMA_CONFIG (que sigue
+# existiendo tal cual, para no romper el auto-cargado al abrir la app).
+_ARCHIVO_RECIENTES = _CARPETA_APP / "recientes.json"
+MAX_RECIENTES = 8
+
 
 def config_default():
     """Config razonable para arrancar la GUI de cero, antes de cargar o
@@ -149,6 +156,7 @@ def _recordar_ultima_config(ruta):
         _ARCHIVO_ULTIMA_CONFIG.write_text(str(Path(ruta).resolve()), encoding="utf-8")
     except OSError:
         pass  # no es critico si esto falla
+    _recordar_reciente(ruta)
 
 
 def ruta_ultima_config():
@@ -160,6 +168,47 @@ def ruta_ultima_config():
     except OSError:
         return None
     return ruta if ruta and os.path.isfile(ruta) else None
+
+
+def _cargar_lista_recientes():
+    try:
+        datos = json.loads(_ARCHIVO_RECIENTES.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [r for r in datos if isinstance(r, str)] if isinstance(datos, list) else []
+
+
+def _guardar_lista_recientes(rutas):
+    try:
+        _CARPETA_APP.mkdir(parents=True, exist_ok=True)
+        _ARCHIVO_RECIENTES.write_text(json.dumps(rutas, indent=2), encoding="utf-8")
+    except OSError:
+        pass  # no es critico si esto falla
+
+
+def _recordar_reciente(ruta):
+    """Agrega `ruta` al principio del historial de configuraciones
+    recientes (sin duplicados: si ya estaba, se mueve al principio),
+    recortando la lista a MAX_RECIENTES. Se llama sola desde
+    `_recordar_ultima_config`, tanto al guardar como al cargar una
+    configuracion."""
+    ruta = str(Path(ruta).resolve())
+    recientes = [r for r in _cargar_lista_recientes() if r != ruta]
+    recientes.insert(0, ruta)
+    _guardar_lista_recientes(recientes[:MAX_RECIENTES])
+
+
+def rutas_recientes():
+    """Historial de configuraciones recientes (mas nueva primero), para
+    poblar el menu 'Archivo > Abrir reciente' de la GUI. Filtra las que
+    ya no existan en disco (por si se movieron/borraron), sin necesidad
+    de que el usuario las limpie a mano."""
+    return [r for r in _cargar_lista_recientes() if os.path.isfile(r)]
+
+
+def limpiar_recientes():
+    """Vacia el historial de configuraciones recientes."""
+    _guardar_lista_recientes([])
 
 
 # ===========================================================================
@@ -244,38 +293,61 @@ def lanzar_analisis_en_hilo(config):
     analisis_permitividad.py, funciones.py, etc.) y reportando el
     progreso, todo a traves de una queue.Queue.
 
-    Devuelve (hilo, cola). La ventana debe "pollear" la cola
-    periodicamente (p.ej. con root.after(100, ...)) y reaccionar a los
-    eventos que va dejando:
-        ('log', texto)              -> agregar una linea a la consola
-        ('progreso', paso, total)   -> actualizar la barra de progreso
-        ('ok', resultado)           -> termino bien; `resultado` es el
-                                        dict que devuelve ejecutar_analisis
-        ('error', mensaje, detalle) -> termino mal; mostrarle `mensaje`
-                                        al usuario y loguear `detalle`
-                                        (el traceback completo)
+    Devuelve (hilo, cola, evento_cancelar). La ventana debe "pollear" la
+    cola periodicamente (p.ej. con root.after(100, ...)) y reaccionar a
+    los eventos que va dejando:
+        ('log', texto)                    -> agregar una linea a la consola
+        ('progreso', paso, total, etiqueta) -> actualizar la barra de
+                                        progreso y, si etiqueta no es
+                                        None, tambien el texto de "paso
+                                        actual"
+        ('ok', resultado)                 -> termino bien (sin cancelar);
+                                        `resultado` es el dict que
+                                        devuelve ejecutar_analisis
+        ('cancelado', resultado)          -> se pidio cancelar y el
+                                        analisis se corto a mitad de
+                                        camino; `resultado` tiene lo
+                                        mismo que 'ok' pero con
+                                        resultado['cancelado'] = True y
+                                        (probablemente) menos materiales
+        ('error', mensaje, detalle)       -> termino mal; mostrarle
+                                        `mensaje` al usuario y loguear
+                                        `detalle` (el traceback completo)
+
+    `evento_cancelar` es un `threading.Event`: llamar a
+    `evento_cancelar.set()` (desde el hilo principal, p.ej. al apretar un
+    boton "Cancelar") le pide al analisis que se corte apenas termine de
+    procesar el material que este calculando en ese momento -- nunca a
+    mitad de un calculo. El analisis sigue generando un informe PDF con
+    lo que ya se alcanzo a calcular antes de cortar.
     """
     cola = queue.Queue()
+    evento_cancelar = threading.Event()
 
     def _log(texto):
         cola.put(('log', str(texto)))
 
-    def _progreso(paso, total):
-        cola.put(('progreso', paso, total))
+    def _progreso(paso, total, etiqueta=None):
+        cola.put(('progreso', paso, total, etiqueta))
 
     def _correr():
         redir = _RedirectorTexto(cola)
         try:
             with contextlib.redirect_stdout(redir):
-                resultado = ap.ejecutar_analisis(config, log=_log, progreso=_progreso)
-            cola.put(('ok', resultado))
+                resultado = ap.ejecutar_analisis(
+                    config, log=_log, progreso=_progreso,
+                    cancelado=evento_cancelar.is_set)
+            if resultado.get('cancelado'):
+                cola.put(('cancelado', resultado))
+            else:
+                cola.put(('ok', resultado))
         except Exception as exc:  # se le muestra entero al usuario, mejor no filtrar
             detalle = traceback.format_exc()
             cola.put(('error', str(exc), detalle))
 
     hilo = threading.Thread(target=_correr, daemon=True)
     hilo.start()
-    return hilo, cola
+    return hilo, cola, evento_cancelar
 
 
 # ===========================================================================

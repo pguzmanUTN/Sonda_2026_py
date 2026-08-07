@@ -110,6 +110,74 @@ def get_er_DUTm(frecs, S11_medido, S11_agua, S11_aire, S11_corto,
 # ---------------------------------------------------------------------------
 # Metodo completo (4 patrones: corto, aire, agua, alcohol isopropilico)
 # ---------------------------------------------------------------------------
+def calcular_Gn(frecs, S11_agua, S11_aire, S11_isopropilico, S11_corto,
+                 T_agua=25.0, T_isoprop=25.0, Er_aire=ER_AIRE):
+    """
+    Calcula la conductancia normalizada Gn(f) del modelo de admitancia
+    completo (ecuacion (17) de Higa/Cismondi/Grass 2016 y de Henze et al.
+    2024/ARGENCON), a partir UNICAMENTE de los 4 patrones de calibracion
+    (corto, aire, agua, alcohol isopropilico). Notar que Gn NO depende del
+    S11 del DUT: es una propiedad de la sonda/calibracion, la misma para
+    todos los materiales que se analicen con esa calibracion.
+
+    `get_er_DUT_completo` llama a esta funcion internamente para armar el
+    polinomio de 5to orden, pero se expone tambien aca aparte para poder
+    usarla como DIAGNOSTICO de la calibracion (ver
+    `analisis_permitividad.graficar_Gn`): como Gn esta relacionada con
+    G0/(j*w*C0) -- una propiedad fisica de la sonda que varia en forma
+    continua con la frecuencia -- la curva Gn(f) resultante tiene que
+    verse suave. Un salto brusco o un pico aislado suele ser sintoma de
+    un problema con la medicion de alguno de los 4 patrones, tipicamente
+    el 4to (alcohol isopropilico), que es el UNICO que entra en el
+    calculo de Gn y en ningun otro lado del metodo simplificado -- asi
+    que un problema ahi puede pasar desapercibido si solo se mira el
+    chequeo de calibracion del agua.
+
+    Parametros
+    ----------
+    frecs : array_like
+        Frecuencias en Hz.
+    S11_agua, S11_aire, S11_isopropilico, S11_corto : array_like complejo
+        S11 medidos de los 4 patrones de calibracion.
+    T_agua, T_isoprop : float
+        Temperatura del agua y del alcohol isopropilico durante la
+        calibracion (°C).
+    Er_aire : float
+        Permitividad relativa del aire (por defecto 1.0006).
+
+    Retorna
+    -------
+    ndarray complejo: Gn(f), mismo largo que `frecs`.
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    r_agua = np.asarray(S11_agua, dtype=complex)
+    r_aire = np.asarray(S11_aire, dtype=complex)
+    r_alcohol = np.asarray(S11_isopropilico, dtype=complex)
+    r_corto = np.asarray(S11_corto, dtype=complex)
+
+    Er_agua = get_er_agua(frecs, T_agua)
+    Er_alcohol = get_er_pat_alc_isopropilico(frecs, T_isoprop)
+
+    # Gn = -(D41*D32*e4 + D42*D13*e3 + D43*D21*e2) /
+    #       (D41*D32*e4^2.5 + D42*D13*e3^2.5 + D43*D21*e2^2.5)
+    # con patron1=corto, patron2=aire (e2=Er_aire), patron3=agua (e3=Er_agua),
+    # patron4=alcohol isopropilico (e4=Er_alcohol).
+    d41 = r_alcohol - r_corto
+    d32 = r_agua - r_aire
+    d42 = r_alcohol - r_aire
+    d13 = r_corto - r_agua
+    d43 = r_alcohol - r_agua
+    d21 = r_aire - r_corto
+
+    num_Gn = (d41 * d32 * Er_alcohol
+              + d42 * d13 * Er_agua
+              + d43 * d21 * Er_aire)
+    den_Gn = (d41 * d32 * (Er_alcohol ** 2.5)
+              + d42 * d13 * (Er_agua ** 2.5)
+              + d43 * d21 * (Er_aire ** 2.5))
+    return -num_Gn / den_Gn
+
+
 def _resolver_raiz_fisica(coeficientes, semilla):
     """
     Resuelve Gn*u^5 + u^2 + c0 = 0 (con u = sqrt(er)) y devuelve, entre las
@@ -189,33 +257,23 @@ def get_er_DUT_completo(frecs, S11_medido, S11_agua, S11_aire,
     S11_medido = np.asarray(S11_medido, dtype=complex)
     r_agua = np.asarray(S11_agua, dtype=complex)
     r_aire = np.asarray(S11_aire, dtype=complex)
-    r_alcohol = np.asarray(S11_isopropilico, dtype=complex)
     r_corto = np.asarray(S11_corto, dtype=complex)
 
     Er_agua = get_er_agua(frecs, T_agua)
-    Er_alcohol = get_er_pat_alc_isopropilico(frecs, T_isoprop)
 
-    # --- Conductancia normalizada Gn, a partir del 4to patron (alcohol) ---
-    # Gn = -(D41*D32*e4 + D42*D13*e3 + D43*D21*e2) /
-    #       (D41*D32*e4^2.5 + D42*D13*e3^2.5 + D43*D21*e2^2.5)
-    # con patron1=corto, patron2=aire (e2=Er_aire), patron3=agua (e3=Er_agua),
-    # patron4=alcohol isopropilico (e4=Er_alcohol).
-    d41 = r_alcohol - r_corto
-    d32 = r_agua - r_aire
-    d42 = r_alcohol - r_aire
-    d13 = r_corto - r_agua
-    d43 = r_alcohol - r_agua
-    d21 = r_aire - r_corto
-
-    num_Gn = (d41 * d32 * Er_alcohol
-              + d42 * d13 * Er_agua
-              + d43 * d21 * Er_aire)
-    den_Gn = (d41 * d32 * (Er_alcohol ** 2.5)
-              + d42 * d13 * (Er_agua ** 2.5)
-              + d43 * d21 * (Er_aire ** 2.5))
-    Gn = -num_Gn / den_Gn
+    # Conductancia normalizada Gn, a partir del 4to patron (alcohol
+    # isopropilico). Se delega a `calcular_Gn` (definida arriba) para no
+    # duplicar la formula: esa misma funcion queda disponible aparte como
+    # diagnostico de calibracion (ver su docstring y
+    # `analisis_permitividad.graficar_Gn`).
+    Gn = calcular_Gn(frecs, S11_agua, S11_aire, S11_isopropilico, S11_corto,
+                      T_agua=T_agua, T_isoprop=T_isoprop, Er_aire=Er_aire)
 
     # --- Coeficientes X, Z de la ecuacion principal (idem metodo simple) ---
+    d32 = r_agua - r_aire
+    d13 = r_corto - r_agua
+    d21 = r_aire - r_corto
+
     dm2 = S11_medido - r_aire
     dm1 = S11_medido - r_corto
     dm3 = S11_medido - r_agua

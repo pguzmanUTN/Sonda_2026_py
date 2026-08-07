@@ -57,7 +57,7 @@ import matplotlib.pyplot as plt
 
 from Touchstone import (leer_s1p, mismas_frecuencias, resamplear,
                          graficar_s11_mag_fase, graficar_smith)
-from funciones import get_er_DUTm, get_er_DUT_completo, error_relativo_porcentual
+from funciones import get_er_DUTm, get_er_DUT_completo, error_relativo_porcentual, calcular_Gn
 from Patrones import (
     get_er_agua,
     get_er_pat_alc_etilico,
@@ -349,6 +349,49 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
     return archivo_salida
 
 
+def graficar_Gn(frecs, Gn, archivo_salida, log_x=True):
+    """
+    Grafica la conductancia normalizada Gn(f) calculada a partir de los 4
+    patrones de calibracion (ver `funciones.calcular_Gn`). Es un
+    diagnostico de la CALIBRACION, no de un material en particular: Gn no
+    depende del DUT, asi que esta misma curva aplica a todos los
+    materiales analizados con el metodo completo en esta corrida.
+
+    Al estar relacionada con G0/(j*w*C0) -- una propiedad fisica continua
+    de la sonda -- Gn(f) deberia verse suave. Un salto brusco o un pico
+    aislado suele indicar un problema con la medicion de alguno de los 4
+    patrones, tipicamente el alcohol isopropilico (el unico patron que
+    entra en el calculo de Gn y en ningun otro lado del metodo
+    simplificado, por lo que un problema ahi puede pasar desapercibido si
+    solo se mira el chequeo de calibracion del agua).
+    """
+    fig, (ax_re, ax_im) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+
+    ax_re.plot(frecs / 1e9, Gn.real, linewidth=1.6, color='tab:purple')
+    ax_re.set_ylabel("Re(Gn)")
+    ax_re.set_title("Conductancia normalizada Gn(f) \u2014 diagnostico de calibracion")
+    ax_re.minorticks_on()
+    ax_re.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_re.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+
+    ax_im.plot(frecs / 1e9, Gn.imag, linewidth=1.6, color='tab:purple')
+    ax_im.set_xlabel("Frecuencia (GHz)")
+    ax_im.set_ylabel("Im(Gn)")
+    ax_im.minorticks_on()
+    ax_im.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_im.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+
+    if log_x and frecs.size > 0 and np.all(frecs > 0):
+        ax_re.set_xscale('log')
+        ax_im.set_xscale('log')
+
+    fig.tight_layout()
+    fig.savefig(archivo_salida, dpi=150)
+    print(f"  Figura guardada: {archivo_salida}")
+    plt.close(fig)
+    return archivo_salida
+
+
 def calcular_error(er_medido, er_teorico):
     """Devuelve un dict con el error relativo (%) promedio y maximo de
     parte real e imaginaria, listo para tablas (consola o PDF)."""
@@ -548,7 +591,7 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     }
 
 
-def ejecutar_analisis(config, log=print, progreso=None):
+def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     """
     Corre el pipeline completo (calibracion + cada material + informe
     PDF) a partir de un dict de configuracion. Tanto `main()` (modo
@@ -587,19 +630,33 @@ def ejecutar_analisis(config, log=print, progreso=None):
     log : funcion(str) -> None
         Para reportar progreso textual (default: print). La GUI pasa una
         funcion que escribe en su consola en vez de la terminal.
-    progreso : funcion(paso_actual, total_pasos) -> None, opcional
-        Se llama despues de la calibracion, despues de cada material, y
-        despues de generar el PDF, para que la GUI pueda actualizar una
-        barra de progreso. Si es None, no se reporta nada (no rompe el
-        uso desde consola).
+    progreso : funcion(paso_actual, total_pasos, etiqueta=None) -> None,
+        opcional. Se llama al empezar la calibracion, al terminarla, antes
+        y despues de procesar cada material, y antes/despues de generar
+        el PDF, para que la GUI pueda actualizar una barra de progreso Y
+        mostrar que paso esta corriendo en ese momento (`etiqueta`, un
+        string descriptivo, o None si no hay nada nuevo que mostrar). Si
+        es None, no se reporta nada (no rompe el uso desde consola).
+    cancelado : funcion() -> bool, opcional
+        Si se pasa y en algun momento devuelve True, el analisis se
+        interrumpe apenas termina de procesar el material actual (nunca a
+        mitad de un calculo) y se genera igual un informe PDF PARCIAL con
+        lo que ya se alcanzo a calcular. Pensado para conectarse a un
+        `threading.Event().is_set` desde el boton "Cancelar" de la GUI.
+        Si es None (default), el analisis nunca se cancela solo --
+        comportamiento identico al de antes de que existiera este
+        parametro.
 
     Retorna
     -------
-    dict con 'chequeo_calibracion', 'resultados_materiales' y
-    'ruta_informe_pdf'.
+    dict con 'chequeo_calibracion', 'resultados_materiales',
+    'ruta_informe_pdf' y 'cancelado' (bool: True si se interrumpio a
+    mitad de camino por el motivo de arriba).
     """
     if progreso is None:
-        progreso = lambda paso, total: None
+        progreso = lambda paso, total, etiqueta=None: None
+    if cancelado is None:
+        cancelado = lambda: False
 
     carpeta_datos = config['carpeta_datos']
     carpeta_salida = config['carpeta_salida']
@@ -614,6 +671,12 @@ def ejecutar_analisis(config, log=print, progreso=None):
     materiales = config['materiales']
     total_pasos = len(materiales) + 2  # calibracion + N materiales + informe PDF
 
+    if cancelado():
+        log("\n[cancelado] Analisis interrumpido antes de empezar.")
+        return {'chequeo_calibracion': None, 'resultados_materiales': [],
+                'ruta_informe_pdf': None, 'cancelado': True}
+
+    progreso(0, total_pasos, "Leyendo patrones de calibraci\u00f3n")
     log("Leyendo patrones de calibracion...")
     calib = cargar_calibracion(carpeta_datos, config['archivos_calibracion'], cache)
     frecs = calib['agua']['Frec']
@@ -658,7 +721,23 @@ def ejecutar_analisis(config, log=print, progreso=None):
                 "Metodo completo    ", er_agua_compl[mascara], er_agua_teo[mascara]),
         },
     }
-    progreso(1, total_pasos)
+
+    # -----------------------------------------------------------------
+    # Diagnostico adicional: conductancia normalizada Gn(f), calculada
+    # UNICAMENTE a partir de los 4 patrones de calibracion (no depende de
+    # ningun material analizado). Tiene que verse suave; un salto brusco
+    # o un pico aislado suele delatar un problema con la medicion de
+    # alguno de los patrones (sobre todo el alcohol isopropilico, el
+    # unico que interviene en este calculo). Ver funciones.calcular_Gn.
+    # -----------------------------------------------------------------
+    log("Calculando conductancia normalizada Gn(f) (diagnostico de calibracion)...")
+    Gn_cal = calcular_Gn(frecs, s11_agua, s11_aire, s11_isoprop_cal, s11_corto,
+                          T_agua=T_agua, T_isoprop=T_isoprop)
+    ruta_figura_Gn = os.path.join(carpeta_salida, "chequeo_calibracion_Gn.png")
+    graficar_Gn(frecs[mascara], Gn_cal[mascara], ruta_figura_Gn, log_x=log_x)
+    chequeo_calibracion['figura_Gn'] = ruta_figura_Gn
+
+    progreso(1, total_pasos, "Calibraci\u00f3n completa")
 
     # -----------------------------------------------------------------
     # Cada material de la lista se procesa igual, tenga o no modelo
@@ -666,7 +745,16 @@ def ejecutar_analisis(config, log=print, progreso=None):
     # archivo existia) para armar el informe PDF al final.
     # -----------------------------------------------------------------
     resultados_materiales = []
+    interrumpido = False
     for i, material in enumerate(materiales):
+        if cancelado():
+            log(f"\n[cancelado] Analisis interrumpido por el usuario antes de "
+                f"procesar '{material['nombre']}'. Se genera un informe PDF "
+                f"parcial con los {len(resultados_materiales)} material(es) ya "
+                f"calculado(s).")
+            interrumpido = True
+            break
+        progreso(1 + i, total_pasos, f"Procesando: {material['nombre']}")
         resultado = procesar_material(
             material, carpeta_datos, cache, frecs,
             s11_corto, s11_aire, s11_agua, s11_isoprop_cal,
@@ -675,11 +763,13 @@ def ejecutar_analisis(config, log=print, progreso=None):
         )
         if resultado is not None:
             resultados_materiales.append(resultado)
-        progreso(2 + i, total_pasos)
+        progreso(2 + i, total_pasos, f"{material['nombre']} listo")
 
     # -----------------------------------------------------------------
     # Informe PDF final: portada + chequeo de calibracion + un bloque por
-    # material, todo junto en un solo archivo para guardar/adjuntar.
+    # material, todo junto en un solo archivo para guardar/adjuntar. Se
+    # genera SIEMPRE, incluso si se cancelo a mitad de camino (con lo que
+    # ya se alcanzo a calcular) -- asi no se pierde el trabajo ya hecho.
     # -----------------------------------------------------------------
     metadata = {
         'temperatura_agua': T_agua,
@@ -687,17 +777,25 @@ def ejecutar_analisis(config, log=print, progreso=None):
         'f_min_ghz': f_min_ghz,
         'f_max_ghz': f_max_ghz,
         'archivos_calibracion': config['archivos_calibracion'],
+        'cancelado': interrumpido,
     }
+    progreso(1 + len(resultados_materiales), total_pasos, "Generando informe PDF")
     ruta_pdf = os.path.join(carpeta_salida, config['nombre_informe_pdf'])
     generar_reporte_pdf(ruta_pdf, metadata, chequeo_calibracion, resultados_materiales)
-    progreso(total_pasos, total_pasos)
+    progreso(total_pasos, total_pasos,
+             "Cancelado (informe parcial listo)" if interrumpido else "Listo")
 
-    log(f"\nListo. Figuras, tablas e informe PDF en: {os.path.abspath(carpeta_salida)}")
+    if interrumpido:
+        log(f"\nAnalisis cancelado por el usuario. Informe PDF PARCIAL en: "
+            f"{os.path.abspath(carpeta_salida)}")
+    else:
+        log(f"\nListo. Figuras, tablas e informe PDF en: {os.path.abspath(carpeta_salida)}")
 
     return {
         'chequeo_calibracion': chequeo_calibracion,
         'resultados_materiales': resultados_materiales,
         'ruta_informe_pdf': ruta_pdf,
+        'cancelado': interrumpido,
     }
 
 

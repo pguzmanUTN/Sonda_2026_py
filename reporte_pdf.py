@@ -42,6 +42,9 @@ _ESTILOS.add(ParagraphStyle(name='Subtitulo', parent=_ESTILOS['Normal'],
 _ESTILOS.add(ParagraphStyle(name='NombreMaterial', parent=_ESTILOS['Heading2']))
 _ESTILOS.add(ParagraphStyle(name='Nota', parent=_ESTILOS['Normal'],
                              fontSize=9, textColor=colors.grey))
+_ESTILOS.add(ParagraphStyle(name='AvisoCancelado', parent=_ESTILOS['Normal'],
+                             fontSize=10.5, fontName='Helvetica-Bold',
+                             textColor=colors.HexColor('#b34700'), alignment=TA_CENTER))
 
 _COLOR_ENCABEZADO = colors.HexColor('#2c3e50')
 _COLOR_FILA_PAR = colors.HexColor('#f2f2f2')
@@ -198,7 +201,11 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
         dos puede faltar -- p.ej. en un informe armado con datos mas
         viejos -- y se muestra "no especificada" en vez de romper),
         'f_min_ghz', 'f_max_ghz', 'archivos_calibracion' (dict
-        {clave: nombre_archivo}), 'fecha' (opcional, string).
+        {clave: nombre_archivo}), 'fecha' (opcional, string),
+        'cancelado' (opcional, bool: si True, se muestra un aviso en la
+        portada indicando que el analisis se corto antes de terminar
+        todos los materiales -- ver `analisis_permitividad.ejecutar_
+        analisis` y su parametro `cancelado`).
     chequeo_calibracion : dict o None
         'figura' (path al .png) y 'errores' (dict como en `_tabla_errores`,
         con una sola entrada por metodo), o None si no se hizo ese chequeo.
@@ -240,6 +247,12 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
                             _ESTILOS['Subtitulo']))
     story.append(Spacer(1, 1.5 * cm))
     story.append(_tabla_metadata(metadata))
+    if metadata.get('cancelado'):
+        story.append(Spacer(1, 0.5 * cm))
+        story.append(Paragraph(
+            "AVISO \u2014 Informe PARCIAL: el an\u00e1lisis se cancel\u00f3 antes de "
+            "procesar todos los materiales configurados.",
+            _ESTILOS['AvisoCancelado']))
     story.append(PageBreak())
 
     # ---- Chequeo de calibracion ----
@@ -265,6 +278,28 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
             bloque.append(Spacer(1, 0.3 * cm))
             bloque.append(_tabla_errores(chequeo_calibracion['errores']))
         story.append(KeepTogether(bloque))
+
+        # Diagnostico aparte: Gn(f) no depende del agua en particular sino
+        # de los 4 patrones de calibracion en conjunto, asi que va en su
+        # propio KeepTogether (no forzado a entrar junto con el bloque de
+        # arriba, que ya puede ser largo).
+        if chequeo_calibracion.get('figura_Gn') and os.path.isfile(chequeo_calibracion['figura_Gn']):
+            story.append(Spacer(1, 0.3 * cm))
+            story.append(KeepTogether([
+                Paragraph("Diagn\u00f3stico: conductancia normalizada Gn(f)",
+                          _ESTILOS['NombreMaterial']),
+                Paragraph(
+                    "Gn se calcula a partir de los 4 patrones de calibraci\u00f3n (no "
+                    "depende del material bajo ensayo), por lo que deber\u00eda variar "
+                    "en forma suave con la frecuencia. Un salto brusco o un pico "
+                    "aislado suele indicar un problema con la medici\u00f3n de alguno de "
+                    "los patrones, t\u00edpicamente el alcohol isoprop\u00edlico (el \u00fanico "
+                    "que interviene en este c\u00e1lculo).",
+                    _ESTILOS['Normal']),
+                Spacer(1, 0.2 * cm),
+                _imagen_ajustada(chequeo_calibracion['figura_Gn']),
+            ]))
+
         if materiales:
             story.append(_separador())
 

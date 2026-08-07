@@ -1,0 +1,21 @@
+# Dependencias del proyecto "Analizador de Permitividad - Sonda Coaxial"
+# Instalar con:
+#   pip install -r requirements.txt
+#   (en Linux, si el comando `pip` no existe, usar `pip3` o agregar
+#    --break-system-packages segun la distro)
+#
+# NOTA sobre tkinter: la GUI (gui_permitividad.py / main_gui.py) usa
+# tkinter, que es parte de la libreria estandar de Python y NO se instala
+# con pip. En Windows/macOS ya viene incluido con el instalador oficial
+# de Python. En Linux (Ubuntu/Debian) hay que instalarlo aparte con:
+#   sudo apt install python3-tk
+# El resto del proyecto (analisis_permitividad.py por consola,
+# funciones.py, Patrones.py, Touchstone.py, Grafico.py, MATS.py) no
+# depende de tkinter y funciona sin este paso.
+
+numpy>=1.24
+matplotlib>=3.8
+scikit-rf>=1.0        # lectura/graficado de archivos Touchstone (.s1p)
+reportlab>=4.0         # generacion del informe PDF
+Pillow>=10.0            # vista previa de figuras en la GUI y escalado de imagenes en el PDF
+scipy>=1.10             # solo usado por MATS.py (lectura de .mat exploratorios)
