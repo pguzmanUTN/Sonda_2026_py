@@ -2,17 +2,17 @@
   "version": 1,
   "carpeta_datos": "",
   "archivos_calibracion": {
-    "corto": "F:/DESCARGAS/Materias/2026/MD2/TPSONDA/Programa MatLab Medicion Er con VNA-20260607T175117Z-3-001/Program Python Medicion Er con VNA/V3/sonda4-short.s1p",
-    "aire": "F:/DESCARGAS/Materias/2026/MD2/TPSONDA/Programa MatLab Medicion Er con VNA-20260607T175117Z-3-001/Program Python Medicion Er con VNA/V3/sonda4-aire.s1p",
-    "agua": "F:/DESCARGAS/Materias/2026/MD2/TPSONDA/Programa MatLab Medicion Er con VNA-20260607T175117Z-3-001/Program Python Medicion Er con VNA/V3/sonda4-agua.s1p",
-    "alc_isoprop": "F:/DESCARGAS/Materias/2026/MD2/TPSONDA/Programa MatLab Medicion Er con VNA-20260607T175117Z-3-001/Program Python Medicion Er con VNA/V3/sonda4-alc-isoprop.s1p"
+    "corto": "/home/pedro/UTN/MATERIAS/2026/MD2/Proyecto/Sonda_2026_py/mediciones_sonda4/sonda4-short.s1p",
+    "aire": "/home/pedro/UTN/MATERIAS/2026/MD2/Proyecto/Sonda_2026_py/mediciones_sonda4/sonda4-aire.s1p",
+    "agua": "/home/pedro/UTN/MATERIAS/2026/MD2/Proyecto/Sonda_2026_py/mediciones_sonda4/sonda4-agua.s1p",
+    "alc_isoprop": "/home/pedro/UTN/MATERIAS/2026/MD2/Proyecto/Sonda_2026_py/mediciones_sonda4/sonda4-alc-isoprop.s1p"
   },
   "temperatura_agua_c": 25.0,
   "temperatura_isoprop_cal_c": 25.0,
   "materiales": [
     {
       "nombre": "sonda4-alc-etilico",
-      "archivo": "F:/DESCARGAS/Materias/2026/MD2/TPSONDA/Programa MatLab Medicion Er con VNA-20260607T175117Z-3-001/Program Python Medicion Er con VNA/V3/sonda4-alc-etilico.s1p",
+      "archivo": "/home/pedro/UTN/MATERIAS/2026/MD2/Proyecto/Sonda_2026_py/mediciones_sonda4/sonda4-alc-etilico.s1p",
       "modelo": "alcohol_etilico",
       "temperatura": 25.0,
       "metodos": [
@@ -22,7 +22,7 @@
     },
     {
       "nombre": "sonda4-alc-isoprop",
-      "archivo": "F:/DESCARGAS/Materias/2026/MD2/TPSONDA/Programa MatLab Medicion Er con VNA-20260607T175117Z-3-001/Program Python Medicion Er con VNA/V3/sonda4-alc-isoprop.s1p",
+      "archivo": "/home/pedro/UTN/MATERIAS/2026/MD2/Proyecto/Sonda_2026_py/mediciones_sonda4/sonda4-alc-isoprop.s1p",
       "modelo": "alcohol_isopropilico",
       "temperatura": 25.0,
       "metodos": [
@@ -31,8 +31,9 @@
       ]
     }
   ],
-  "carpeta_salida": "F:/DESCARGAS/Materias/2026/MD2/TPSONDA/Programa MatLab Medicion Er con VNA-20260607T175117Z-3-001/Program Python Medicion Er con VNA/V3/salidas/SalidaNueva",
+  "carpeta_salida": "/home/pedro/UTN/MATERIAS/2026/MD2/Proyecto/Sonda_2026_py/mediciones_sonda4",
   "nombre_informe_pdf": "etilico_25grados.pdf",
   "f_min_ghz": 0.5,
-  "f_max_ghz": 6.0
+  "f_max_ghz": 6.0,
+  "escala_log_frecuencia": true
 }

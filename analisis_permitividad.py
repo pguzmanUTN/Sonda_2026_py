@@ -54,6 +54,7 @@ import csv
 import functools
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FormatStrFormatter
 
 from Touchstone import (leer_s1p, mismas_frecuencias, resamplear,
                          graficar_s11_mag_fase, graficar_smith)
@@ -352,38 +353,53 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
 def graficar_Gn(frecs, Gn, archivo_salida, log_x=True):
     """
     Grafica la conductancia normalizada Gn(f) calculada a partir de los 4
-    patrones de calibracion (ver `funciones.calcular_Gn`). Es un
+    patrones de calibracion (ver `funciones.calcular_Gn`), en modulo y
+    fase (mismo estilo que `Touchstone.graficar_s11_mag_fase`). Es un
     diagnostico de la CALIBRACION, no de un material en particular: Gn no
     depende del DUT, asi que esta misma curva aplica a todos los
     materiales analizados con el metodo completo en esta corrida.
 
     Al estar relacionada con G0/(j*w*C0) -- una propiedad fisica continua
-    de la sonda -- Gn(f) deberia verse suave. Un salto brusco o un pico
-    aislado suele indicar un problema con la medicion de alguno de los 4
-    patrones, tipicamente el alcohol isopropilico (el unico patron que
-    entra en el calculo de Gn y en ningun otro lado del metodo
-    simplificado, por lo que un problema ahi puede pasar desapercibido si
-    solo se mira el chequeo de calibracion del agua).
+    de la sonda -- Gn(f) deberia verse suave tanto en modulo como en
+    fase. Un salto brusco o un pico aislado suele indicar un problema con
+    la medicion de alguno de los 4 patrones, tipicamente el alcohol
+    isopropilico (el unico patron que entra en el calculo de Gn y en
+    ningun otro lado del metodo simplificado, por lo que un problema ahi
+    puede pasar desapercibido si solo se mira el chequeo de calibracion
+    del agua).
     """
-    fig, (ax_re, ax_im) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    fig, (ax_mag, ax_fase) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
 
-    ax_re.plot(frecs / 1e9, Gn.real, linewidth=1.6, color='tab:purple')
-    ax_re.set_ylabel("Re(Gn)")
-    ax_re.set_title("Conductancia normalizada Gn(f) \u2014 diagnostico de calibracion")
-    ax_re.minorticks_on()
-    ax_re.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
-    ax_re.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    mag_Gn = np.abs(Gn)
+    # np.angle() sola da la fase "envuelta" en (-180, 180]; con np.unwrap
+    # se corrigen los saltos artificiales de +-360 grados, igual que se
+    # hace con la fase de S11 en Touchstone.graficar_s11_mag_fase.
+    fase_Gn = np.degrees(np.unwrap(np.angle(Gn)))
 
-    ax_im.plot(frecs / 1e9, Gn.imag, linewidth=1.6, color='tab:purple')
-    ax_im.set_xlabel("Frecuencia (GHz)")
-    ax_im.set_ylabel("Im(Gn)")
-    ax_im.minorticks_on()
-    ax_im.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
-    ax_im.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    ax_mag.plot(frecs / 1e9, mag_Gn, linewidth=1.6, color='tab:purple')
+    ax_mag.set_ylabel("|Gn|")
+    ax_mag.set_title("Conductancia normalizada Gn(f) \u2014 diagnostico de calibracion")
+    ax_mag.minorticks_on()
+    ax_mag.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_mag.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+
+    ax_fase.plot(frecs / 1e9, fase_Gn, linewidth=1.6, color='tab:purple')
+    ax_fase.set_xlabel("Frecuencia (GHz)")
+    ax_fase.set_ylabel("Fase Gn (\u00b0)")
+    ax_fase.minorticks_on()
+    # Sin esto, cuando la fase varia muy poco en todo el barrido (queda
+    # casi constante), matplotlib intenta ser "util" agregando una
+    # notacion de offset+escala en la esquina que queda superpuesta y
+    # dificil de leer (p.ej. "1e-11-9e1"). Se fuerza un formato de numero
+    # llano con 2 decimales (de sobra para fase en grados) en vez de
+    # offset automatico o precision de punto flotante completa.
+    ax_fase.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+    ax_fase.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_fase.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
 
     if log_x and frecs.size > 0 and np.all(frecs > 0):
-        ax_re.set_xscale('log')
-        ax_im.set_xscale('log')
+        ax_mag.set_xscale('log')
+        ax_fase.set_xscale('log')
 
     fig.tight_layout()
     fig.savefig(archivo_salida, dpi=150)
