@@ -13,12 +13,19 @@ tipo open-ended, calcula la permitividad relativa compleja
 εr = εr′ − j·εr″ del material bajo ensayo (MUT), usando los dos métodos
 de conversión descriptos en el paper:
 
-- **Método simplificado** (3 patrones: corto, aire, agua — Gn = 0):
+- **Método simplificado** (3 patrones: corto, aire, patrón 3 — Gn = 0):
   fórmula algebraica cerrada, válida sobre todo para materiales de bajas
   pérdidas y/o frecuencias más bajas.
-- **Método completo** (4 patrones: corto, aire, agua, alcohol
-  isopropílico — con conductancia normalizada Gn): resuelve un polinomio
-  de 5to orden por frecuencia, más preciso en un rango más amplio.
+- **Método completo** (4 patrones: corto, aire, patrón 3, patrón 4 — con
+  conductancia normalizada Gn): resuelve un polinomio de 5to orden por
+  frecuencia, más preciso en un rango más amplio.
+
+**Patrón 3 y patrón 4** son, por defecto, agua destilada y alcohol
+isopropílico (el par tradicional de la cátedra), pero pueden ser
+**cualquier par de líquidos** con modelo teórico conocido (ver
+`Patrones.PATRONES_TEORICOS`): no hace falta calibrar sí o sí con esos
+dos, alcanza con elegir el líquido y la temperatura de cada uno en la
+pestaña de Calibración.
 
 ## Instalación
 
@@ -26,17 +33,13 @@ de conversión descriptos en el paper:
 pip install -r requirements.txt
 ```
 
-**Nota sobre tkinter:** la GUI usa `tkinter`, que es parte de la
-librería estándar de Python (no se instala con `pip`). En Windows/macOS
-ya viene con el instalador oficial de Python. En Linux hace falta
+**Nota sobre tkinter:** la GUI usa `tkinter`, parte de la librería
+estándar de Python (no se instala con `pip`). En Linux hace falta
 instalarlo aparte:
 
 ```bash
 sudo apt install python3-tk
 ```
-
-El resto del proyecto (script por consola, `funciones.py`, `Patrones.py`,
-`Touchstone.py`, `Grafico.py`, `MATS.py`) no depende de `tkinter`.
 
 ## Uso
 
@@ -46,24 +49,71 @@ El resto del proyecto (script por consola, `funciones.py`, `Patrones.py`,
 python main_gui.py
 ```
 
-La GUI permite: cargar los `.s1p` de calibración y de cada material,
-elegir el modelo teórico y la temperatura de cada uno, ver una vista
-previa de S11 (módulo/fase y Smith) antes de correr el análisis, correr
-todo en un hilo de fondo con barra de progreso (mostrando el paso actual)
-y la posibilidad de cancelar a mitad de camino (se genera igual un
-informe PDF parcial con lo ya calculado), copiar o guardar el log de la
-consola, y guardar/cargar/reabrir configuraciones recientes como JSON
-para no tener que repetir la carga a mano.
+La GUI tiene 5 pestañas:
+
+1. **Calibración** — archivos de corto, aire, y los patrones 3/4 (cada
+   uno con su líquido y temperatura elegibles).
+2. **Materiales** — lista de muestras a analizar.
+3. **Vista previa S11** — módulo/fase y diagrama de Smith de cualquier
+   patrón o material, leyendo el `.s1p` directo, sin correr el análisis
+   completo.
+4. **Salida y ejecución** — corre el pipeline en un hilo de fondo (con
+   barra de progreso, indicador del paso actual, botón para cancelar a
+   mitad de camino, y consola con log copiable/guardable), y muestra los
+   resultados.
+5. **Comparar mediciones** — superpone en un mismo gráfico varias curvas
+   ya calculadas (de un `tabla_<material>.csv`), útil para comparar la
+   misma muestra medida en días distintos o distintos cortes de un
+   material.
+6. **Modelos teóricos** — grafica cualquier modelo de `Patrones.py`
+   directamente, sin necesidad de ningún dato medido: elegís el modelo,
+   la temperatura, el rango de frecuencias y la cantidad de puntos. Sirve
+   para explorar cómo se ve un modelo, o para comparar el mismo líquido a
+   distintas temperaturas (o líquidos distintos entre sí) superpuestos.
+
+Los gráficos de las pestañas 3, 4, 5 y 6 son **interactivos**: zoom (rueda
+del mouse o herramienta de lupa), pan (arrastrar), botón "home" para
+volver a la vista original, y lectura de las coordenadas del dato bajo
+el cursor — la misma interacción que da el backend Qt de matplotlib,
+pero embebida en Tkinter.
+
+La configuración se guarda/carga como JSON (con historial de recientes
+en el menú Archivo). Las configuraciones guardadas por versiones
+anteriores de este programa (con los patrones fijos a agua/alcohol
+isopropílico) se migran solas al abrirlas.
 
 ### Opción B — Script por consola
 
 Editar las constantes al principio de `analisis_permitividad.py`
-(`ARCHIVOS_CALIBRACION`, `MATERIALES`, temperaturas, rango de
-frecuencias) y correr:
+(`ARCHIVOS_CALIBRACION`, `PATRON3_MODELO_CAL`/`PATRON4_MODELO_CAL`,
+`MATERIALES`, rango de frecuencias) y correr:
 
 ```bash
 python analisis_permitividad.py
 ```
+
+## Carpeta de salida
+
+Cada corrida guarda sus archivos en:
+
+```
+<carpeta_salida>/<AAAA-MM-DD>/<HH-MM-SS>/
+    chequeo_calibracion_patron3.png
+    chequeo_calibracion_Gn.png
+    er_<material>.png, s11_<material>.png, smith_<material>.png
+    tabla_<material>.csv
+    informe_permitividad.pdf
+```
+
+Es decir, una subcarpeta por **día** y por **hora** de cada corrida, para
+no pisar resultados anteriores y tener un historial ordenado. Además,
+los `.s1p` de **entrada** (calibración + cada material) se copian a la
+carpeta del día (compartida entre todas las corridas de ese día, sin
+duplicar si se corre varias veces con la misma medición), como registro
+de con qué mediciones exactas se generó cada informe.
+
+El botón "Abrir carpeta de salida" de la GUI abre directamente la
+carpeta específica de la última corrida.
 
 ## Flujo de calibración
 
@@ -73,42 +123,23 @@ Se necesitan 4 patrones de referencia (Sección III del paper):
 |---|---|
 | Cortocircuito | Y → ∞, simplifica el modelo matemático |
 | Aire (circuito abierto) | εr ≈ 1.0006 |
-| Agua destilada | Modelo teórico dependiente de temperatura |
-| Alcohol isopropílico | 4to patrón, solo necesario para el método completo (permite calcular Gn) |
+| Patrón 3 (por defecto: agua) | Líquido con modelo teórico conocido |
+| Patrón 4 (por defecto: alcohol isopropílico) | 4to patrón, solo necesario para el método completo (permite calcular Gn) |
 
-El agua se usa además como **chequeo de calibración**: al procesarla como
-si fuera un material más, el resultado tiene que coincidir casi
+El patrón 3 se usa además como **chequeo de calibración**: al procesarlo
+como si fuera un material más, el resultado tiene que coincidir casi
 exactamente con su propio modelo teórico. Si no da ~0 % de error, hay un
 problema de lectura o calibración antes de analizar cualquier material
 real — esto se corre automáticamente al principio de cada análisis.
 
-## Salidas generadas
-
-En la carpeta de salida (por defecto `./salidas`):
-
-- `chequeo_calibracion_agua.png` — agua medida vs. teórica.
-- `chequeo_calibracion_Gn.png` — diagnóstico de la conductancia
-  normalizada Gn(f) (ver más abajo).
-- `er_<material>.png`, `s11_<material>.png`, `smith_<material>.png` —
-  por cada material: permitividad, S11 módulo/fase y diagrama de Smith.
-- `tabla_<material>.csv` — permitividad calculada en todas las
-  frecuencias.
-- Un informe PDF único (`informe_permitividad.pdf` por defecto) con
-  todo lo anterior más tablas de error resumidas.
-
 ### Diagnóstico: Gn(f)
 
 `Gn` se calcula únicamente a partir de los 4 patrones de calibración (no
-depende de ningún material medido), así que es el mismo para todos los
-materiales analizados con el método completo en una corrida. Al estar
+depende de ningún material medido). Se grafica en módulo y fase; al estar
 relacionada con G0/(jωC0) — una propiedad física continua de la sonda —
-la curva Gn(f) debería verse suave. Un salto brusco o un pico aislado
-suele delatar un problema con la medición de alguno de los 4 patrones,
-típicamente el alcohol isopropílico (el único que interviene en este
-cálculo y en ningún otro lado del método simplificado, por lo que un
-problema ahí puede pasar desapercibido si solo se mira el chequeo de
-calibración del agua). Conviene revisar esta figura **antes** de confiar
-en los resultados del método completo.
+la curva debería verse suave. Un salto brusco o un pico aislado suele
+delatar un problema con la medición de alguno de los 4 patrones,
+típicamente el patrón 4 (el único que interviene en este cálculo).
 
 ## Convención de signos
 
@@ -122,12 +153,12 @@ para los demás líquidos patrón).
 | Archivo | Rol |
 |---|---|
 | `Patrones.py` | Modelos teóricos de permitividad de los líquidos patrón (agua, alcoholes, DMSO, etilenglicol — NPL MAT 23) |
-| `funciones.py` | Algoritmos de conversión S11 → εr (métodos simplificado y completo) |
+| `funciones.py` | Álgebra S11 → εr (métodos simplificado y completo), agnóstica de qué líquidos se usan como patrón 3/4 |
 | `Touchstone.py` | Lectura de `.s1p` y gráficos de S11 (módulo/fase, Smith) |
-| `analisis_permitividad.py` | Pipeline completo: calibración, cálculo, gráficos, CSV, informe PDF |
+| `analisis_permitividad.py` | Pipeline completo: calibración, cálculo, gráficos, CSV, informe PDF, carpetas por fecha/hora |
 | `reporte_pdf.py` | Armado del informe PDF a partir de los resultados del pipeline |
-| `gui_funciones.py` | Lógica no visual de la GUI (config, hilo de fondo, validaciones) |
-| `gui_permitividad.py` | Ventana Tkinter |
+| `gui_funciones.py` | Lógica no visual de la GUI (config, migración de esquema viejo, hilo de fondo, validaciones) |
+| `gui_permitividad.py` | Ventana Tkinter (5 pestañas, gráficos interactivos vía `VisorFigura`) |
 | `main_gui.py` | Punto de entrada de la GUI |
 | `Grafico.py` | Valida el modelo teórico del agua contra datos de Kaatze (1989) |
 | `MATS.py` | Script exploratorio para abrir el `.mat` original de mediciones |

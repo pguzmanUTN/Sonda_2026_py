@@ -1,14 +1,16 @@
 {
-  "version": 1,
+  "version": 2,
   "carpeta_datos": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2",
   "archivos_calibracion": {
     "corto": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda4/sonda4-short.s1p",
     "aire": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda4/sonda4-aire.s1p",
-    "agua": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda4/sonda4-agua.s1p",
-    "alc_isoprop": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda4/sonda4-alc-isoprop.s1p"
+    "patron3": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/mediciones_sonda4/sonda4-agua.s1p",
+    "patron4": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda4/sonda4-alc-isoprop.s1p"
   },
-  "temperatura_agua_c": 15.0,
-  "temperatura_isoprop_cal_c": 15.0,
+  "patron3_modelo": "agua",
+  "patron3_temperatura_c": 15.0,
+  "patron4_modelo": "alcohol_isopropilico",
+  "patron4_temperatura_c": 15.0,
   "materiales": [
     {
       "nombre": "sonda4-alc-isoprop",
@@ -31,7 +33,7 @@
       ]
     },
     {
-      "nombre": "sonda4-agua",
+      "nombre": "15",
       "archivo": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda4/sonda4-agua.s1p",
       "modelo": "agua",
       "temperatura": 15.0,
@@ -39,11 +41,76 @@
         "simplificado",
         "completo"
       ]
+    },
+    {
+      "nombre": "25",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/mediciones_sonda4/2026-08-24/sonda4-agua.s1p",
+      "modelo": "agua",
+      "temperatura": 25.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    },
+    {
+      "nombre": "10",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/mediciones_sonda4/2026-08-24/sonda4-agua.s1p",
+      "modelo": "agua",
+      "temperatura": 10.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    },
+    {
+      "nombre": "30",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/mediciones_sonda4/2026-08-24/sonda4-agua.s1p",
+      "modelo": "agua",
+      "temperatura": 30.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
     }
   ],
-  "carpeta_salida": "F:/DESCARGAS/Materias/2026/MD2/ProyectoMD2/mediciones_sonda4",
+  "carpeta_salida": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/mediciones_sonda4/2026-08-24",
   "nombre_informe_pdf": "etilico_15grados.pdf",
   "f_min_ghz": 0.1,
   "f_max_ghz": 6.0,
-  "escala_log_frecuencia": true
+  "escala_log_frecuencia": true,
+  "curvas_comparacion": [],
+  "curvas_modelos": [
+    {
+      "etiqueta": "Agua (Liebe-Hufford-Manabe) a 25.0°C",
+      "modelo": "agua",
+      "temperatura": 25.0,
+      "f_min_ghz": 0.5,
+      "f_max_ghz": 6.0,
+      "n_puntos": 1000
+    },
+    {
+      "etiqueta": "Agua (Liebe-Hufford-Manabe) a 15.0°C",
+      "modelo": "agua",
+      "temperatura": 15.5,
+      "f_min_ghz": 0.5,
+      "f_max_ghz": 6.0,
+      "n_puntos": 1000
+    },
+    {
+      "etiqueta": "Agua (Liebe-Hufford-Manabe) a 20",
+      "modelo": "agua",
+      "temperatura": 20.0,
+      "f_min_ghz": 0.5,
+      "f_max_ghz": 6.0,
+      "n_puntos": 1000
+    },
+    {
+      "etiqueta": "30",
+      "modelo": "agua",
+      "temperatura": 30.0,
+      "f_min_ghz": 0.5,
+      "f_max_ghz": 6.0,
+      "n_puntos": 1000
+    }
+  ]
 }

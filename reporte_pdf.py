@@ -163,12 +163,14 @@ def _fila_temperatura(etiqueta, valor):
 
 def _tabla_metadata(metadata):
     fecha = metadata.get('fecha') or datetime.now().strftime("%d/%m/%Y %H:%M")
+    etiqueta_p3 = metadata.get('patron3_etiqueta') or metadata.get('patron3_modelo') or "Patron 3"
+    etiqueta_p4 = metadata.get('patron4_etiqueta') or metadata.get('patron4_modelo') or "Patron 4"
     filas = [
         ["Fecha de generacion", fecha],
-        _fila_temperatura("Temperatura del agua (CAL)",
-                           metadata.get('temperatura_agua')),
-        _fila_temperatura("Temperatura del alcohol isopropilico (CAL)",
-                           metadata.get('temperatura_isoprop')),
+        _fila_temperatura(f"Patron 3 ({etiqueta_p3}) - T (CAL)",
+                           metadata.get('patron3_temperatura')),
+        _fila_temperatura(f"Patron 4 ({etiqueta_p4}) - T (CAL)",
+                           metadata.get('patron4_temperatura')),
         ["Banda analizada", f"{metadata['f_min_ghz']} - {metadata['f_max_ghz']} GHz"],
     ]
     for clave, archivo in metadata.get('archivos_calibracion', {}).items():
@@ -196,10 +198,12 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
     ruta_salida : str
         Path del PDF a generar (por ejemplo "./salidas/informe.pdf").
     metadata : dict
-        'temperatura_agua', 'temperatura_isoprop' (temperaturas de los
-        dos patrones de calibracion que dependen de T; cualquiera de las
-        dos puede faltar -- p.ej. en un informe armado con datos mas
-        viejos -- y se muestra "no especificada" en vez de romper),
+        'patron3_modelo', 'patron3_etiqueta', 'patron3_temperatura' y los
+        mismos 3 para 'patron4' (los 2 liquidos usados como patron de
+        calibracion, con su clave interna, su nombre lindo para mostrar y
+        su temperatura real durante la calibracion; cualquiera puede
+        faltar -- p.ej. en un informe armado con datos mas viejos -- y se
+        muestra "no especificada" en vez de romper),
         'f_min_ghz', 'f_max_ghz', 'archivos_calibracion' (dict
         {clave: nombre_archivo}), 'fecha' (opcional, string),
         'cancelado' (opcional, bool: si True, se muestra un aviso en la
@@ -261,11 +265,13 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
     # entero sin problema, y asi nunca queda el titulo/grafico separado de
     # su tabla por un salto de pagina en el medio.
     if chequeo_calibracion is not None:
+        etiqueta_p3 = chequeo_calibracion.get('etiqueta_patron3') or "patron 3"
+        etiqueta_p4 = chequeo_calibracion.get('etiqueta_patron4') or "patron 4"
         bloque = [
-            Paragraph("Chequeo de calibraci\u00f3n (agua)", _ESTILOS['NombreMaterial']),
+            Paragraph(f"Chequeo de calibraci\u00f3n ({etiqueta_p3})", _ESTILOS['NombreMaterial']),
             Paragraph(
-                "El agua es uno de los patrones de calibraci\u00f3n: al procesarla como "
-                "si fuera un material m\u00e1s, el resultado tiene que coincidir "
+                f"{etiqueta_p3} es uno de los patrones de calibraci\u00f3n: al procesarlo "
+                "como si fuera un material m\u00e1s, el resultado tiene que coincidir "
                 "pr\u00e1cticamente con su propio modelo te\u00f3rico. Sirve para confirmar "
                 "que la lectura de archivos y la calibraci\u00f3n funcionaron bien antes "
                 "de analizar el resto de los materiales.",
@@ -279,10 +285,10 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
             bloque.append(_tabla_errores(chequeo_calibracion['errores']))
         story.append(KeepTogether(bloque))
 
-        # Diagnostico aparte: Gn(f) no depende del agua en particular sino
-        # de los 4 patrones de calibracion en conjunto, asi que va en su
-        # propio KeepTogether (no forzado a entrar junto con el bloque de
-        # arriba, que ya puede ser largo).
+        # Diagnostico aparte: Gn(f) no depende del patron 3 en particular
+        # sino de los 4 patrones de calibracion en conjunto, asi que va en
+        # su propio KeepTogether (no forzado a entrar junto con el bloque
+        # de arriba, que ya puede ser largo).
         if chequeo_calibracion.get('figura_Gn') and os.path.isfile(chequeo_calibracion['figura_Gn']):
             story.append(Spacer(1, 0.3 * cm))
             story.append(KeepTogether([
@@ -293,7 +299,7 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
                     "depende del material bajo ensayo), por lo que deber\u00eda variar "
                     "en forma suave con la frecuencia. Un salto brusco o un pico "
                     "aislado suele indicar un problema con la medici\u00f3n de alguno de "
-                    "los patrones, t\u00edpicamente el alcohol isoprop\u00edlico (el \u00fanico "
+                    f"los patrones, t\u00edpicamente {etiqueta_p4} (el \u00fanico "
                     "que interviene en este c\u00e1lculo).",
                     _ESTILOS['Normal']),
                 Spacer(1, 0.2 * cm),

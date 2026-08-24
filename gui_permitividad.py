@@ -12,53 +12,53 @@ conecta los botones con esas funciones.
 Para arrancar la GUI: `python main_gui.py`.
 """
 import os
-import io
 import copy
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import gui_funciones as gf
+import analisis_permitividad as ap
 
 # matplotlib ya queda forzado al backend 'Agg' por gui_funciones.py (se
 # importa arriba, y ese modulo lo hace ANTES de importar analisis_
-# permitividad). Estos imports son para generar la vista previa rapida de
-# S11 (pestaña "Vista previa S11"): se arman las figuras en memoria (sin
-# guardar .png a disco, a diferencia del resto del proyecto) y se
-# muestran directamente en la ventana.
-import matplotlib.pyplot as plt
+# permitividad) -- eso es lo que usa el pipeline de analisis en el hilo de
+# fondo para guardar los .png a disco. Para la vista previa EN VIVO dentro
+# de la ventana (con zoom, pan, "home" y lectura de coordenadas bajo el
+# cursor -- la misma interaccion que da el backend Qt de matplotlib, via
+# la misma clase base NavigationToolbar2) se usa por separado
+# FigureCanvasTkAgg/NavigationToolbar2Tk (ver clase VisorFigura mas
+# abajo), que embebe una Figure directamente en un widget de Tkinter sin
+# pasar por el registro global de pyplot -- por eso es seguro usarlo
+# desde el hilo principal (Tkinter) mientras el hilo de fondo genera sus
+# propias figuras con pyplot/Agg por su lado, sin que se pisen entre si.
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from Touchstone import leer_s1p, graficar_s11_mag_fase, graficar_smith
-
-try:
-    from PIL import Image, ImageTk
-    _HAY_PIL = True
-except ImportError:
-    _HAY_PIL = False
 
 
 TITULO_APP = "Analizador de Permitividad - Sonda Coaxial (NPL MAT 23)"
-ANCHO_PREVIEW = 560
-ANCHO_PREVIEW_S11 = 480  # resguardo si el panel todavia no tiene tamaño real asignado
 
 # Etiquetas legibles para los patrones de calibracion, para la pestaña de
-# "Vista previa S11" (analogo a _ETIQUETAS_CALIBRACION de gui_funciones.py,
-# pero esa es privada y esta la necesitamos aca para armar el combobox).
+# "Vista previa S11" (analogo a _ETIQUETAS_CALIBRACION_FIJAS de
+# gui_funciones.py, pero esa es privada y esta la necesitamos aca). Solo
+# corto/aire tienen nombre fijo -- patron3/patron4 muestran el liquido
+# elegido en la pestaña de Calibracion (ver _refrescar_lista_preview_s11).
 _ETIQUETAS_CALIBRACION_PREVIEW = {
     'corto': "Cortocircuito",
     'aire': "Aire",
-    'agua': "Agua",
-    'alc_isoprop': "Alcohol isopropilico (patron adicional)",
 }
+_NOMBRES_PATRON_CALIBRACION = {'patron3': "Patron 3", 'patron4': "Patron 4"}
 
 
 def _generar_preview_s11(ruta_s1p, log_x=True):
     """
-    Lee un archivo .s1p y arma, EN MEMORIA (sin guardar ningun .png a
-    disco), dos imagenes PIL con el S11 medido: modulo/fase y diagrama de
-    Smith. Se usa para la vista previa rapida de la pestaña "Vista previa
-    S11", antes de correr el analisis completo (que si guarda .png).
+    Lee un archivo .s1p y arma dos Figures de matplotlib EN VIVO (para
+    embeber con VisorFigura, sin guardar ningun .png a disco) con el S11
+    medido: modulo/fase y diagrama de Smith. Se usa para la vista previa
+    de la pestaña "Vista previa S11", antes de correr el analisis
+    completo (que si guarda .png, ademas de mostrar la vista en vivo).
 
-    Devuelve (imagen_modulo_fase, imagen_smith, datos), donde `datos` es
-    el dict que devuelve `Touchstone.leer_s1p` (por si el llamador quiere
+    Devuelve (fig_modulo_fase, fig_smith, datos), donde `datos` es el
+    dict que devuelve `Touchstone.leer_s1p` (por si el llamador quiere
     mostrar la cantidad de puntos / rango de frecuencias).
     """
     datos = leer_s1p(ruta_s1p)
@@ -67,22 +67,70 @@ def _generar_preview_s11(ruta_s1p, log_x=True):
 
     fig_mf = graficar_s11_mag_fase(
         datos_dict, titulo=f"{nombre}: S11 medido (modulo y fase)", log_x=log_x)
-    buf_mf = io.BytesIO()
-    fig_mf.savefig(buf_mf, format="png", dpi=130, bbox_inches="tight")
-    plt.close(fig_mf)
-    buf_mf.seek(0)
-    imagen_mf = Image.open(buf_mf)
-    imagen_mf.load()  # decodificar ya mismo: el buffer se descarta al salir
-
     fig_sm = graficar_smith(datos_dict, titulo=f"{nombre}: S11 medido (diagrama de Smith)")
-    buf_sm = io.BytesIO()
-    fig_sm.savefig(buf_sm, format="png", dpi=130, bbox_inches="tight")
-    plt.close(fig_sm)
-    buf_sm.seek(0)
-    imagen_sm = Image.open(buf_sm)
-    imagen_sm.load()
+    return fig_mf, fig_sm, datos
 
-    return imagen_mf, imagen_sm, datos
+
+# ===========================================================================
+# Visor de figuras interactivo: zoom (rectangulo o rueda), pan (arrastrar),
+# "home" para volver a la vista original, y lectura de las coordenadas del
+# dato bajo el cursor en la esquina inferior derecha -- la misma
+# interaccion que ofrece el backend Qt de matplotlib (ambos backends
+# heredan de la misma clase base NavigationToolbar2, con el mismo set de
+# herramientas: Home/Back/Forward, Pan, Zoom, Configurar subplots,
+# Guardar). Reemplaza al mecanismo anterior (imagen PNG estatica via PIL,
+# reescalada a mano en cada <Configure> de la ventana): ahora la figura
+# es una Figure de matplotlib real embebida con FigureCanvasTkAgg, que ya
+# se redimensiona sola con el panel que la contiene.
+# ===========================================================================
+class VisorFigura(ttk.Frame):
+    """Panel reusable que embebe una Figure de matplotlib con su barra de
+    herramientas interactiva. Uso: `visor.mostrar(fig)` para mostrar una
+    Figure nueva (reemplaza lo que hubiera antes), `visor.limpiar(msg)`
+    para dejarlo vacio con un mensaje."""
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        self._canvas = None
+        self._toolbar = None
+        self._label_vacio = ttk.Label(self, anchor="center", justify="left",
+                                       style="Ayuda.TLabel")
+        self._label_vacio.grid(row=0, column=0, sticky="nsew")
+
+    def mostrar(self, fig):
+        """Reemplaza el contenido del panel por `fig` (matplotlib
+        Figure), con su barra de herramientas interactiva."""
+        self._limpiar_widgets()
+        self._label_vacio.grid_remove()
+
+        self._canvas = FigureCanvasTkAgg(fig, master=self)
+        self._canvas.draw()
+        self._canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+        # pack_toolbar=False para poder ubicarla nosotros con grid (la
+        # barra de NavigationToolbar2Tk usa pack() internamente por
+        # default, que no se puede mezclar con grid() en el mismo padre
+        # sin este parametro).
+        self._toolbar = NavigationToolbar2Tk(self._canvas, self, pack_toolbar=False)
+        self._toolbar.update()
+        self._toolbar.grid(row=1, column=0, sticky="ew")
+
+    def limpiar(self, mensaje=""):
+        """Vacia el panel y muestra `mensaje` centrado (p.ej. cuando
+        todavia no hay nada que mostrar, o fallo la generacion)."""
+        self._limpiar_widgets()
+        self._label_vacio.configure(text=mensaje)
+        self._label_vacio.grid()
+
+    def _limpiar_widgets(self):
+        if self._toolbar is not None:
+            self._toolbar.destroy()
+            self._toolbar = None
+        if self._canvas is not None:
+            self._canvas.get_tk_widget().destroy()
+            self._canvas = None
 
 
 # ===========================================================================
@@ -127,6 +175,239 @@ def _tooltip(widget, texto):
 # ===========================================================================
 # Dialogo: agregar/editar un material
 # ===========================================================================
+class DialogoCurvaComparar(tk.Toplevel):
+    """Ventana modal para agregar o editar una curva de la pestaña
+    'Comparar mediciones'. El resultado queda en `self.resultado` (dict
+    con 'etiqueta', 'archivo', 'columna') si se confirma con "Guardar", o
+    en None si se cancela."""
+
+    def __init__(self, master, curva=None):
+        super().__init__(master)
+        self.resultado = None
+        self._columnas_disponibles = []
+        curva = curva or {'etiqueta': '', 'archivo': '', 'columna': ''}
+
+        self.title("Agregar curva" if not curva.get('archivo') else f"Editar: {curva['etiqueta']}")
+        self.resizable(False, False)
+        self.transient(master)
+
+        frm = ttk.Frame(self, padding=14)
+        frm.grid(sticky="nsew")
+        frm.columnconfigure(1, weight=1)
+
+        ttk.Label(frm, text="Archivo CSV:").grid(row=0, column=0, sticky="w", pady=4)
+        self.var_archivo = tk.StringVar(value=curva['archivo'])
+        ttk.Entry(frm, textvariable=self.var_archivo, width=40).grid(
+            row=0, column=1, sticky="ew", pady=4)
+        ttk.Button(frm, text="Examinar...", command=self._examinar_archivo).grid(
+            row=0, column=2, padx=(6, 0))
+
+        ttk.Label(frm, text="Columna a graficar:").grid(row=1, column=0, sticky="w", pady=4)
+        self.var_columna = tk.StringVar(value=curva['columna'])
+        self.combo_columna = ttk.Combobox(
+            frm, textvariable=self.var_columna, state="readonly", width=37)
+        self.combo_columna.grid(row=1, column=1, columnspan=2, sticky="ew", pady=4)
+        self.combo_columna.bind("<<ComboboxSelected>>", self._al_cambiar_columna)
+
+        ttk.Label(frm, text="Etiqueta:").grid(row=2, column=0, sticky="w", pady=4)
+        self.var_etiqueta = tk.StringVar(value=curva['etiqueta'])
+        ttk.Entry(frm, textvariable=self.var_etiqueta, width=40).grid(
+            row=2, column=1, columnspan=2, sticky="ew", pady=4)
+        _tooltip(self.combo_columna,
+                 "Un mismo CSV puede tener varias columnas (por ejemplo\n"
+                 "'teorico', 'Medido (simplificado, 3 patrones)', 'Medido\n"
+                 "(completo, 4 patrones)') -- elegi cual mostrar en el grafico.")
+
+        ttk.Separator(frm).grid(row=3, column=0, columnspan=3, sticky="ew", pady=10)
+
+        frm_botones = ttk.Frame(frm)
+        frm_botones.grid(row=4, column=0, columnspan=3, sticky="e")
+        ttk.Button(frm_botones, text="Cancelar", command=self.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(frm_botones, text="Guardar", command=self._guardar).pack(side="right")
+
+        if curva.get('archivo') and os.path.isfile(curva['archivo']):
+            self._cargar_columnas(curva['archivo'], seleccionar=curva.get('columna'))
+
+        self.bind("<Return>", lambda _e: self._guardar())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.update_idletasks()
+        self.grab_set()
+        self.focus_set()
+
+    def _examinar_archivo(self):
+        ruta = filedialog.askopenfilename(
+            title="Seleccionar CSV de resultados", parent=self,
+            filetypes=[("CSV", "*.csv"), ("Todos los archivos", "*.*")])
+        if ruta:
+            self.var_archivo.set(ruta)
+            self._cargar_columnas(ruta)
+
+    def _cargar_columnas(self, ruta, seleccionar=None):
+        """Lee el CSV (via ap.leer_csv_resultado) y puebla el combobox de
+        columnas disponibles. Si falla (no es un CSV valido de este
+        programa), avisa y deja el combobox vacio."""
+        try:
+            _, columnas = ap.leer_csv_resultado(ruta)
+        except Exception as exc:
+            messagebox.showwarning(
+                "No se pudo leer el CSV",
+                f"No se pudieron detectar columnas en este archivo:\n{exc}", parent=self)
+            self._columnas_disponibles = []
+            self.combo_columna.configure(values=[])
+            self.var_columna.set("")
+            return
+
+        self._columnas_disponibles = list(columnas.keys())
+        self.combo_columna.configure(values=self._columnas_disponibles)
+        if seleccionar in self._columnas_disponibles:
+            self.var_columna.set(seleccionar)
+        elif self._columnas_disponibles:
+            # Preferir 'Medido (completo, 4 patrones)' como default si
+            # esta presente (el metodo mas preciso); si no, la primera.
+            preferida = next(
+                (c for c in self._columnas_disponibles if 'completo' in c.lower()),
+                self._columnas_disponibles[0])
+            self.var_columna.set(preferida)
+        self._al_cambiar_columna()
+
+    def _al_cambiar_columna(self, _event=None):
+        if not self.var_etiqueta.get().strip() and self.var_archivo.get() and self.var_columna.get():
+            base = os.path.splitext(os.path.basename(self.var_archivo.get()))[0]
+            self.var_etiqueta.set(f"{base} \u2014 {self.var_columna.get()}")
+
+    def _guardar(self):
+        archivo = self.var_archivo.get().strip()
+        columna = self.var_columna.get().strip()
+        etiqueta = self.var_etiqueta.get().strip()
+        if not archivo:
+            messagebox.showwarning("Falta el archivo", "Elegi el archivo CSV.", parent=self)
+            return
+        if not columna:
+            messagebox.showwarning("Falta la columna", "Elegi que columna graficar.", parent=self)
+            return
+        if not etiqueta:
+            etiqueta = f"{os.path.splitext(os.path.basename(archivo))[0]} \u2014 {columna}"
+        self.resultado = {'etiqueta': etiqueta, 'archivo': archivo, 'columna': columna}
+        self.destroy()
+
+
+class DialogoModeloTeorico(tk.Toplevel):
+    """Ventana modal para agregar o editar una curva de la pestaña
+    '6. Modelos teoricos'. El resultado queda en `self.resultado` (dict
+    con 'etiqueta', 'modelo', 'temperatura', 'f_min_ghz', 'f_max_ghz',
+    'n_puntos') si se confirma con "Guardar", o en None si se cancela."""
+
+    def __init__(self, master, curva=None):
+        super().__init__(master)
+        self.resultado = None
+        curva = curva or {
+            'etiqueta': '', 'modelo': gf.SIN_MODELO, 'temperatura': 25.0,
+            'f_min_ghz': 0.5, 'f_max_ghz': 6.0, 'n_puntos': 200,
+        }
+
+        self.title("Agregar modelo teorico" if not curva.get('modelo') else
+                   f"Editar: {curva.get('etiqueta') or curva['modelo']}")
+        self.resizable(False, False)
+        self.transient(master)
+
+        frm = ttk.Frame(self, padding=14)
+        frm.grid(sticky="nsew")
+        frm.columnconfigure(1, weight=1)
+
+        ttk.Label(frm, text="Modelo teorico:").grid(row=0, column=0, sticky="w", pady=4)
+        self.var_modelo_etiqueta = tk.StringVar(
+            value=gf.etiqueta_de_modelo(curva.get('modelo')) if curva.get('modelo') else "")
+        self.combo_modelo = ttk.Combobox(
+            frm, textvariable=self.var_modelo_etiqueta, state="readonly",
+            values=[et for _, et in gf.listar_modelos_teoricos_calibracion()], width=33)
+        self.combo_modelo.grid(row=0, column=1, columnspan=2, sticky="ew", pady=4)
+        self.combo_modelo.bind("<<ComboboxSelected>>", self._al_cambiar_algo)
+
+        ttk.Label(frm, text="Temperatura (°C):").grid(row=1, column=0, sticky="w", pady=4)
+        self.var_temperatura = tk.DoubleVar(value=float(curva.get('temperatura', 25.0)))
+        spin_t = ttk.Spinbox(frm, from_=-20, to=150, increment=0.5,
+                              textvariable=self.var_temperatura, width=10)
+        spin_t.grid(row=1, column=1, sticky="w", pady=4)
+        _tooltip(spin_t, "El modelo teorico usa la temperatura tabulada mas cercana\n"
+                          "(pasos de 5°C, NPL MAT 23). No hace falta que coincida\n"
+                          "exactamente con un escalon de la tabla.")
+
+        frm_rango = ttk.Frame(frm)
+        frm_rango.grid(row=2, column=0, columnspan=3, sticky="w", pady=4)
+        ttk.Label(frm_rango, text="Frecuencia:").pack(side="left")
+        self.var_f_min = tk.DoubleVar(value=float(curva.get('f_min_ghz', 0.5)))
+        ttk.Label(frm_rango, text="  desde").pack(side="left")
+        ttk.Spinbox(frm_rango, from_=0.0001, to=1000, increment=0.1,
+                    textvariable=self.var_f_min, width=8).pack(side="left", padx=(4, 0))
+        self.var_f_max = tk.DoubleVar(value=float(curva.get('f_max_ghz', 6.0)))
+        ttk.Label(frm_rango, text="  hasta").pack(side="left")
+        ttk.Spinbox(frm_rango, from_=0.0001, to=1000, increment=0.1,
+                    textvariable=self.var_f_max, width=8).pack(side="left", padx=(4, 0))
+        ttk.Label(frm_rango, text="GHz").pack(side="left", padx=(4, 0))
+
+        ttk.Label(frm, text="Cantidad de puntos:").grid(row=3, column=0, sticky="w", pady=4)
+        self.var_n_puntos = tk.IntVar(value=int(curva.get('n_puntos', 200)))
+        ttk.Spinbox(frm, from_=2, to=5000, increment=10,
+                    textvariable=self.var_n_puntos, width=10).grid(
+            row=3, column=1, sticky="w", pady=4)
+
+        ttk.Label(frm, text="Etiqueta:").grid(row=4, column=0, sticky="w", pady=4)
+        self.var_etiqueta = tk.StringVar(value=curva.get('etiqueta', ''))
+        ttk.Entry(frm, textvariable=self.var_etiqueta, width=40).grid(
+            row=4, column=1, columnspan=2, sticky="ew", pady=4)
+
+        ttk.Separator(frm).grid(row=5, column=0, columnspan=3, sticky="ew", pady=10)
+
+        frm_botones = ttk.Frame(frm)
+        frm_botones.grid(row=6, column=0, columnspan=3, sticky="e")
+        ttk.Button(frm_botones, text="Cancelar", command=self.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(frm_botones, text="Guardar", command=self._guardar).pack(side="right")
+
+        self.bind("<Return>", lambda _e: self._guardar())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.update_idletasks()
+        self.grab_set()
+        self.focus_set()
+
+    def _al_cambiar_algo(self, _event=None):
+        if not self.var_etiqueta.get().strip() and self.var_modelo_etiqueta.get():
+            self.var_etiqueta.set(
+                f"{self.var_modelo_etiqueta.get()} a {self.var_temperatura.get():.1f}\u00b0C")
+
+    def _guardar(self):
+        modelo = gf.clave_de_etiqueta(self.var_modelo_etiqueta.get())
+        if not modelo:
+            messagebox.showwarning("Falta el modelo", "Elegi que modelo teorico graficar.", parent=self)
+            return
+        try:
+            f_min = float(self.var_f_min.get())
+            f_max = float(self.var_f_max.get())
+        except (tk.TclError, ValueError):
+            messagebox.showwarning("Rango invalido", "La frecuencia minima/maxima no es un numero valido.",
+                                    parent=self)
+            return
+        if f_min <= 0 or f_max <= 0 or f_min >= f_max:
+            messagebox.showwarning(
+                "Rango invalido",
+                "La frecuencia minima tiene que ser mayor que 0 y menor que la maxima.", parent=self)
+            return
+        try:
+            temperatura = float(self.var_temperatura.get())
+        except (tk.TclError, ValueError):
+            temperatura = 25.0
+        try:
+            n_puntos = max(int(self.var_n_puntos.get()), 2)
+        except (tk.TclError, ValueError):
+            n_puntos = 200
+
+        etiqueta = self.var_etiqueta.get().strip() or f"{self.var_modelo_etiqueta.get()} a {temperatura:.1f}\u00b0C"
+        self.resultado = {
+            'etiqueta': etiqueta, 'modelo': modelo, 'temperatura': temperatura,
+            'f_min_ghz': f_min, 'f_max_ghz': f_max, 'n_puntos': n_puntos,
+        }
+        self.destroy()
+
+
 class DialogoMaterial(tk.Toplevel):
     """Ventana modal para agregar o editar una fila de la lista de
     materiales. El resultado queda en `self.resultado` (dict) si se
@@ -185,9 +466,9 @@ class DialogoMaterial(tk.Toplevel):
         self.var_completo = tk.BooleanVar(value='completo' in metodos)
         frm_metodos = ttk.Frame(frm)
         frm_metodos.grid(row=4, column=1, columnspan=2, sticky="w")
-        ttk.Checkbutton(frm_metodos, text="Simplificado (corto + aire + agua)",
+        ttk.Checkbutton(frm_metodos, text="Simplificado (corto + aire + patron 3)",
                         variable=self.var_simplificado).pack(anchor="w")
-        ttk.Checkbutton(frm_metodos, text="Completo (+ patron adicional)",
+        ttk.Checkbutton(frm_metodos, text="Completo (+ patron 4)",
                         variable=self.var_completo).pack(anchor="w")
 
         ttk.Separator(frm).grid(row=5, column=0, columnspan=3, sticky="ew", pady=10)
@@ -265,17 +546,11 @@ class AppPermitividad(tk.Tk):
         self._cola_analisis = None
         self._analisis_corriendo = False
         self._evento_cancelar = None
-        self._figuras_disponibles = {}  # {etiqueta: ruta_png}, se llena tras correr
-        self._imagen_preview_tk = None  # referencia viva para que Tk no la libere
-        self._pil_figura_seleccionada = None  # imagen PIL original, para reescalar si se agranda la ventana
-        self._reescalado_preview_id = None  # id de after() pendiente (debounce)
-
+        self._ultima_carpeta_run = None  # carpeta especifica (fecha/hora) de la ultima corrida
+        self._graficos_disponibles = {}  # {etiqueta: funcion() -> Figure}, se llena tras correr
         self._rutas_preview_s11 = {}  # {etiqueta: ruta_completa}, ver _refrescar_lista_preview_s11
-        self._imagen_preview_s11_magfase_tk = None
-        self._imagen_preview_s11_smith_tk = None
-        self._pil_s11_magfase = None  # imagen PIL original (sin escalar), para poder
-        self._pil_s11_smith = None    # reescalar de nuevo si se agranda la ventana
-        self._reescalado_preview_s11_id = None  # id de after() pendiente (debounce)
+        self._curvas_comparar = []  # lista de dicts {etiqueta, archivo, columna}, pestaña 5
+        self._curvas_modelos = []  # lista de dicts {etiqueta, modelo, temperatura, f_min_ghz, f_max_ghz, n_puntos}, pestaña 6
 
         self._construir_estilos()
         self._construir_menu()
@@ -366,16 +641,22 @@ class AppPermitividad(tk.Tk):
         self.tab_materiales = ttk.Frame(self.notebook, padding=12)
         self.tab_preview_s11 = ttk.Frame(self.notebook, padding=12)
         self.tab_salida = ttk.Frame(self.notebook, padding=12)
+        self.tab_comparar = ttk.Frame(self.notebook, padding=12)
+        self.tab_modelos = ttk.Frame(self.notebook, padding=12)
 
         self.notebook.add(self.tab_calibracion, text="  1. Calibracion  ")
         self.notebook.add(self.tab_materiales, text="  2. Materiales  ")
         self.notebook.add(self.tab_preview_s11, text="  3. Vista previa S11  ")
         self.notebook.add(self.tab_salida, text="  4. Salida y ejecucion  ")
+        self.notebook.add(self.tab_comparar, text="  5. Comparar mediciones  ")
+        self.notebook.add(self.tab_modelos, text="  6. Modelos teoricos  ")
 
         self._construir_tab_calibracion()
         self._construir_tab_materiales()
         self._construir_tab_preview_s11()
         self._construir_tab_salida()
+        self._construir_tab_comparar()
+        self._construir_tab_modelos()
 
     def _al_cambiar_tab_notebook(self, _event=None):
         """Cada vez que se cambia de pestaña, si la nueva es 'Vista previa
@@ -395,8 +676,11 @@ class AppPermitividad(tk.Tk):
         ttk.Label(f, text="Patrones de calibracion", style="Titulo.TLabel").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
         ttk.Label(
-            f, text="Los 4 son necesarios: el metodo simplificado usa corto + aire + "
-                    "agua; el metodo completo usa los 4.",
+            f, text="El metodo simplificado usa corto + aire + patron 3; el metodo "
+                    "completo usa los 4. Patron 3 y patron 4 pueden ser cualquier par "
+                    "de liquidos con modelo teorico conocido (por defecto agua y "
+                    "alcohol isopropilico, pero no hace falta calibrar si o si con "
+                    "esos dos).",
             style="Ayuda.TLabel", wraplength=760, justify="left",
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
@@ -410,8 +694,9 @@ class AppPermitividad(tk.Tk):
                  "Opcional. Si elegis los archivos con 'Examinar...' (rutas\n"
                  "absolutas), podes dejar esto vacio.")
 
-        # Cortocircuito y aire: no tienen temperatura asociada (no son
-        # liquidos con modelo de Debye).
+        # Cortocircuito y aire: son siempre los mismos 2 (no son liquidos
+        # con modelo de Debye, y el algoritmo los necesita especificamente
+        # a ellos), asi que no tienen selector de modelo ni temperatura.
         self.vars_calibracion = {}
         fila = 3
         for clave, etiqueta in [('corto', "Cortocircuito:"), ('aire', "Aire:")]:
@@ -424,56 +709,58 @@ class AppPermitividad(tk.Tk):
                 row=fila, column=2, padx=(6, 0), pady=3)
             fila += 1
 
-        # Agua y alcohol isopropilico: SI tienen temperatura, cada uno con
-        # su propio campo al lado del archivo (la temperatura entra en el
-        # calculo de ambos metodos de conversion, en funciones.py).
-        ttk.Label(f, text="Agua:").grid(row=fila, column=0, sticky="w", pady=3)
-        var_agua = tk.StringVar()
-        self.vars_calibracion['agua'] = var_agua
-        ttk.Entry(f, textvariable=var_agua).grid(row=fila, column=1, sticky="ew", pady=3)
-        ttk.Button(f, text="Examinar...",
-                   command=lambda: self._examinar_archivo_calibracion('agua')).grid(
-            row=fila, column=2, padx=(6, 0), pady=3)
-        ttk.Label(f, text="  T (°C):").grid(row=fila, column=3, sticky="w")
-        self.var_temp_agua = tk.DoubleVar(value=25.0)
-        spin_agua = ttk.Spinbox(f, from_=-20, to=150, increment=0.5,
-                                 textvariable=self.var_temp_agua, width=8)
-        spin_agua.grid(row=fila, column=4, sticky="w", padx=(2, 0), pady=3)
-        _tooltip(spin_agua, "Temperatura real del agua destilada durante la calibracion.\n"
-                             "Afecta la precision de los dos metodos.")
-        fila += 1
+        # Patron 3 y patron 4: aca es donde entra la flexibilidad -- cada
+        # uno con su propio archivo, MODELO TEORICO elegible (combobox,
+        # misma lista que usa un material en la pestaña 2) y temperatura,
+        # en vez de estar fijos a agua/alcohol isopropilico como antes.
+        self.vars_modelo_calibracion = {}
+        self.vars_temp_calibracion = {}
+        modelos_calibracion = [et for _, et in gf.listar_modelos_teoricos_calibracion()]
+        tooltips_patron = {
+            'patron3': "Temperatura real de este liquido durante la calibracion.\n"
+                       "Afecta la precision de los dos metodos de conversion.",
+            'patron4': "Temperatura real de este liquido durante la calibracion.\n"
+                       "Solo lo usa el metodo completo, pero afecta el resultado de\n"
+                       "TODOS los materiales analizados con ese metodo (entra en el\n"
+                       "calculo de la conductancia Gn), no solo el de este patron.",
+        }
+        for clave, etiqueta in [('patron3', "Patron 3:"), ('patron4', "Patron 4:")]:
+            ttk.Label(f, text=etiqueta).grid(row=fila, column=0, sticky="w", pady=3)
+            var_archivo = tk.StringVar()
+            self.vars_calibracion[clave] = var_archivo
+            ttk.Entry(f, textvariable=var_archivo).grid(row=fila, column=1, sticky="ew", pady=3)
+            ttk.Button(f, text="Examinar...",
+                       command=lambda c=clave: self._examinar_archivo_calibracion(c)).grid(
+                row=fila, column=2, padx=(6, 0), pady=3)
 
-        ttk.Label(f, text="Patron adicional\n(alc. isopropilico):", justify="left").grid(
-            row=fila, column=0, sticky="w", pady=3)
-        var_isoprop = tk.StringVar()
-        self.vars_calibracion['alc_isoprop'] = var_isoprop
-        ttk.Entry(f, textvariable=var_isoprop).grid(row=fila, column=1, sticky="ew", pady=3)
-        ttk.Button(f, text="Examinar...",
-                   command=lambda: self._examinar_archivo_calibracion('alc_isoprop')).grid(
-            row=fila, column=2, padx=(6, 0), pady=3)
-        ttk.Label(f, text="  T (°C):").grid(row=fila, column=3, sticky="w")
-        self.var_temp_isoprop = tk.DoubleVar(value=25.0)
-        spin_isoprop = ttk.Spinbox(f, from_=-20, to=150, increment=0.5,
-                                    textvariable=self.var_temp_isoprop, width=8)
-        spin_isoprop.grid(row=fila, column=4, sticky="w", padx=(2, 0), pady=3)
-        _tooltip(spin_isoprop,
-                  "Temperatura real del alcohol isopropilico usado como 4to\n"
-                  "patron durante la calibracion. Solo la usa el metodo completo,\n"
-                  "pero afecta el resultado de TODOS los materiales analizados\n"
-                  "con ese metodo (entra en el calculo de la conductancia Gn),\n"
-                  "no solo el del alcohol isopropilico.")
-        fila += 1
+            ttk.Label(f, text="  Liquido:").grid(row=fila, column=3, sticky="w")
+            var_modelo = tk.StringVar()
+            self.vars_modelo_calibracion[clave] = var_modelo
+            combo = ttk.Combobox(f, textvariable=var_modelo, state="readonly",
+                                  values=modelos_calibracion, width=24)
+            combo.grid(row=fila, column=4, sticky="w", padx=(4, 0), pady=3)
 
-        ttk.Separator(f).grid(row=fila, column=0, columnspan=5, sticky="ew", pady=12)
+            ttk.Label(f, text="  T (°C):").grid(row=fila, column=5, sticky="w")
+            var_temp = tk.DoubleVar(value=25.0)
+            self.vars_temp_calibracion[clave] = var_temp
+            spin = ttk.Spinbox(f, from_=-20, to=150, increment=0.5,
+                                textvariable=var_temp, width=8)
+            spin.grid(row=fila, column=6, sticky="w", padx=(2, 0), pady=3)
+            _tooltip(spin, tooltips_patron[clave])
+            fila += 1
+
+        ttk.Separator(f).grid(row=fila, column=0, columnspan=7, sticky="ew", pady=12)
         fila += 1
 
         ttk.Label(
-            f, text="ⓘ El metodo completo asume que el 4to patron es alcohol "
-                    "isopropilico. Si se usa otro liquido ahi, agregalo tambien en "
-                    "la pestaña de Materiales (con su propio modelo y temperatura) "
-                    "para poder revisar su curva teorica.",
+            f, text="\u24d8 Patron 3 y patron 4 tienen que ser dos liquidos distintos "
+                    "entre si. Si alguno de los dos tambien te interesa analizar como "
+                    "material (para ver su curva completa), agregalo tambien en la "
+                    "pestaña de Materiales -- ahi conviene dejar tildado solo "
+                    "'Simplificado', porque comparar ese mismo liquido con el metodo "
+                    "completo da una comparacion circular sin sentido.",
             style="Ayuda.TLabel", wraplength=760, justify="left",
-        ).grid(row=fila, column=0, columnspan=5, sticky="w", pady=(2, 0))
+        ).grid(row=fila, column=0, columnspan=7, sticky="w", pady=(2, 0))
 
     def _examinar_carpeta_datos(self):
         ruta = filedialog.askdirectory(title="Carpeta base de datos", parent=self)
@@ -597,7 +884,11 @@ class AppPermitividad(tk.Tk):
             f, text="Previsualiza el S11 crudo (modulo/fase y diagrama de Smith) de "
                     "cualquier patron de calibracion o material ya cargado en las "
                     "pestañas anteriores, leyendo directamente el .s1p. No hace falta "
-                    "correr el analisis completo para ver esto.",
+                    "correr el analisis completo para ver esto. Los graficos son "
+                    "interactivos: rueda del mouse o el icono de la lupa para hacer "
+                    "zoom, arrastrar para mover la vista, la casita para volver al "
+                    "estado original, y la posicion del cursor se muestra abajo a la "
+                    "derecha de cada grafico.",
             style="Ayuda.TLabel", wraplength=920, justify="left",
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
@@ -619,38 +910,10 @@ class AppPermitividad(tk.Tk):
         frm_smith = ttk.LabelFrame(f, text="S11 medido (diagrama de Smith)")
         frm_smith.grid(row=3, column=1, sticky="nsew", padx=(6, 0))
 
-        # Sin esto, el frame se encoge/agranda para ajustarse al tamaño
-        # "natural" de lo que tiene adentro (la imagen ya escalada), en vez
-        # de ser al reves. Con propagate(False) el tamaño del panel lo
-        # decide unicamente el layout de la pestaña (columnas con weight=1
-        # -> usan todo el ancho disponible de la ventana), y la imagen se
-        # escala DESPUES para entrar ahi -- lo que evita que quede chica
-        # con un margen enorme de espacio vacio alrededor.
-        frm_magfase.pack_propagate(False)
-        frm_smith.pack_propagate(False)
-
-        if _HAY_PIL:
-            self.label_preview_s11_magfase = ttk.Label(frm_magfase, anchor="center")
-            self.label_preview_s11_magfase.pack(fill="both", expand=True, padx=6, pady=6)
-            self.label_preview_s11_smith = ttk.Label(frm_smith, anchor="center")
-            self.label_preview_s11_smith.pack(fill="both", expand=True, padx=6, pady=6)
-            # Si se redimensiona la ventana (y por lo tanto estos paneles),
-            # se reescala la imagen ya generada para aprovechar el nuevo
-            # tamaño (con un pequeño debounce para no recalcular en cada
-            # pixel mientras se arrastra el borde de la ventana).
-            frm_magfase.bind("<Configure>", self._programar_reescalado_preview_s11)
-            frm_smith.bind("<Configure>", self._programar_reescalado_preview_s11)
-        else:
-            texto_sin_pil = ("Instala Pillow (pip install pillow) para ver la\n"
-                              "vista previa aca.")
-            self.label_preview_s11_magfase = ttk.Label(
-                frm_magfase, anchor="center", justify="left",
-                wraplength=ANCHO_PREVIEW_S11, text=texto_sin_pil)
-            self.label_preview_s11_magfase.pack(fill="both", expand=True, padx=6, pady=6)
-            self.label_preview_s11_smith = ttk.Label(
-                frm_smith, anchor="center", justify="left",
-                wraplength=ANCHO_PREVIEW_S11, text=texto_sin_pil)
-            self.label_preview_s11_smith.pack(fill="both", expand=True, padx=6, pady=6)
+        self.visor_preview_s11_magfase = VisorFigura(frm_magfase)
+        self.visor_preview_s11_magfase.pack(fill="both", expand=True, padx=4, pady=4)
+        self.visor_preview_s11_smith = VisorFigura(frm_smith)
+        self.visor_preview_s11_smith.pack(fill="both", expand=True, padx=4, pady=4)
 
         self.var_preview_s11_status = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.var_preview_s11_status,
@@ -666,11 +929,19 @@ class AppPermitividad(tk.Tk):
         carpeta = self.var_carpeta_datos.get().strip()
         rutas = {}
 
-        for clave in ('corto', 'aire', 'agua', 'alc_isoprop'):
+        for clave in ('corto', 'aire', 'patron3', 'patron4'):
             archivo = self.vars_calibracion[clave].get().strip()
-            if archivo:
-                etiqueta = f"[Calibracion] {_ETIQUETAS_CALIBRACION_PREVIEW.get(clave, clave)}"
-                rutas[etiqueta] = os.path.join(carpeta, archivo)
+            if not archivo:
+                continue
+            if clave in _ETIQUETAS_CALIBRACION_PREVIEW:
+                nombre_liquido = _ETIQUETAS_CALIBRACION_PREVIEW[clave]
+            else:
+                nombre_generico = _NOMBRES_PATRON_CALIBRACION.get(clave, clave)
+                modelo_etiqueta = self.vars_modelo_calibracion[clave].get()
+                nombre_liquido = (f"{nombre_generico} ({modelo_etiqueta})"
+                                   if modelo_etiqueta else nombre_generico)
+            etiqueta = f"[Calibracion] {nombre_liquido}"
+            rutas[etiqueta] = os.path.join(carpeta, archivo)
 
         for m in self._materiales:
             archivo = (m.get('archivo') or "").strip()
@@ -694,24 +965,14 @@ class AppPermitividad(tk.Tk):
         self._mostrar_preview_s11_seleccionado()
 
     def _limpiar_preview_s11(self, mensaje=""):
-        if _HAY_PIL:
-            self.label_preview_s11_magfase.configure(image="", text=mensaje)
-            self.label_preview_s11_smith.configure(image="", text=mensaje)
-            self._imagen_preview_s11_magfase_tk = None
-            self._imagen_preview_s11_smith_tk = None
-            self._pil_s11_magfase = None
-            self._pil_s11_smith = None
+        self.visor_preview_s11_magfase.limpiar(mensaje)
+        self.visor_preview_s11_smith.limpiar(mensaje)
         self.var_preview_s11_status.set(mensaje)
 
     def _mostrar_preview_s11_seleccionado(self):
         etiqueta = self.var_preview_s11_seleccion.get()
         ruta = self._rutas_preview_s11.get(etiqueta)
         if not ruta:
-            return
-
-        if not _HAY_PIL:
-            self.var_preview_s11_status.set(
-                "Instala Pillow (pip install pillow) para ver la vista previa aca.")
             return
 
         if not os.path.isfile(ruta):
@@ -721,75 +982,20 @@ class AppPermitividad(tk.Tk):
         self.var_preview_s11_status.set(f"Generando vista previa de '{etiqueta}'...")
         self.update_idletasks()  # forzar el redibujado antes de la parte lenta
         try:
-            imagen_mf, imagen_sm, datos = _generar_preview_s11(
+            fig_mf, fig_sm, datos = _generar_preview_s11(
                 ruta, log_x=bool(self.var_log_x.get()))
         except Exception as exc:
             self._limpiar_preview_s11(
                 f"No se pudo generar la vista previa de '{etiqueta}':\n{exc}")
             return
 
-        # Se guardan las imagenes SIN escalar: _refrescar_imagenes_preview_s11
-        # las escala al tamaño real disponible en cada panel ahora mismo, y
-        # las vuelve a escalar solas si despues se agranda/achica la ventana.
-        self._pil_s11_magfase = imagen_mf
-        self._pil_s11_smith = imagen_sm
-        self._refrescar_imagenes_preview_s11()
+        self.visor_preview_s11_magfase.mostrar(fig_mf)
+        self.visor_preview_s11_smith.mostrar(fig_sm)
 
         frec = datos['Frec']
         self.var_preview_s11_status.set(
             f"{etiqueta}  ({os.path.basename(ruta)})  \u2014  {len(frec)} puntos, "
             f"{frec[0] / 1e9:.3f}-{frec[-1] / 1e9:.3f} GHz")
-
-    def _programar_reescalado_preview_s11(self, _event=None):
-        """Se llama en cada <Configure> de los paneles de preview (o sea,
-        cada vez que cambian de tamaño, tipicamente porque se redimensiono
-        la ventana). Reprograma el reescalado real con un pequeño retraso
-        (debounce): mientras se arrastra el borde de la ventana llegan
-        muchisimos eventos de Configure seguidos, y recalcular la imagen en
-        cada uno seria lento y tironearia la interfaz."""
-        if self._reescalado_preview_s11_id is not None:
-            try:
-                self.after_cancel(self._reescalado_preview_s11_id)
-            except (tk.TclError, ValueError):
-                pass
-        self._reescalado_preview_s11_id = self.after(150, self._refrescar_imagenes_preview_s11)
-
-    def _refrescar_imagenes_preview_s11(self):
-        """Vuelve a escalar (a partir de las imagenes PIL originales ya
-        cacheadas) y mostrar ambas vistas previas de S11, ajustandolas al
-        tamaño real disponible AHORA MISMO en cada panel. No vuelve a leer
-        el .s1p ni a generar los graficos de nuevo -- solo re-escala."""
-        self._reescalado_preview_s11_id = None
-        if self._pil_s11_magfase is not None:
-            self._imagen_preview_s11_magfase_tk = self._escalar_para_caja(
-                self._pil_s11_magfase, self.label_preview_s11_magfase)
-            self.label_preview_s11_magfase.configure(
-                image=self._imagen_preview_s11_magfase_tk, text="")
-        if self._pil_s11_smith is not None:
-            self._imagen_preview_s11_smith_tk = self._escalar_para_caja(
-                self._pil_s11_smith, self.label_preview_s11_smith)
-            self.label_preview_s11_smith.configure(
-                image=self._imagen_preview_s11_smith_tk, text="")
-
-    @staticmethod
-    def _escalar_para_caja(imagen_pil, widget_destino, margen=14):
-        """PIL.Image -> ImageTk.PhotoImage, escalado (preservando la
-        relacion de aspecto) para entrar en el espacio REAL actualmente
-        disponible de `widget_destino` (con `pack_propagate(False)` en su
-        contenedor, ese tamaño lo fija el layout de la pestaña, no la
-        imagen -- ver _construir_tab_preview_s11). Si el widget todavia no
-        tiene un tamaño asignado (arranque en frio, antes de que la
-        ventana termine de dibujarse), usa ANCHO_PREVIEW_S11 de resguardo."""
-        ancho_disp = widget_destino.winfo_width() - margen
-        alto_disp = widget_destino.winfo_height() - margen
-        if ancho_disp < 80 or alto_disp < 80:
-            ancho_disp = alto_disp = ANCHO_PREVIEW_S11
-
-        ancho_img, alto_img = imagen_pil.size
-        escala = min(ancho_disp / max(ancho_img, 1), alto_disp / max(alto_img, 1))
-        escala = max(escala, 0.05)
-        nuevo_tamano = (max(int(ancho_img * escala), 1), max(int(alto_img * escala), 1))
-        return ImageTk.PhotoImage(imagen_pil.resize(nuevo_tamano, Image.LANCZOS))
 
     # -----------------------------------------------------------------
     # Pestaña 4: salida y ejecucion
@@ -887,11 +1093,6 @@ class AppPermitividad(tk.Tk):
         frm_preview.grid(row=0, column=1, sticky="nsew")
         frm_preview.columnconfigure(0, weight=1)
         frm_preview.rowconfigure(1, weight=1)
-        # Igual que en la pestaña "Vista previa S11": sin esto, el panel se
-        # encoge/agranda para ajustarse al tamaño de la imagen ya escalada
-        # en vez de al reves, y la imagen termina quedando chica con un
-        # margen enorme de espacio vacio alrededor.
-        frm_preview.grid_propagate(False)
 
         self.var_figura_seleccionada = tk.StringVar()
         self.combo_figuras = ttk.Combobox(frm_preview, textvariable=self.var_figura_seleccionada,
@@ -899,25 +1100,337 @@ class AppPermitividad(tk.Tk):
         self.combo_figuras.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
         self.combo_figuras.bind("<<ComboboxSelected>>", lambda _e: self._mostrar_preview_seleccionada())
 
-        if _HAY_PIL:
-            self.label_preview = ttk.Label(frm_preview, anchor="center")
-            self.label_preview.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
-            # El S11 (modulo/fase y Smith) de calibracion y materiales se ve
-            # en la pestaña "3. Vista previa S11" -- ahi ademas se puede ver
-            # antes de correr el analisis. Esta lista se reescala sola si
-            # se redimensiona la ventana (ver _programar_reescalado_preview).
-            frm_preview.bind("<Configure>", self._programar_reescalado_preview)
-        else:
-            self.label_preview = ttk.Label(
-                frm_preview, anchor="center", justify="left", wraplength=ANCHO_PREVIEW,
-                text="Instala Pillow (pip install pillow) para ver la vista previa de las "
-                     "figuras aca. Mientras tanto, usa 'Abrir carpeta de salida'.")
-            self.label_preview.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        # El S11 (modulo/fase y Smith) de calibracion y materiales se ve en
+        # la pestaña "3. Vista previa S11" -- ahi ademas se puede ver antes
+        # de correr el analisis. Esta lista es solo lo que es resultado del
+        # ANALISIS en si (permitividad medida vs. teorica).
+        self.visor_preview = VisorFigura(frm_preview)
+        self.visor_preview.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
 
     def _examinar_carpeta_salida(self):
         ruta = filedialog.askdirectory(title="Carpeta de salida", parent=self)
         if ruta:
             self.var_carpeta_salida.set(ruta)
+
+    # -----------------------------------------------------------------
+    # Pestaña 5: comparar mediciones desde CSVs ya generados (p.ej. de
+    # distintos dias -- ver la estructura de carpetas con fecha/hora de
+    # ejecutar_analisis). No hace falta correr el analisis para usar esta
+    # pestaña: solo elegir CSVs de corridas anteriores.
+    # -----------------------------------------------------------------
+    def _construir_tab_comparar(self):
+        f = self.tab_comparar
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(2, weight=1)
+
+        ttk.Label(f, text="Comparar mediciones", style="Titulo.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(
+            f, text="Superponer en un mismo grafico varias curvas ya calculadas -- por "
+                    "ejemplo, la misma muestra medida en distintos dias, o distintos "
+                    "cortes de un mismo material. Cada curva se toma de un archivo "
+                    "'tabla_<material>.csv' ya generado por este programa (los CSVs de "
+                    "corridas anteriores siguen disponibles en sus carpetas por fecha/hora, "
+                    "dentro de la carpeta de salida).",
+            style="Ayuda.TLabel", wraplength=1000, justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(0, 10))
+
+        paned = ttk.PanedWindow(f, orient="horizontal")
+        paned.grid(row=2, column=0, sticky="nsew")
+
+        # --- Panel izquierdo: tabla de curvas cargadas ---
+        frm_izq = ttk.Frame(paned)
+        paned.add(frm_izq, weight=1)
+        frm_izq.columnconfigure(0, weight=1)
+        frm_izq.rowconfigure(0, weight=1)
+
+        columnas = ("etiqueta", "archivo", "columna")
+        self.tabla_comparar = ttk.Treeview(
+            frm_izq, columns=columnas, show="headings", selectmode="browse", height=14)
+        titulos = {"etiqueta": "Etiqueta", "archivo": "Archivo", "columna": "Columna"}
+        anchos = {"etiqueta": 160, "archivo": 220, "columna": 170}
+        for c in columnas:
+            self.tabla_comparar.heading(c, text=titulos[c])
+            self.tabla_comparar.column(c, width=anchos[c], anchor="w")
+        self.tabla_comparar.grid(row=0, column=0, sticky="nsew")
+        self.tabla_comparar.bind("<Double-1>", lambda _e: self._editar_curva_comparar())
+        self.tabla_comparar.bind("<Delete>", lambda _e: self._quitar_curva_comparar())
+
+        scroll = ttk.Scrollbar(frm_izq, orient="vertical", command=self.tabla_comparar.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.tabla_comparar.configure(yscrollcommand=scroll.set)
+
+        frm_botones = ttk.Frame(frm_izq)
+        frm_botones.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(frm_botones, text="Agregar...", command=self._agregar_curva_comparar).pack(side="left")
+        ttk.Button(frm_botones, text="Editar...", command=self._editar_curva_comparar).pack(
+            side="left", padx=6)
+        ttk.Button(frm_botones, text="Quitar", command=self._quitar_curva_comparar).pack(side="left")
+        ttk.Separator(frm_botones, orient="vertical").pack(side="left", fill="y", padx=10)
+        ttk.Button(frm_botones, text="Subir",
+                   command=lambda: self._mover_curva_comparar(-1)).pack(side="left")
+        ttk.Button(frm_botones, text="Bajar",
+                   command=lambda: self._mover_curva_comparar(1)).pack(side="left", padx=6)
+
+        self.var_log_x_comparar = tk.BooleanVar(value=True)
+        ttk.Checkbutton(frm_izq, text="Escala logaritmica en frecuencia",
+                         variable=self.var_log_x_comparar,
+                         command=self._graficar_comparacion_curvas).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        # --- Panel derecho: grafico interactivo ---
+        frm_der = ttk.LabelFrame(paned, text="er' / er'' superpuestos")
+        paned.add(frm_der, weight=2)
+        self.visor_comparar = VisorFigura(frm_der)
+        self.visor_comparar.pack(fill="both", expand=True, padx=4, pady=4)
+        self.visor_comparar.limpiar(
+            "Agrega una o mas curvas con 'Agregar...' para verlas superpuestas aca.")
+
+    def _refrescar_tabla_comparar(self):
+        self.tabla_comparar.delete(*self.tabla_comparar.get_children())
+        for i, c in enumerate(self._curvas_comparar):
+            self.tabla_comparar.insert(
+                "", "end", iid=str(i),
+                values=(c['etiqueta'], os.path.basename(c['archivo']), c['columna']))
+
+    def _indice_curva_comparar_seleccionada(self):
+        sel = self.tabla_comparar.selection()
+        return int(sel[0]) if sel else None
+
+    def _agregar_curva_comparar(self):
+        dialogo = DialogoCurvaComparar(self)
+        self.wait_window(dialogo)
+        if dialogo.resultado is not None:
+            self._curvas_comparar.append(dialogo.resultado)
+            self._refrescar_tabla_comparar()
+            self._graficar_comparacion_curvas()
+
+    def _editar_curva_comparar(self):
+        idx = self._indice_curva_comparar_seleccionada()
+        if idx is None:
+            messagebox.showinfo("Editar curva", "Elegi primero una fila de la tabla.", parent=self)
+            return
+        dialogo = DialogoCurvaComparar(self, curva=dict(self._curvas_comparar[idx]))
+        self.wait_window(dialogo)
+        if dialogo.resultado is not None:
+            self._curvas_comparar[idx] = dialogo.resultado
+            self._refrescar_tabla_comparar()
+            self._graficar_comparacion_curvas()
+
+    def _quitar_curva_comparar(self):
+        idx = self._indice_curva_comparar_seleccionada()
+        if idx is None:
+            return
+        del self._curvas_comparar[idx]
+        self._refrescar_tabla_comparar()
+        self._graficar_comparacion_curvas()
+
+    def _mover_curva_comparar(self, delta):
+        idx = self._indice_curva_comparar_seleccionada()
+        if idx is None:
+            return
+        nuevo = idx + delta
+        if not (0 <= nuevo < len(self._curvas_comparar)):
+            return
+        self._curvas_comparar[idx], self._curvas_comparar[nuevo] = \
+            self._curvas_comparar[nuevo], self._curvas_comparar[idx]
+        self._refrescar_tabla_comparar()
+        self.tabla_comparar.selection_set(str(nuevo))
+
+    def _graficar_comparacion_curvas(self):
+        """Relee (siempre desde cero, por si el CSV cambio) cada curva
+        cargada y redibuja el grafico superpuesto. Se llama sola despues
+        de agregar/editar/quitar/mover una curva o cambiar la escala."""
+        if not self._curvas_comparar:
+            self.visor_comparar.limpiar(
+                "Agrega una o mas curvas con 'Agregar...' para verlas superpuestas aca.")
+            return
+
+        series = {}
+        errores = []
+        for c in self._curvas_comparar:
+            try:
+                frecs, columnas = ap.leer_csv_resultado(c['archivo'])
+                series[c['etiqueta']] = (frecs, columnas[c['columna']])
+            except Exception as exc:
+                errores.append(f"'{c['etiqueta']}': {exc}")
+
+        if not series:
+            self.visor_comparar.limpiar(
+                "No se pudo leer ninguna de las curvas cargadas:\n" + "\n".join(errores))
+            return
+
+        try:
+            fig = ap.graficar_series_multiples(
+                series, log_x=bool(self.var_log_x_comparar.get()))
+        except Exception as exc:
+            self.visor_comparar.limpiar(f"No se pudo generar el grafico:\n{exc}")
+            return
+
+        self.visor_comparar.mostrar(fig)
+        if errores:
+            self._status("Algunas curvas no se pudieron leer: " + "; ".join(errores))
+
+    # -----------------------------------------------------------------
+    # Pestaña 6: graficar modelos teoricos directamente (sin datos
+    # medidos) -- para explorar como se ve un modelo de Patrones.py en
+    # un rango de frecuencias, temperatura y cantidad de puntos elegidos,
+    # o comparar el mismo modelo a distintas temperaturas entre si.
+    # -----------------------------------------------------------------
+    def _construir_tab_modelos(self):
+        f = self.tab_modelos
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(2, weight=1)
+
+        ttk.Label(f, text="Modelos teoricos", style="Titulo.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(
+            f, text="Grafica cualquier modelo teorico de Patrones.py directamente, sin "
+                    "necesidad de ningun dato medido -- eligiendo el rango de frecuencias, "
+                    "la temperatura y la cantidad de puntos. Sirve para explorar como se ve "
+                    "un modelo, o para comparar el mismo liquido a distintas temperaturas "
+                    "(o distintos liquidos entre si) superpuestos en un mismo grafico.",
+            style="Ayuda.TLabel", wraplength=1000, justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(0, 10))
+
+        paned = ttk.PanedWindow(f, orient="horizontal")
+        paned.grid(row=2, column=0, sticky="nsew")
+
+        # --- Panel izquierdo: tabla de curvas cargadas ---
+        frm_izq = ttk.Frame(paned)
+        paned.add(frm_izq, weight=1)
+        frm_izq.columnconfigure(0, weight=1)
+        frm_izq.rowconfigure(0, weight=1)
+
+        columnas = ("etiqueta", "modelo", "temperatura", "rango", "puntos")
+        self.tabla_modelos = ttk.Treeview(
+            frm_izq, columns=columnas, show="headings", selectmode="browse", height=14)
+        titulos = {"etiqueta": "Etiqueta", "modelo": "Modelo", "temperatura": "T (°C)",
+                   "rango": "Rango (GHz)", "puntos": "Puntos"}
+        anchos = {"etiqueta": 140, "modelo": 150, "temperatura": 60, "rango": 110, "puntos": 60}
+        for c in columnas:
+            self.tabla_modelos.heading(c, text=titulos[c])
+            self.tabla_modelos.column(c, width=anchos[c], anchor="w")
+        self.tabla_modelos.grid(row=0, column=0, sticky="nsew")
+        self.tabla_modelos.bind("<Double-1>", lambda _e: self._editar_modelo())
+        self.tabla_modelos.bind("<Delete>", lambda _e: self._quitar_modelo())
+
+        scroll = ttk.Scrollbar(frm_izq, orient="vertical", command=self.tabla_modelos.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.tabla_modelos.configure(yscrollcommand=scroll.set)
+
+        frm_botones = ttk.Frame(frm_izq)
+        frm_botones.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(frm_botones, text="Agregar...", command=self._agregar_modelo).pack(side="left")
+        ttk.Button(frm_botones, text="Editar...", command=self._editar_modelo).pack(side="left", padx=6)
+        ttk.Button(frm_botones, text="Quitar", command=self._quitar_modelo).pack(side="left")
+        ttk.Separator(frm_botones, orient="vertical").pack(side="left", fill="y", padx=10)
+        ttk.Button(frm_botones, text="Subir", command=lambda: self._mover_modelo(-1)).pack(side="left")
+        ttk.Button(frm_botones, text="Bajar", command=lambda: self._mover_modelo(1)).pack(
+            side="left", padx=6)
+
+        self.var_log_x_modelos = tk.BooleanVar(value=True)
+        ttk.Checkbutton(frm_izq, text="Escala logaritmica en frecuencia",
+                         variable=self.var_log_x_modelos,
+                         command=self._graficar_modelos).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        # --- Panel derecho: grafico interactivo ---
+        frm_der = ttk.LabelFrame(paned, text="er' / er'' superpuestos")
+        paned.add(frm_der, weight=2)
+        self.visor_modelos = VisorFigura(frm_der)
+        self.visor_modelos.pack(fill="both", expand=True, padx=4, pady=4)
+        self.visor_modelos.limpiar(
+            "Agrega un modelo teorico con 'Agregar...' para verlo graficado aca.")
+
+    def _refrescar_tabla_modelos(self):
+        self.tabla_modelos.delete(*self.tabla_modelos.get_children())
+        for i, c in enumerate(self._curvas_modelos):
+            self.tabla_modelos.insert(
+                "", "end", iid=str(i),
+                values=(c['etiqueta'], gf.etiqueta_de_modelo(c['modelo']), f"{c['temperatura']:.1f}",
+                        f"{c['f_min_ghz']:g}\u2013{c['f_max_ghz']:g}", c['n_puntos']))
+
+    def _indice_modelo_seleccionado(self):
+        sel = self.tabla_modelos.selection()
+        return int(sel[0]) if sel else None
+
+    def _agregar_modelo(self):
+        dialogo = DialogoModeloTeorico(self)
+        self.wait_window(dialogo)
+        if dialogo.resultado is not None:
+            self._curvas_modelos.append(dialogo.resultado)
+            self._refrescar_tabla_modelos()
+            self._graficar_modelos()
+
+    def _editar_modelo(self):
+        idx = self._indice_modelo_seleccionado()
+        if idx is None:
+            messagebox.showinfo("Editar modelo", "Elegi primero una fila de la tabla.", parent=self)
+            return
+        dialogo = DialogoModeloTeorico(self, curva=dict(self._curvas_modelos[idx]))
+        self.wait_window(dialogo)
+        if dialogo.resultado is not None:
+            self._curvas_modelos[idx] = dialogo.resultado
+            self._refrescar_tabla_modelos()
+            self._graficar_modelos()
+
+    def _quitar_modelo(self):
+        idx = self._indice_modelo_seleccionado()
+        if idx is None:
+            return
+        del self._curvas_modelos[idx]
+        self._refrescar_tabla_modelos()
+        self._graficar_modelos()
+
+    def _mover_modelo(self, delta):
+        idx = self._indice_modelo_seleccionado()
+        if idx is None:
+            return
+        nuevo = idx + delta
+        if not (0 <= nuevo < len(self._curvas_modelos)):
+            return
+        self._curvas_modelos[idx], self._curvas_modelos[nuevo] = \
+            self._curvas_modelos[nuevo], self._curvas_modelos[idx]
+        self._refrescar_tabla_modelos()
+        self.tabla_modelos.selection_set(str(nuevo))
+
+    def _graficar_modelos(self):
+        """Recalcula (siempre desde cero) cada curva cargada y redibuja
+        el grafico superpuesto. Se llama sola despues de agregar/editar/
+        quitar/mover una curva o cambiar la escala."""
+        if not self._curvas_modelos:
+            self.visor_modelos.limpiar(
+                "Agrega un modelo teorico con 'Agregar...' para verlo graficado aca.")
+            return
+
+        log_x = bool(self.var_log_x_modelos.get())
+        series = {}
+        errores = []
+        for c in self._curvas_modelos:
+            try:
+                frecs = ap.generar_grilla_frecuencias(
+                    c['f_min_ghz'], c['f_max_ghz'], c['n_puntos'], log_x=log_x)
+                er = ap.PATRONES_TEORICOS[c['modelo']](frecs, T=c['temperatura'])
+                series[c['etiqueta']] = (frecs, er)
+            except Exception as exc:
+                errores.append(f"'{c['etiqueta']}': {exc}")
+
+        if not series:
+            self.visor_modelos.limpiar(
+                "No se pudo calcular ninguna de las curvas cargadas:\n" + "\n".join(errores))
+            return
+
+        try:
+            fig = ap.graficar_series_multiples(
+                series, titulo="Modelos te\u00f3ricos", log_x=log_x)
+        except Exception as exc:
+            self.visor_modelos.limpiar(f"No se pudo generar el grafico:\n{exc}")
+            return
+
+        self.visor_modelos.mostrar(fig)
+        if errores:
+            self._status("Algunos modelos no se pudieron calcular: " + "; ".join(errores))
 
     # -----------------------------------------------------------------
     # Status bar
@@ -941,14 +1454,20 @@ class AppPermitividad(tk.Tk):
             'archivos_calibracion': {
                 clave: var.get().strip() for clave, var in self.vars_calibracion.items()
             },
-            'temperatura_agua_c': float(self._obtener_double(self.var_temp_agua, 25.0)),
-            'temperatura_isoprop_cal_c': float(self._obtener_double(self.var_temp_isoprop, 25.0)),
+            'patron3_modelo': gf.clave_de_etiqueta(self.vars_modelo_calibracion['patron3'].get()),
+            'patron3_temperatura_c': float(self._obtener_double(
+                self.vars_temp_calibracion['patron3'], 25.0)),
+            'patron4_modelo': gf.clave_de_etiqueta(self.vars_modelo_calibracion['patron4'].get()),
+            'patron4_temperatura_c': float(self._obtener_double(
+                self.vars_temp_calibracion['patron4'], 25.0)),
             'materiales': copy.deepcopy(self._materiales),
             'carpeta_salida': self.var_carpeta_salida.get().strip(),
             'nombre_informe_pdf': self.var_nombre_pdf.get().strip() or "informe_permitividad.pdf",
             'f_min_ghz': float(self._obtener_double(self.var_f_min, 0.5)),
             'f_max_ghz': float(self._obtener_double(self.var_f_max, 6.0)),
             'escala_log_frecuencia': bool(self.var_log_x.get()),
+            'curvas_comparacion': copy.deepcopy(self._curvas_comparar),
+            'curvas_modelos': copy.deepcopy(self._curvas_modelos),
         }
 
     @staticmethod
@@ -963,8 +1482,14 @@ class AppPermitividad(tk.Tk):
         archivos = config.get('archivos_calibracion', {}) or {}
         for clave, var in self.vars_calibracion.items():
             var.set(archivos.get(clave, "") or "")
-        self.var_temp_agua.set(float(config.get('temperatura_agua_c', 25.0) or 25.0))
-        self.var_temp_isoprop.set(float(config.get('temperatura_isoprop_cal_c', 25.0) or 25.0))
+        self.vars_modelo_calibracion['patron3'].set(
+            gf.etiqueta_de_modelo(config.get('patron3_modelo') or 'agua'))
+        self.vars_temp_calibracion['patron3'].set(
+            float(config.get('patron3_temperatura_c', 25.0) or 25.0))
+        self.vars_modelo_calibracion['patron4'].set(
+            gf.etiqueta_de_modelo(config.get('patron4_modelo') or 'alcohol_isopropilico'))
+        self.vars_temp_calibracion['patron4'].set(
+            float(config.get('patron4_temperatura_c', 25.0) or 25.0))
         self._materiales = copy.deepcopy(config.get('materiales', []) or [])
         self._refrescar_tabla_materiales()
         self.var_carpeta_salida.set(config.get('carpeta_salida', "") or "")
@@ -972,6 +1497,12 @@ class AppPermitividad(tk.Tk):
         self.var_f_min.set(float(config.get('f_min_ghz', 0.5) or 0.5))
         self.var_f_max.set(float(config.get('f_max_ghz', 6.0) or 6.0))
         self.var_log_x.set(bool(config.get('escala_log_frecuencia', True)))
+        self._curvas_comparar = copy.deepcopy(config.get('curvas_comparacion', []) or [])
+        self._refrescar_tabla_comparar()
+        self._graficar_comparacion_curvas()
+        self._curvas_modelos = copy.deepcopy(config.get('curvas_modelos', []) or [])
+        self._refrescar_tabla_modelos()
+        self._graficar_modelos()
 
     def _hay_cambios_sin_guardar(self):
         if self._snapshot_guardado is None:
@@ -1142,9 +1673,10 @@ class AppPermitividad(tk.Tk):
         self.texto_consola.configure(state="disabled")
         self.barra_progreso.configure(value=0, maximum=max(len(config['materiales']) + 2, 1))
         self.var_paso_actual.set("")
-        self._figuras_disponibles = {}
+        self._graficos_disponibles = {}
         self.combo_figuras.configure(values=[])
         self.var_figura_seleccionada.set("")
+        self.visor_preview.limpiar("Corriendo el analisis...")
 
         self._analisis_corriendo = True
         self.boton_ejecutar.configure(state="disabled")
@@ -1233,16 +1765,28 @@ class AppPermitividad(tk.Tk):
             self.after(100, self._pollear_cola_analisis)
 
     def _figuras_desde_resultado(self, resultado):
-        """Arma el dict {etiqueta: ruta_png} de figuras disponibles para
-        la vista previa a partir de un resultado de `ejecutar_analisis`
-        (usado tanto si termino OK como si se cancelo a mitad de camino,
-        para no duplicar esta logica en los dos lugares)."""
-        figuras = {}
+        """Arma el dict {etiqueta: funcion() -> Figure} de graficos
+        disponibles para la vista previa interactiva, a partir de un
+        resultado de `ejecutar_analisis` (usado tanto si termino OK como
+        si se cancelo a mitad de camino, para no duplicar esta logica).
+        Cada valor es una funcion SIN argumentos que reconstruye la
+        Figure recien cuando se selecciona esa entrada en el combobox
+        (ver _mostrar_preview_seleccionada), a partir de los datos crudos
+        que ya vienen en el resultado ('datos_grafico'/'datos_grafico_Gn'
+        -- ver `procesar_material` y `ejecutar_analisis` en
+        analisis_permitividad.py) -- no hace falta releer ningun .png."""
+        graficos = {}
         chequeo = resultado.get('chequeo_calibracion') or {}
-        if chequeo.get('figura'):
-            figuras["Chequeo de calibracion (agua)"] = chequeo['figura']
-        if chequeo.get('figura_Gn'):
-            figuras["Diagnostico: Gn(f) (calibracion)"] = chequeo['figura_Gn']
+        if chequeo.get('datos_grafico'):
+            etiqueta_p3 = chequeo.get('etiqueta_patron3') or "patron 3"
+            d = chequeo['datos_grafico']
+            graficos[f"Chequeo de calibracion ({etiqueta_p3})"] = (
+                lambda d=d: ap.graficar_comparacion(
+                    d['frecs'], d['medido'], d['teorico'], d['titulo'], log_x=d['log_x']))
+        if chequeo.get('datos_grafico_Gn'):
+            dg = chequeo['datos_grafico_Gn']
+            graficos["Diagnostico: Gn(f) (calibracion)"] = (
+                lambda dg=dg: ap.graficar_Gn(dg['frecs'], dg['Gn'], log_x=dg['log_x']))
         for r in resultado.get('resultados_materiales', []):
             # Ojo: antes tambien se listaban aca "<material> - S11
             # (modulo/fase)" y "<material> - S11 (Smith)". Se sacaron
@@ -1251,17 +1795,23 @@ class AppPermitividad(tk.Tk):
             # leyendo el .s1p directo). Esta lista queda solo con lo que es
             # resultado del ANALISIS en si: la permitividad medida vs.
             # teorica de cada material, y el chequeo de calibracion.
-            if r.get('figura'):
-                figuras[r['nombre']] = r['figura']
-        return figuras
+            if r.get('datos_grafico'):
+                d = r['datos_grafico']
+                graficos[r['nombre']] = (
+                    lambda d=d: ap.graficar_comparacion(
+                        d['frecs'], d['medido'], d['teorico'], d['titulo'], log_x=d['log_x']))
+        return graficos
 
-    def _mostrar_figuras_disponibles(self, figuras):
-        self._figuras_disponibles = figuras
-        self.combo_figuras.configure(values=list(figuras.keys()))
-        if figuras:
-            primera = next(iter(figuras))
+    def _mostrar_figuras_disponibles(self, graficos):
+        self._graficos_disponibles = graficos
+        self.combo_figuras.configure(values=list(graficos.keys()))
+        if graficos:
+            primera = next(iter(graficos))
             self.var_figura_seleccionada.set(primera)
             self._mostrar_preview_seleccionada()
+        else:
+            self.var_figura_seleccionada.set("")
+            self.visor_preview.limpiar("Todavia no hay resultados para mostrar.")
 
     def _al_terminar_analisis_ok(self, resultado):
         self._analisis_corriendo = False
@@ -1270,6 +1820,7 @@ class AppPermitividad(tk.Tk):
         self._status("Analisis terminado con exito.")
         self.var_paso_actual.set("Listo.")
         self._agregar_linea_consola("\n=== Analisis terminado con exito ===")
+        self._ultima_carpeta_run = resultado.get('carpeta_salida_run')
 
         self._mostrar_figuras_disponibles(self._figuras_desde_resultado(resultado))
 
@@ -1284,6 +1835,7 @@ class AppPermitividad(tk.Tk):
         self._status("Analisis cancelado por el usuario.")
         self.var_paso_actual.set("Cancelado.")
         self._agregar_linea_consola("\n=== Analisis cancelado por el usuario ===")
+        self._ultima_carpeta_run = resultado.get('carpeta_salida_run')
 
         # Se dejan disponibles las figuras que se llegaron a generar antes
         # de cancelar (chequeo de calibracion + los materiales que si se
@@ -1308,51 +1860,31 @@ class AppPermitividad(tk.Tk):
         messagebox.showerror("Error durante el analisis", mensaje, parent=self)
 
     # -----------------------------------------------------------------
-    # Vista previa de figuras (requiere Pillow)
+    # Vista previa de resultados (interactiva, ver VisorFigura)
     # -----------------------------------------------------------------
     def _mostrar_preview_seleccionada(self):
-        if not _HAY_PIL:
-            return
         etiqueta = self.var_figura_seleccionada.get()
-        ruta = self._figuras_disponibles.get(etiqueta)
-        if not ruta or not os.path.isfile(ruta):
+        constructor = self._graficos_disponibles.get(etiqueta)
+        if constructor is None:
             return
         try:
-            imagen = Image.open(ruta)
-            imagen.load()
+            fig = constructor()
         except Exception as exc:
-            self.label_preview.configure(text=f"No se pudo mostrar la vista previa:\n{exc}", image="")
+            self.visor_preview.limpiar(f"No se pudo mostrar la vista previa:\n{exc}")
             return
-        # Se guarda sin escalar: _refrescar_imagen_preview_seleccionada la
-        # escala al tamaño real disponible ahora mismo, y se vuelve a
-        # llamar sola si despues se redimensiona la ventana.
-        self._pil_figura_seleccionada = imagen
-        self._refrescar_imagen_preview_seleccionada()
-
-    def _programar_reescalado_preview(self, _event=None):
-        """Debounce del <Configure> del panel de vista previa (pestaña
-        Salida y ejecucion) -- mismo motivo que
-        _programar_reescalado_preview_s11: no recalcular en cada pixel
-        mientras se arrastra el borde de la ventana."""
-        if self._reescalado_preview_id is not None:
-            try:
-                self.after_cancel(self._reescalado_preview_id)
-            except (tk.TclError, ValueError):
-                pass
-        self._reescalado_preview_id = self.after(150, self._refrescar_imagen_preview_seleccionada)
-
-    def _refrescar_imagen_preview_seleccionada(self):
-        self._reescalado_preview_id = None
-        if self._pil_figura_seleccionada is None:
-            return
-        self._imagen_preview_tk = self._escalar_para_caja(
-            self._pil_figura_seleccionada, self.label_preview, margen=10)
-        self.label_preview.configure(image=self._imagen_preview_tk, text="")
+        self.visor_preview.mostrar(fig)
 
     # -----------------------------------------------------------------
     # Abrir carpeta de salida
     # -----------------------------------------------------------------
     def _abrir_carpeta_salida(self):
+        # Preferir la carpeta especifica de la ULTIMA corrida (con fecha y
+        # hora, ver ejecutar_analisis) si ya se corrio algo en esta
+        # sesion: es la que realmente le interesa al usuario, en vez de
+        # la carpeta base (que ahora solo contiene subcarpetas por dia).
+        if self._ultima_carpeta_run and os.path.isdir(self._ultima_carpeta_run):
+            gf.abrir_carpeta(self._ultima_carpeta_run)
+            return
         carpeta = self.var_carpeta_salida.get().strip()
         if not carpeta or not os.path.isdir(carpeta):
             messagebox.showinfo("Carpeta de salida",

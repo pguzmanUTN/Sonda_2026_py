@@ -15,14 +15,42 @@ ANTES de importar `analisis_permitividad` (que a su vez hace
     thread-safe. Si el analisis corre en un hilo de fondo mientras el
     hilo principal esta corriendo el mainloop() de Tkinter, se puede
     colgar la aplicacion o crashear.
-  - La GUI ya muestra las figuras generadas (los .png guardados) con su
-    propio visor (ver gui_permitividad.py), asi que no hace falta que
-    matplotlib abra ventanas propias.
+  - La vista previa EN VIVO (pestañas "Vista previa S11" y "Salida y
+    ejecucion") usa por separado FigureCanvasTkAgg/NavigationToolbar2Tk
+    (ver gui_permitividad.VisorFigura), que si es interactivo -- pero
+    esas Figures se crean y se embeben SOLO desde el hilo principal, asi
+    que no chocan con el pipeline de analisis (que usa Figure()+Agg por
+    su lado, en el hilo de fondo).
 
 IMPORTANTE: por lo anterior, importa este modulo ANTES que cualquier
 otra cosa toque matplotlib.pyplot en el proceso (gui_permitividad.py ya
 lo hace en ese orden).
+
+Sobre gc.disable() (mas abajo)
+-------------------------------
+Ademas de forzar el backend Agg, este modulo desactiva el recolector de
+basura CICLICO automatico de Python (`gc.disable()`; el recuento de
+referencias normal sigue funcionando igual, esto no es un memory leak
+generalizado). Es una mitigacion a un bug real y bastante oscuro que
+aparecio al agregar la vista previa interactiva (VisorFigura): si el
+recolector ciclico se dispara automaticamente (por umbral de
+asignaciones) mientras esta corriendo EN EL HILO DE FONDO -- algo que
+puede pasar en cualquier momento, sin relacion directa con lo que ese
+hilo esta haciendo -- y encuentra basura ciclica que incluye un
+PIL.ImageTk.PhotoImage (los iconos de NavigationToolbar2Tk, creados en
+el hilo principal), Python llama a su __del__ desde el hilo de fondo.
+Como Tcl/Tk no es thread-safe, eso deja al interprete de Tcl en un
+estado invalido y puede colgar la aplicacion de forma silenciosa (sin
+excepcion visible: solo un "Exception ignored in: Image.__del__" en
+stderr y el analisis nunca termina). Desactivar la recoleccion ciclica
+automatica evita el problema de raiz: la memoria ciclica (tipicamente
+poca, sobre todo callbacks de widgets) se va acumulando durante la
+sesion en vez de liberarse sola, un costo aceptable para una app de
+escritorio que se usa por sesiones acotadas.
 """
+import gc
+gc.disable()
+
 import matplotlib
 matplotlib.use("Agg")
 
@@ -82,10 +110,18 @@ def clave_de_etiqueta(etiqueta):
     return SIN_MODELO
 
 
+def listar_modelos_teoricos_calibracion():
+    """Igual que `listar_modelos_teoricos()`, pero sin la opcion "Ninguno":
+    un patron de calibracion (a diferencia de un material) SIEMPRE tiene
+    que resolver a un modelo teorico conocido, porque su permitividad
+    entra directamente en las formulas de conversion de funciones.py."""
+    return [(clave, etiqueta) for clave, etiqueta in listar_modelos_teoricos() if clave]
+
+
 # ===========================================================================
 # Configuracion: default, guardar, cargar, "recordar la ultima usada"
 # ===========================================================================
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 
 # Donde se guarda el puntero a la ultima configuracion usada, para poder
 # auto-cargarla la proxima vez que se abra la GUI (asi no hay que volver
@@ -110,18 +146,64 @@ def config_default():
         'archivos_calibracion': {
             'corto': "",
             'aire': "",
-            'agua': "",
-            'alc_isoprop': "",
+            'patron3': "",
+            'patron4': "",
         },
-        'temperatura_agua_c': 25.0,
-        'temperatura_isoprop_cal_c': 25.0,
+        # Por defecto, agua y alcohol isopropilico (el par tradicional de
+        # la catedra) -- pero se puede cambiar por cualquier otro par de
+        # liquidos con modelo teorico cargado en Patrones.PATRONES_TEORICOS,
+        # sin tener que calibrar si o si con esos dos.
+        'patron3_modelo': 'agua',
+        'patron3_temperatura_c': 25.0,
+        'patron4_modelo': 'alcohol_isopropilico',
+        'patron4_temperatura_c': 25.0,
         'materiales': [],
         'carpeta_salida': str(Path.cwd() / "salidas"),
         'nombre_informe_pdf': "informe_permitividad.pdf",
         'f_min_ghz': 0.5,
         'f_max_ghz': 6.0,
         'escala_log_frecuencia': True,
+        'curvas_comparacion': [],
+        'curvas_modelos': [],
     }
+
+
+def _migrar_config_vieja(datos):
+    """Migra, en el lugar, una configuracion con el esquema viejo (los
+    patrones de calibracion fijos 'agua' y 'alc_isoprop', con sus propias
+    claves 'temperatura_agua_c'/'temperatura_isoprop_cal_c') al esquema
+    nuevo, generalizado a 'patron3'/'patron4' con un modelo teorico
+    elegible (ver PATRON3_MODELO_CAL/PATRON4_MODELO_CAL en
+    analisis_permitividad.py). No hace nada si `datos` ya esta en el
+    esquema nuevo (no tiene ninguna clave vieja). Se llama sola desde
+    `cargar_config`, asi que abrir una configuracion JSON guardada por una
+    version anterior de la GUI sigue funcionando sin tener que editarla a
+    mano ni perder los archivos/temperaturas ya cargados."""
+    archivos = datos.get('archivos_calibracion') or {}
+    es_esquema_viejo = (
+        'temperatura_agua_c' in datos
+        or 'temperatura_isoprop_cal_c' in datos
+        or 'agua' in archivos
+        or 'alc_isoprop' in archivos
+    )
+    if not es_esquema_viejo:
+        return datos
+
+    nuevos_archivos = dict(archivos)
+    if 'agua' in nuevos_archivos:
+        nuevos_archivos.setdefault('patron3', nuevos_archivos.pop('agua'))
+    if 'alc_isoprop' in nuevos_archivos:
+        nuevos_archivos.setdefault('patron4', nuevos_archivos.pop('alc_isoprop'))
+    datos['archivos_calibracion'] = nuevos_archivos
+
+    datos.setdefault('patron3_modelo', 'agua')
+    datos.setdefault('patron4_modelo', 'alcohol_isopropilico')
+    if 'temperatura_agua_c' in datos:
+        datos['patron3_temperatura_c'] = datos.pop('temperatura_agua_c')
+    if 'temperatura_isoprop_cal_c' in datos:
+        datos['patron4_temperatura_c'] = datos.pop('temperatura_isoprop_cal_c')
+
+    return datos
 
 
 def guardar_config(ruta, config):
@@ -135,11 +217,13 @@ def guardar_config(ruta, config):
 
 
 def cargar_config(ruta):
-    """Carga una configuracion guardada, completando con los defaults
-    cualquier clave que falte (por si en el futuro se agregan campos
-    nuevos y se abre una configuracion vieja)."""
+    """Carga una configuracion guardada, migrando el esquema viejo de
+    calibracion si hiciera falta (ver `_migrar_config_vieja`) y
+    completando con los defaults cualquier clave que falte (por si en el
+    futuro se agregan campos nuevos y se abre una configuracion vieja)."""
     with open(ruta, "r", encoding="utf-8") as f:
         datos = json.load(f)
+    datos = _migrar_config_vieja(datos)
     config = config_default()
     config.update(datos)
     archivos = config_default()['archivos_calibracion']
@@ -215,22 +299,35 @@ def limpiar_recientes():
 # Validacion previa (antes de correr el analisis) -- no bloqueante, solo
 # junta avisos para mostrarle al usuario.
 # ===========================================================================
-_ETIQUETAS_CALIBRACION = {
+_ETIQUETAS_CALIBRACION_FIJAS = {
     'corto': "Cortocircuito",
     'aire': "Aire",
-    'agua': "Agua",
-    'alc_isoprop': "Patron adicional (metodo completo)",
 }
+
+
+def _etiqueta_calibracion_patron(config, clave_modelo, nombre_generico):
+    """'Patron 3 (Agua)' o 'Patron 3 (modelo no definido)' si el modelo
+    configurado no existe/no se eligio ninguno -- para mensajes de
+    validacion mas claros que solo 'patron3'."""
+    modelo = config.get(clave_modelo)
+    if modelo and modelo in PATRONES_TEORICOS:
+        return f"{nombre_generico} ({etiqueta_de_modelo(modelo)})"
+    return f"{nombre_generico} (modelo no definido)"
 
 
 def validar_config(config):
     """Devuelve una lista de strings con problemas encontrados (archivos
-    vacios/inexistentes, rango de frecuencias invalido, etc.). Lista
-    vacia = todo OK."""
+    vacios/inexistentes, modelo de calibracion invalido, rango de
+    frecuencias invalido, etc.). Lista vacia = todo OK."""
     problemas = []
     carpeta = config.get('carpeta_datos', "") or ""
     archivos = config.get('archivos_calibracion', {})
-    for clave, etiqueta in _ETIQUETAS_CALIBRACION.items():
+
+    etiquetas = dict(_ETIQUETAS_CALIBRACION_FIJAS)
+    etiquetas['patron3'] = _etiqueta_calibracion_patron(config, 'patron3_modelo', "Patron 3")
+    etiquetas['patron4'] = _etiqueta_calibracion_patron(config, 'patron4_modelo', "Patron 4")
+
+    for clave, etiqueta in etiquetas.items():
         ruta = archivos.get(clave, "") or ""
         if not ruta:
             problemas.append(f"Falta el archivo de calibracion '{etiqueta}'.")
@@ -238,6 +335,19 @@ def validar_config(config):
             ruta_completa = os.path.join(carpeta, ruta)
             if not os.path.isfile(ruta_completa):
                 problemas.append(f"No se encuentra el archivo de '{etiqueta}': {ruta_completa}")
+
+    for clave_modelo, nombre in (('patron3_modelo', "Patron 3"), ('patron4_modelo', "Patron 4")):
+        modelo = config.get(clave_modelo)
+        if not modelo or modelo not in PATRONES_TEORICOS:
+            problemas.append(
+                f"El modelo teorico de '{nombre}' ('{modelo}') no es valido. "
+                f"Elegi uno de la lista en la pestaña de Calibracion.")
+
+    if config.get('patron3_modelo') and config.get('patron3_modelo') == config.get('patron4_modelo'):
+        problemas.append(
+            "Patron 3 y Patron 4 tienen el mismo modelo teorico asignado: tienen "
+            "que ser dos liquidos distintos entre si para que la calibracion "
+            "tenga solucion.")
 
     if not config.get('materiales'):
         problemas.append("No hay materiales cargados para analizar.")

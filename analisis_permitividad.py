@@ -9,17 +9,27 @@ curva teorica correspondiente (si se conoce; si no, grafica solo lo medido).
 
 Como se usa
 -----------
-1. Poner los archivos .s1p de calibracion (corto, aire, agua, alcohol
-   isopropilico) en la misma carpeta que este script, y completar
-   ARCHIVOS_CALIBRACION mas abajo con sus nombres.
-2. Ajustar TEMPERATURA_AGUA_C a la temperatura real del agua destilada
-   durante la calibracion (afecta la precision, sobre todo del metodo
-   simplificado).
+1. Poner los archivos .s1p de calibracion (corto, aire, patron3, patron4)
+   en la misma carpeta que este script, y completar ARCHIVOS_CALIBRACION
+   mas abajo con sus nombres. "Patron3" y "patron4" son, por defecto,
+   agua destilada y alcohol isopropilico (el par tradicional de la
+   catedra), pero pueden ser CUALQUIER PAR de liquidos con un modelo
+   teorico cargado en Patrones.PATRONES_TEORICOS -- ver PATRON3_MODELO_CAL
+   / PATRON4_MODELO_CAL mas abajo.
+2. Ajustar PATRON3_TEMPERATURA_CAL_C y PATRON4_TEMPERATURA_CAL_C a la
+   temperatura real de esos 2 liquidos durante la calibracion (afecta la
+   precision de los dos metodos de conversion).
 3. Agregar cada material que se quiera analizar a la lista MATERIALES
    (ver mas abajo). Para un material sin modelo teorico conocido, dejar
-   'teorico': None -- el script va a graficar unicamente lo medido, sin
+   'modelo': None -- el script va a graficar unicamente lo medido, sin
    intentar calcular error.
 4. Correr:  python analisis_permitividad.py
+
+Los resultados de cada corrida quedan en
+'<CARPETA_SALIDA>/<AAAA-MM-DD>/<HH-MM-SS>/' (una subcarpeta por dia y por
+hora, para no pisar corridas anteriores), y los .s1p de entrada se copian
+a la carpeta del dia como registro de con que mediciones se genero cada
+informe (ver el docstring de `ejecutar_analisis`).
 
 Como agregar una medicion nueva (por ejemplo, acetona)
 -------------------------------------------------------
@@ -29,29 +39,35 @@ tocar nada mas del script:
     {
         'nombre': "Acetona",
         'archivo': "sonda4-acetona.s1p",
-        'teorico': None,   # no hay modelo teorico cargado en Patrones.py
+        'modelo': None,   # no hay modelo teorico cargado en Patrones.py
     }
 
 Si en el futuro se agrega un modelo teorico para ese material en
-`Patrones.py`, alcanza con poner esa funcion en lugar de `None` y el
-script automaticamente empieza a graficar la comparacion y el error.
+`Patrones.py` (agregandolo a PATRONES_TEORICOS), alcanza con poner esa
+clave en 'modelo' en lugar de None y el script automaticamente empieza a
+graficar la comparacion y el error.
 
 Patrones que dependen de la temperatura
 ----------------------------------------
 Desde que Patrones.py soporta varias temperaturas (NPL Report MAT 23),
 cada funcion teorica acepta `get_er_pat_xxx(frecs, T=...)`. Como el campo
-'teorico' de MATERIALES tiene que ser una funcion de UN solo argumento
-(frecs), la temperatura de cada material se "ata" con functools.partial,
-tal como se hace mas abajo con TEMPERATURA_ALC_ETILICO_C, etc. Para medir
-a otra temperatura, alcanza con cambiar esa constante (no hace falta
-tocar Patrones.py). Si la temperatura real no cae justo en un escalon de
-5 °C tabulado en el reporte, la funcion usa el mas cercano disponible
-(y avisa con un warning si ademas cae fuera del rango recomendado).
+'modelo' de MATERIALES (y de PATRON3_MODELO_CAL/PATRON4_MODELO_CAL) tiene
+que ser una clave de texto (no la funcion ya resuelta), la temperatura se
+"ata" con `functools.partial` en `resolver_modelo_teorico` (o, para los
+patrones de calibracion, evaluando directamente
+`PATRONES_TEORICOS[modelo](frecs, T=...)` en `ejecutar_analisis`). Para
+medir a otra temperatura, alcanza con cambiar la constante correspondiente
+(no hace falta tocar Patrones.py). Si la temperatura real no cae justo en
+un escalon de 5 °C tabulado en el reporte, la funcion usa el mas cercano
+disponible (y avisa con un warning si ademas cae fuera del rango
+recomendado).
 """
 import os
 import re
 import csv
+import shutil
 import functools
+from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
@@ -59,18 +75,7 @@ from matplotlib.ticker import FormatStrFormatter
 from Touchstone import (leer_s1p, mismas_frecuencias, resamplear,
                          graficar_s11_mag_fase, graficar_smith)
 from funciones import get_er_DUTm, get_er_DUT_completo, error_relativo_porcentual, calcular_Gn
-from Patrones import (
-    get_er_agua,
-    get_er_pat_alc_etilico,
-    get_er_pat_alc_isopropilico,
-    get_er_pat_metanol,
-    get_er_pat_dmso,
-    get_er_pat_etilenglicol,
-    get_er_pat_butanol,
-    get_er_pat_propanol,
-    PATRONES_TEORICOS,
-    etiqueta_patron,
-)
+from Patrones import PATRONES_TEORICOS, etiqueta_patron
 from reporte_pdf import generar_reporte_pdf
 
 # ---------------------------------------------------------------------------
@@ -79,12 +84,20 @@ from reporte_pdf import generar_reporte_pdf
 CARPETA_DATOS = "."   # carpeta donde estan los .s1p
 
 # Patrones de calibracion: estos 4 son siempre necesarios (el metodo
-# completo usa los 4; el simplificado usa corto/aire/agua).
+# completo usa los 4; el simplificado usa corto/aire/patron3).
+#
+# 'patron3' y 'patron4' son dos liquidos con permitividad conocida
+# (tradicionalmente agua destilada y alcohol isopropilico, ver
+# PATRON3_MODELO_CAL/PATRON4_MODELO_CAL mas abajo), pero pueden ser
+# CUALQUIER PAR de liquidos con un modelo teorico cargado en
+# Patrones.PATRONES_TEORICOS -- no hace falta calibrar si o si con esos
+# dos. El unico requisito real es que sean dos liquidos DISTINTOS entre
+# si (y del aire), para que el sistema de ecuaciones tenga solucion.
 ARCHIVOS_CALIBRACION = {
-    'corto':       "sonda4-short.s1p",
-    'aire':        "sonda4-aire.s1p",
-    'agua':        "sonda4-agua.s1p",
-    'alc_isoprop': "sonda4-alc-isoprop.s1p",
+    'corto':   "sonda4-short.s1p",
+    'aire':    "sonda4-aire.s1p",
+    'patron3': "sonda4-agua.s1p",
+    'patron4': "sonda4-alc-isoprop.s1p",
 }
 
 
@@ -104,22 +117,20 @@ ARCHIVOS_CALIBRACION = {
 #     'alc_isoprop': "sonda4-alc-isoprop.s1p",
 # }
 
-# Temperatura real de cada liquido durante el ensayo (°C). Ajustar segun
-# corresponda: cada patron teorico en Patrones.py aproxima internamente a
-# la temperatura tabulada mas cercana (pasos de 5 °C, NPL MAT 23), asi que
-# no hace falta que coincida exactamente con un valor de la tabla.
-TEMPERATURA_AGUA_C = 25.0
+# Modelo teorico (clave de Patrones.PATRONES_TEORICOS) y temperatura real
+# de cada uno de los 2 liquidos usados como patron 3 y patron 4 durante
+# ESTA calibracion. Por defecto agua y alcohol isopropilico (el par
+# tradicional de la catedra), pero se puede poner cualquier otro par de
+# liquidos disponibles en Patrones.py (ver ETIQUETAS_PATRONES para la
+# lista) sin tocar funciones.py ni el resto del pipeline.
+PATRON3_MODELO_CAL = 'agua'
+PATRON3_TEMPERATURA_CAL_C = 25.0
 
-# Temperatura del alcohol isopropilico usado como 4to PATRON DE CALIBRACION
-# (metodo completo). Es distinta de TEMPERATURA_ALC_ISOPROP_C de aca abajo
-# (la de la entrada en MATERIALES, que es cuando se lo analiza COMO SI
-# fuera un material mas, para comparar contra su propia curva teorica) --
-# aunque en general van a ser el mismo valor, porque casi siempre es la
-# misma muestra fisica medida una sola vez. Esta temperatura entra en el
-# calculo de Gn (funciones.get_er_DUT_completo), asi que afecta el
-# resultado de TODOS los materiales analizados con el metodo completo, no
-# solo el del alcohol isopropilico.
-TEMPERATURA_ALC_ISOPROP_CAL_C = 25.0
+# La temperatura del patron 4 entra en el calculo de Gn (funciones.
+# calcular_Gn), asi que afecta el resultado de TODOS los materiales
+# analizados con el metodo completo, no solo el del propio patron 4.
+PATRON4_MODELO_CAL = 'alcohol_isopropilico'
+PATRON4_TEMPERATURA_CAL_C = 25.0
 
 TEMPERATURA_ALC_ETILICO_C = 20.0
 TEMPERATURA_ALC_ISOPROP_C = 25.0
@@ -269,7 +280,7 @@ def _cargar_cache(ruta, cache):
 
 def cargar_calibracion(carpeta, archivos, cache):
     """Lee los 4 patrones de calibracion y los deja alineados en la misma
-    grilla de frecuencias (remuestrea contra 'agua' si hiciera falta)."""
+    grilla de frecuencias (remuestrea contra 'patron3' si hiciera falta)."""
     datos = {}
     for clave, nombre in archivos.items():
         ruta = os.path.join(carpeta, nombre)
@@ -278,19 +289,55 @@ def cargar_calibracion(carpeta, archivos, cache):
               f"({len(datos[clave]['Frec'])} puntos, "
               f"{datos[clave]['Frec'][0]/1e9:.3f}-{datos[clave]['Frec'][-1]/1e9:.3f} GHz)")
 
-    referencia = datos['agua']
+    referencia = datos['patron3']
     if not mismas_frecuencias(*datos.values()):
         print("  [info] los patrones de calibracion no comparten exactamente "
               "la misma grilla de frecuencias: remuestreando todo a la "
-              "grilla de 'agua'.")
+              "grilla de 'patron3'.")
         for clave in datos:
-            if clave != 'agua':
+            if clave != 'patron3':
                 datos[clave] = resamplear(referencia['Frec'], datos[clave])
 
     return datos
 
 
-def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_salida,
+def _copiar_insumos(carpeta_datos, archivos_calibracion, materiales, carpeta_destino, log):
+    """
+    Copia los .s1p de ENTRADA (los 4 patrones de calibracion + el archivo
+    de cada material) a `carpeta_destino` -- la carpeta del DIA de esta
+    corrida, ver `ejecutar_analisis` -- para dejar un registro de con que
+    mediciones exactas se genero cada informe, sin depender de que la
+    carpeta de datos original no se toque despues.
+
+    Se copian a la carpeta del DIA (compartida entre todas las corridas
+    de ese dia) y no a la de la hora (especifica de esta corrida), para
+    no duplicar el mismo archivo de entrada cada vez que se vuelve a
+    correr el analisis con la misma medicion.
+
+    No hace fallar el analisis si un archivo puntual no se puede copiar
+    (p.ej. problema de permisos): lo avisa por `log` y sigue con el resto.
+    """
+    os.makedirs(carpeta_destino, exist_ok=True)
+    nombres = list(archivos_calibracion.values()) + \
+        [m['archivo'] for m in materiales if m.get('archivo')]
+    copiados = 0
+    for nombre in nombres:
+        origen = os.path.join(carpeta_datos, nombre)
+        destino = os.path.join(carpeta_destino, os.path.basename(nombre))
+        if not os.path.isfile(origen):
+            continue  # si no existe, ya se avisa aparte al intentar leerlo
+        if os.path.abspath(origen) == os.path.abspath(destino):
+            continue  # ya esta en la carpeta de destino (raro, pero por las dudas)
+        try:
+            shutil.copy2(origen, destino)
+            copiados += 1
+        except OSError as exc:
+            log(f"  [aviso] no se pudo copiar '{origen}' a la carpeta del dia: {exc}")
+    if copiados:
+        log(f"  {copiados} archivo(s) de entrada copiado(s) a: {os.path.abspath(carpeta_destino)}")
+
+
+def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_salida=None,
                           log_x=True):
     """
     Grafica parte real e imaginaria: curva medida (una o varias) y, si se
@@ -299,6 +346,13 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
     er_medido_dict : dict {etiqueta: ndarray complejo}
     er_teorico     : ndarray complejo, o None si no hay modelo teorico
                       (en ese caso se grafica solo lo medido).
+    archivo_salida : str, opcional
+        Si se pasa, guarda la figura ahi (dpi=150) y devuelve esa ruta.
+        Si se omite (None, default), no guarda nada y devuelve la Figure
+        de matplotlib abierta (construida con la API orientada a objetos,
+        `Figure()` directo -- ver la nota en
+        `Touchstone.graficar_s11_mag_fase`), para poder embeberla en vivo
+        en la GUI con `gui_permitividad.VisorFigura`.
     log_x : bool
         Si es True (default), el eje de frecuencias se grafica en escala
         logaritmica. Muy recomendable cuando el barrido cubre varias
@@ -310,7 +364,9 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
         ocupa el mismo ancho visual. Se ignora (cae a lineal) si `frecs`
         tiene algun valor <= 0, porque el logaritmo no esta definido ahi.
     """
-    fig, (ax_re, ax_im) = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(9, 7))
+    ax_re, ax_im = fig.subplots(2, 1, sharex=True)
 
     if er_teorico is not None:
         ax_re.plot(frecs / 1e9, er_teorico.real, 'k--', linewidth=2, label="Teorico (Debye)")
@@ -344,13 +400,14 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
         # a ubicarse; minorticks_on() ya las habilita arriba.
 
     fig.tight_layout()
-    fig.savefig(archivo_salida, dpi=150)
-    print(f"  Figura guardada: {archivo_salida}")
-    plt.close(fig)
-    return archivo_salida
+    if archivo_salida is not None:
+        fig.savefig(archivo_salida, dpi=150)
+        print(f"  Figura guardada: {archivo_salida}")
+        return archivo_salida
+    return fig
 
 
-def graficar_Gn(frecs, Gn, archivo_salida, log_x=True):
+def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True):
     """
     Grafica la conductancia normalizada Gn(f) calculada a partir de los 4
     patrones de calibracion (ver `funciones.calcular_Gn`), en modulo y
@@ -362,13 +419,14 @@ def graficar_Gn(frecs, Gn, archivo_salida, log_x=True):
     Al estar relacionada con G0/(j*w*C0) -- una propiedad fisica continua
     de la sonda -- Gn(f) deberia verse suave tanto en modulo como en
     fase. Un salto brusco o un pico aislado suele indicar un problema con
-    la medicion de alguno de los 4 patrones, tipicamente el alcohol
-    isopropilico (el unico patron que entra en el calculo de Gn y en
-    ningun otro lado del metodo simplificado, por lo que un problema ahi
-    puede pasar desapercibido si solo se mira el chequeo de calibracion
-    del agua).
+    la medicion de alguno de los 4 patrones, tipicamente el patron 4 (el
+    unico que entra en el calculo de Gn y en ningun otro lado del metodo
+    simplificado, por lo que un problema ahi puede pasar desapercibido si
+    solo se mira el chequeo de calibracion del patron 3).
     """
-    fig, (ax_mag, ax_fase) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(9, 6))
+    ax_mag, ax_fase = fig.subplots(2, 1, sharex=True)
 
     mag_Gn = np.abs(Gn)
     # np.angle() sola da la fase "envuelta" en (-180, 180]; con np.unwrap
@@ -402,10 +460,11 @@ def graficar_Gn(frecs, Gn, archivo_salida, log_x=True):
         ax_fase.set_xscale('log')
 
     fig.tight_layout()
-    fig.savefig(archivo_salida, dpi=150)
-    print(f"  Figura guardada: {archivo_salida}")
-    plt.close(fig)
-    return archivo_salida
+    if archivo_salida is not None:
+        fig.savefig(archivo_salida, dpi=150)
+        print(f"  Figura guardada: {archivo_salida}")
+        return archivo_salida
+    return fig
 
 
 def calcular_error(er_medido, er_teorico):
@@ -476,9 +535,143 @@ def exportar_csv(ruta, frecs, columnas):
     print(f"  CSV guardado: {ruta}")
 
 
+def leer_csv_resultado(ruta):
+    """
+    Lee un CSV exportado por `exportar_csv` (columna 'f_Hz' + pares de
+    columnas '<nombre>_re'/'<nombre>_im', una por cada serie que se haya
+    exportado) y lo devuelve invertido: (frecs, columnas), con `columnas`
+    un dict {nombre: ndarray complejo}.
+
+    Pensado para la pestaña "Comparar mediciones" de la GUI: permite
+    tomar cualquier `tabla_<material>.csv` ya generado (de esta corrida o
+    de una anterior, incluso de otro dia -- ver la estructura de carpetas
+    con fecha/hora de `ejecutar_analisis`) y superponer alguna de sus
+    columnas contra otras mediciones.
+
+    Levanta ValueError si el archivo no tiene el formato esperado (por
+    si se elige por error un CSV de otro origen).
+    """
+    with open(ruta, "r", newline='') as f:
+        r = csv.reader(f)
+        try:
+            encabezado = next(r)
+        except StopIteration:
+            encabezado = []
+        filas = [fila for fila in r if fila]
+
+    if not encabezado or encabezado[0] != 'f_Hz':
+        raise ValueError(
+            f"'{os.path.basename(ruta)}' no tiene el formato esperado "
+            f"(falta la columna 'f_Hz' -- ¿es un CSV generado por este "
+            f"programa?).")
+
+    nombres = []
+    i = 1
+    while i < len(encabezado):
+        col = encabezado[i]
+        if col.endswith('_re'):
+            nombres.append(col[:-3])
+            i += 2  # saltea la columna '_im' correspondiente
+        else:
+            i += 1
+
+    if not filas:
+        return np.array([], dtype=float), {n: np.array([], dtype=complex) for n in nombres}
+
+    frecs = np.array([float(fila[0]) for fila in filas], dtype=float)
+    columnas = {}
+    for nombre in nombres:
+        idx_re = encabezado.index(f"{nombre}_re")
+        idx_im = encabezado.index(f"{nombre}_im")
+        re = np.array([float(fila[idx_re]) for fila in filas], dtype=float)
+        im = np.array([float(fila[idx_im]) for fila in filas], dtype=float)
+        columnas[nombre] = re + 1j * im
+    return frecs, columnas
+
+
+def graficar_series_multiples(series, titulo="Comparaci\u00f3n de mediciones", log_x=True):
+    """
+    Grafica varias series er'/er'' superpuestas, cada una con su PROPIA
+    grilla de frecuencias -- a diferencia de `graficar_comparacion`, que
+    asume una unica `frecs` compartida por todas las curvas. Pensado para
+    comparar mediciones que no necesariamente comparten el mismo barrido
+    del VNA (p.ej. de distintos dias, o remuestreadas de forma distinta).
+
+    Parametros
+    ----------
+    series : dict {etiqueta: (frecs, er)}
+        `frecs` en Hz, `er` complejo (er' - j*er''), mismo largo que
+        `frecs`. Una entrada por curva a superponer.
+    titulo : str
+    log_x : bool
+        Eje de frecuencias en escala logaritmica (default True). Se
+        ignora (cae a lineal) si alguna frecuencia de alguna serie es
+        <= 0.
+
+    Retorna
+    -------
+    Figure de matplotlib (construida con la API orientada a objetos, para
+    poder embeberla en vivo con `gui_permitividad.VisorFigura`).
+    """
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(9, 7))
+    ax_re, ax_im = fig.subplots(2, 1, sharex=True)
+
+    frecs_vistas = []
+    for etiqueta, (frecs, er) in series.items():
+        frecs = np.asarray(frecs, dtype=float)
+        er = np.asarray(er, dtype=complex)
+        frecs_vistas.append(frecs)
+        ax_re.plot(frecs / 1e9, er.real, linewidth=1.6, label=etiqueta)
+        ax_im.plot(frecs / 1e9, er.imag, linewidth=1.6, label=etiqueta)
+
+    ax_re.set_ylabel("er'  (parte real)")
+    ax_re.set_title(titulo)
+    ax_re.minorticks_on()
+    ax_re.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_re.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    ax_re.legend()
+
+    ax_im.set_xlabel("Frecuencia (GHz)")
+    ax_im.set_ylabel("er''  (perdidas, Im)")
+    ax_im.minorticks_on()
+    ax_im.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_im.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    ax_im.legend()
+
+    frecs_concat = np.concatenate(frecs_vistas) if frecs_vistas else np.array([])
+    if log_x and frecs_concat.size > 0 and np.all(frecs_concat > 0):
+        ax_re.set_xscale('log')
+        ax_im.set_xscale('log')
+
+    fig.tight_layout()
+    return fig
+
+
+def generar_grilla_frecuencias(f_min_ghz, f_max_ghz, n_puntos, log_x=True):
+    """
+    Genera una grilla de `n_puntos` frecuencias (en Hz) entre `f_min_ghz`
+    y `f_max_ghz` (en GHz). Si `log_x` es True (y el rango no incluye 0),
+    los puntos quedan espaciados logaritmicamente -- mas densos a bajas
+    frecuencias, la distribucion mas natural si despues se grafican en
+    escala log (ver `graficar_series_multiples`). Si es False, espaciados
+    linealmente.
+
+    Pensado para graficar un modelo teorico de Patrones.py directamente,
+    sin depender de ningun dato medido -- ver la pestaña "6. Modelos
+    teoricos" de la GUI (gui_permitividad._construir_tab_modelos).
+    """
+    f_min_hz = float(f_min_ghz) * 1e9
+    f_max_hz = float(f_max_ghz) * 1e9
+    n_puntos = max(int(n_puntos), 2)
+    if log_x and f_min_hz > 0 and f_max_hz > 0:
+        return np.geomspace(f_min_hz, f_max_hz, n_puntos)
+    return np.linspace(f_min_hz, f_max_hz, n_puntos)
+
+
 def procesar_material(material, carpeta_datos, cache, frecs,
-                       s11_corto, s11_aire, s11_agua, s11_isoprop_cal,
-                       T_agua=None, T_isoprop=None, carpeta_salida=None,
+                       s11_corto, s11_aire, s11_patron3, s11_patron4,
+                       Er_patron3, Er_patron4, carpeta_salida=None,
                        f_min_ghz=None, f_max_ghz=None, log_x=None):
     """Procesa una entrada de MATERIALES: lee su .s1p, calcula la
     permitividad con los metodos indicados, grafica (contra la curva
@@ -486,13 +679,14 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     un dict con todo lo necesario para armar el informe PDF (o None si el
     archivo no se encontro, en cuyo caso se salta este material).
 
-    `T_agua`, `T_isoprop`, `carpeta_salida`, `f_min_ghz`, `f_max_ghz`,
-    `log_x`: si se omiten (None), se usan las constantes definidas mas
-    arriba en este archivo (comportamiento identico al de antes).
-    `ejecutar_analisis` los pasa explicitamente para poder usar valores
-    distintos (p.ej. los que cargo la GUI) sin tocar esas constantes."""
-    T_agua = TEMPERATURA_AGUA_C if T_agua is None else T_agua
-    T_isoprop = TEMPERATURA_ALC_ISOPROP_CAL_C if T_isoprop is None else T_isoprop
+    `Er_patron3`/`Er_patron4`: permitividad teorica de los patrones 3 y 4
+    de la calibracion, YA EVALUADA en `frecs` (ver `ejecutar_analisis`,
+    que resuelve que modelo y temperatura usar para cada uno).
+    `carpeta_salida`, `f_min_ghz`, `f_max_ghz`, `log_x`: si se omiten
+    (None), se usan las constantes definidas mas arriba en este archivo
+    (comportamiento identico al de antes). `ejecutar_analisis` los pasa
+    explicitamente para poder usar valores distintos (p.ej. los que cargo
+    la GUI) sin tocar esas constantes."""
     carpeta_salida = CARPETA_SALIDA if carpeta_salida is None else carpeta_salida
     f_min_ghz = F_MIN_GHZ if f_min_ghz is None else f_min_ghz
     f_max_ghz = F_MAX_GHZ if f_max_ghz is None else f_max_ghz
@@ -524,12 +718,11 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     resultados = {}
     if 'simplificado' in metodos:
         resultados['Medido (simplificado, 3 patrones)'] = get_er_DUTm(
-            frecs, s11_dut, s11_agua, s11_aire, s11_corto,
-            T_agua=T_agua)
+            frecs, s11_dut, s11_patron3, s11_aire, s11_corto, Er_patron3)
     if 'completo' in metodos:
         resultados['Medido (completo, 4 patrones)'] = get_er_DUT_completo(
-            frecs, s11_dut, s11_agua, s11_aire, s11_isoprop_cal, s11_corto,
-            T_agua=T_agua, T_isoprop=T_isoprop, verbose=True)
+            frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+            Er_patron3, Er_patron4, verbose=True)
 
     modelo = material.get('modelo') or None
     temperatura_material = float(material.get('temperatura', 25.0)) if modelo else None
@@ -604,6 +797,14 @@ def procesar_material(material, carpeta_datos, cache, frecs,
         'tabla_frecs_ghz': tabla_frecs_ghz,
         'tabla_columnas': tabla_columnas,
         'nota': nota,
+        # Datos crudos para reconstruir la figura en vivo (interactiva,
+        # con zoom/pan) en la GUI sin tener que releer el .png -- ver
+        # gui_permitividad.VisorFigura y _figuras_desde_resultado. El PNG
+        # de 'figura' arriba se sigue generando igual, para el informe PDF.
+        'datos_grafico': {
+            'frecs': f_r, 'medido': resultados_r, 'teorico': er_teo_r,
+            'titulo': titulo, 'log_x': log_x,
+        },
     }
 
 
@@ -622,18 +823,26 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
                                   relativa (puede ser "" si las rutas de
                                   archivo ya son absolutas).
         'archivos_calibracion' : dict con las 4 claves fijas 'corto',
-                                  'aire', 'agua', 'alc_isoprop'.
-        'temperatura_agua_c'   : float, temperatura del agua de calibracion.
-        'temperatura_isoprop_cal_c' : float, temperatura del alcohol
-                                isopropilico usado como 4to patron de
-                                calibracion (metodo completo). Si falta
-                                esta clave (config viejo), se usa
-                                TEMPERATURA_ALC_ISOPROP_CAL_C.
+                                  'aire', 'patron3', 'patron4'.
+        'patron3_modelo'       : clave de Patrones.PATRONES_TEORICOS para
+                                  el 3er patron de calibracion (default:
+                                  'agua', el par tradicional de la
+                                  catedra -- pero puede ser cualquier
+                                  liquido con modelo conocido).
+        'patron3_temperatura_c': float, temperatura real de ese liquido
+                                  durante la calibracion.
+        'patron4_modelo'       : idem para el 4to patron (default:
+                                  'alcohol_isopropilico'), solo usado por
+                                  el metodo completo.
+        'patron4_temperatura_c': float, temperatura real de ese liquido.
         'materiales'           : lista de dicts {nombre, archivo, modelo,
                                   temperatura, metodos} (ver formato de
                                   MATERIALES mas arriba).
-        'carpeta_salida'       : str, carpeta donde se guardan figuras,
-                                  CSVs e informe PDF.
+        'carpeta_salida'       : str, carpeta BASE de salida. Los
+                                  archivos de esta corrida en particular
+                                  van en un subdirectorio
+                                  '<carpeta_salida>/<AAAA-MM-DD>/<HH-MM-SS>/'
+                                  (ver mas abajo), no directamente aca.
         'nombre_informe_pdf'   : str, nombre del PDF final.
         'f_min_ghz', 'f_max_ghz' : float, rango de frecuencias de interes.
         'escala_log_frecuencia' : bool, opcional (default True). Eje de
@@ -663,11 +872,24 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         comportamiento identico al de antes de que existiera este
         parametro.
 
+    Carpeta de salida de esta corrida
+    ----------------------------------
+    Todo lo que genera esta corrida (figuras, CSVs, informe PDF) se
+    guarda en '<carpeta_salida>/<AAAA-MM-DD>/<HH-MM-SS>/', no directamente
+    en 'carpeta_salida': asi, corridas de dias o momentos distintos nunca
+    se pisan entre si, y queda un historial ordenado sin tener que
+    cambiar a mano el nombre de la carpeta de salida cada vez. Ademas, los
+    .s1p de ENTRADA (calibracion + cada material) se copian a la carpeta
+    del DIA -- '<carpeta_salida>/<AAAA-MM-DD>/', compartida entre todas
+    las corridas de ese dia -- para dejar registro de con que mediciones
+    exactas se genero cada informe.
+
     Retorna
     -------
     dict con 'chequeo_calibracion', 'resultados_materiales',
-    'ruta_informe_pdf' y 'cancelado' (bool: True si se interrumpio a
-    mitad de camino por el motivo de arriba).
+    'ruta_informe_pdf', 'carpeta_salida_run' (la carpeta real, con fecha y
+    hora, donde quedo todo lo de ESTA corrida) y 'cancelado' (bool: True
+    si se interrumpio a mitad de camino por el motivo de arriba).
     """
     if progreso is None:
         progreso = lambda paso, total, etiqueta=None: None
@@ -675,66 +897,99 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         cancelado = lambda: False
 
     carpeta_datos = config['carpeta_datos']
-    carpeta_salida = config['carpeta_salida']
-    os.makedirs(carpeta_salida, exist_ok=True)
+    carpeta_salida_base = config['carpeta_salida']
     cache = {}
 
-    T_agua = config['temperatura_agua_c']
-    T_isoprop = config.get('temperatura_isoprop_cal_c', TEMPERATURA_ALC_ISOPROP_CAL_C)
+    modelo_patron3 = config.get('patron3_modelo') or PATRON3_MODELO_CAL
+    T_patron3 = float(config.get('patron3_temperatura_c', PATRON3_TEMPERATURA_CAL_C))
+    modelo_patron4 = config.get('patron4_modelo') or PATRON4_MODELO_CAL
+    T_patron4 = float(config.get('patron4_temperatura_c', PATRON4_TEMPERATURA_CAL_C))
     f_min_ghz = config['f_min_ghz']
     f_max_ghz = config['f_max_ghz']
     log_x = config.get('escala_log_frecuencia', ESCALA_LOG_FRECUENCIA)
     materiales = config['materiales']
+    archivos_cal = config['archivos_calibracion']
     total_pasos = len(materiales) + 2  # calibracion + N materiales + informe PDF
 
     if cancelado():
         log("\n[cancelado] Analisis interrumpido antes de empezar.")
         return {'chequeo_calibracion': None, 'resultados_materiales': [],
-                'ruta_informe_pdf': None, 'cancelado': True}
+                'ruta_informe_pdf': None, 'carpeta_salida_run': None,
+                'cancelado': True}
+
+    # -----------------------------------------------------------------
+    # Carpeta de salida de ESTA corrida: <carpeta_salida>/<fecha>/<hora>/.
+    # Ver docstring de arriba para el porque de esta estructura.
+    # -----------------------------------------------------------------
+    ahora = datetime.now()
+    carpeta_dia = os.path.join(carpeta_salida_base, ahora.strftime("%Y-%m-%d"))
+    carpeta_salida = os.path.join(carpeta_dia, ahora.strftime("%H-%M-%S"))
+    os.makedirs(carpeta_salida, exist_ok=True)
 
     progreso(0, total_pasos, "Leyendo patrones de calibraci\u00f3n")
+    log(f"Carpeta de esta corrida: {os.path.abspath(carpeta_salida)}")
     log("Leyendo patrones de calibracion...")
-    calib = cargar_calibracion(carpeta_datos, config['archivos_calibracion'], cache)
-    frecs = calib['agua']['Frec']
+    calib = cargar_calibracion(carpeta_datos, archivos_cal, cache)
+    frecs = calib['patron3']['Frec']
 
     s11_corto = calib['corto']['Complex']
     s11_aire = calib['aire']['Complex']
-    s11_agua = calib['agua']['Complex']
-    s11_isoprop_cal = calib['alc_isoprop']['Complex']
+    s11_patron3 = calib['patron3']['Complex']
+    s11_patron4 = calib['patron4']['Complex']
+
+    etiqueta_p3 = etiqueta_patron(modelo_patron3) or modelo_patron3
+    etiqueta_p4 = etiqueta_patron(modelo_patron4) or modelo_patron4
+    log(f"  Patron 3 = {etiqueta_p3} a {T_patron3:.1f}\u00b0C")
+    log(f"  Patron 4 = {etiqueta_p4} a {T_patron4:.1f}\u00b0C")
+    Er_patron3 = PATRONES_TEORICOS[modelo_patron3](frecs, T=T_patron3)
+    Er_patron4 = PATRONES_TEORICOS[modelo_patron4](frecs, T=T_patron4)
+
+    _copiar_insumos(carpeta_datos, archivos_cal, materiales, carpeta_dia, log)
 
     # -----------------------------------------------------------------
-    # Chequeo de calibracion: el agua ES uno de los patrones, asi que si
-    # se la "mide" como si fuera un DUT mas, el resultado tiene que
-    # coincidir casi exactamente con su propio modelo teorico
-    # (get_er_agua). Si esto no da ~0% de error, hay un problema de
-    # lectura/calibracion antes de analizar cualquier material real.
+    # Chequeo de calibracion: el patron 3 ES uno de los patrones, asi que
+    # si se lo "mide" como si fuera un DUT mas, el resultado tiene que
+    # coincidir casi exactamente con su propio modelo teorico. Si esto no
+    # da ~0% de error, hay un problema de lectura/calibracion antes de
+    # analizar cualquier material real.
     # -----------------------------------------------------------------
-    log("\nChequeo de calibracion (agua medida vs. teorica, debe dar ~0% de error)...")
-    er_agua_teo = get_er_agua(frecs, T_agua)
-    er_agua_simpl = get_er_DUTm(frecs, s11_agua, s11_agua, s11_aire, s11_corto,
-                                 T_agua=T_agua)
-    er_agua_compl = get_er_DUT_completo(frecs, s11_agua, s11_agua, s11_aire,
-                                         s11_isoprop_cal, s11_corto,
-                                         T_agua=T_agua, T_isoprop=T_isoprop)
+    log(f"\nChequeo de calibracion ({etiqueta_p3} medido vs. teorico, debe dar ~0% de error)...")
+    er_p3_teo = Er_patron3
+    er_p3_simpl = get_er_DUTm(frecs, s11_patron3, s11_patron3, s11_aire, s11_corto,
+                               Er_patron3)
+    er_p3_compl = get_er_DUT_completo(frecs, s11_patron3, s11_patron3, s11_aire,
+                                       s11_patron4, s11_corto, Er_patron3, Er_patron4)
 
     mascara = (frecs >= f_min_ghz * 1e9) & (frecs <= f_max_ghz * 1e9)
-    ruta_figura_agua = os.path.join(carpeta_salida, "chequeo_calibracion_agua.png")
+    ruta_figura_p3 = os.path.join(carpeta_salida, "chequeo_calibracion_patron3.png")
     graficar_comparacion(
         frecs[mascara],
-        {"Medido (simplificado)": er_agua_simpl[mascara],
-         "Medido (completo)": er_agua_compl[mascara]},
-        er_agua_teo[mascara],
-        "Agua destilada: chequeo de calibracion (medido vs. teorico)",
-        ruta_figura_agua,
+        {"Medido (simplificado)": er_p3_simpl[mascara],
+         "Medido (completo)": er_p3_compl[mascara]},
+        er_p3_teo[mascara],
+        f"{etiqueta_p3}: chequeo de calibracion (medido vs. teorico)",
+        ruta_figura_p3,
         log_x=log_x,
     )
     chequeo_calibracion = {
-        'figura': ruta_figura_agua,
+        'figura': ruta_figura_p3,
+        'etiqueta_patron3': etiqueta_p3,
+        'etiqueta_patron4': etiqueta_p4,
         'errores': {
             "Metodo simplificado": reportar_error(
-                "Metodo simplificado", er_agua_simpl[mascara], er_agua_teo[mascara]),
+                "Metodo simplificado", er_p3_simpl[mascara], er_p3_teo[mascara]),
             "Metodo completo": reportar_error(
-                "Metodo completo    ", er_agua_compl[mascara], er_agua_teo[mascara]),
+                "Metodo completo    ", er_p3_compl[mascara], er_p3_teo[mascara]),
+        },
+        # Datos crudos para reconstruir la figura en vivo en la GUI -- ver
+        # `procesar_material` (misma idea) y gui_permitividad.VisorFigura.
+        'datos_grafico': {
+            'frecs': frecs[mascara],
+            'medido': {"Medido (simplificado)": er_p3_simpl[mascara],
+                       "Medido (completo)": er_p3_compl[mascara]},
+            'teorico': er_p3_teo[mascara],
+            'titulo': f"{etiqueta_p3}: chequeo de calibracion (medido vs. teorico)",
+            'log_x': log_x,
         },
     }
 
@@ -743,15 +998,18 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     # UNICAMENTE a partir de los 4 patrones de calibracion (no depende de
     # ningun material analizado). Tiene que verse suave; un salto brusco
     # o un pico aislado suele delatar un problema con la medicion de
-    # alguno de los patrones (sobre todo el alcohol isopropilico, el
-    # unico que interviene en este calculo). Ver funciones.calcular_Gn.
+    # alguno de los patrones (sobre todo el patron 4, el unico que
+    # interviene en este calculo). Ver funciones.calcular_Gn.
     # -----------------------------------------------------------------
     log("Calculando conductancia normalizada Gn(f) (diagnostico de calibracion)...")
-    Gn_cal = calcular_Gn(frecs, s11_agua, s11_aire, s11_isoprop_cal, s11_corto,
-                          T_agua=T_agua, T_isoprop=T_isoprop)
+    Gn_cal = calcular_Gn(frecs, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                          Er_patron3, Er_patron4)
     ruta_figura_Gn = os.path.join(carpeta_salida, "chequeo_calibracion_Gn.png")
     graficar_Gn(frecs[mascara], Gn_cal[mascara], ruta_figura_Gn, log_x=log_x)
     chequeo_calibracion['figura_Gn'] = ruta_figura_Gn
+    chequeo_calibracion['datos_grafico_Gn'] = {
+        'frecs': frecs[mascara], 'Gn': Gn_cal[mascara], 'log_x': log_x,
+    }
 
     progreso(1, total_pasos, "Calibraci\u00f3n completa")
 
@@ -773,8 +1031,8 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         progreso(1 + i, total_pasos, f"Procesando: {material['nombre']}")
         resultado = procesar_material(
             material, carpeta_datos, cache, frecs,
-            s11_corto, s11_aire, s11_agua, s11_isoprop_cal,
-            T_agua=T_agua, T_isoprop=T_isoprop, carpeta_salida=carpeta_salida,
+            s11_corto, s11_aire, s11_patron3, s11_patron4,
+            Er_patron3, Er_patron4, carpeta_salida=carpeta_salida,
             f_min_ghz=f_min_ghz, f_max_ghz=f_max_ghz, log_x=log_x,
         )
         if resultado is not None:
@@ -788,11 +1046,15 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     # ya se alcanzo a calcular) -- asi no se pierde el trabajo ya hecho.
     # -----------------------------------------------------------------
     metadata = {
-        'temperatura_agua': T_agua,
-        'temperatura_isoprop': T_isoprop,
+        'patron3_modelo': modelo_patron3,
+        'patron3_etiqueta': etiqueta_p3,
+        'patron3_temperatura': T_patron3,
+        'patron4_modelo': modelo_patron4,
+        'patron4_etiqueta': etiqueta_p4,
+        'patron4_temperatura': T_patron4,
         'f_min_ghz': f_min_ghz,
         'f_max_ghz': f_max_ghz,
-        'archivos_calibracion': config['archivos_calibracion'],
+        'archivos_calibracion': archivos_cal,
         'cancelado': interrumpido,
     }
     progreso(1 + len(resultados_materiales), total_pasos, "Generando informe PDF")
@@ -811,6 +1073,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         'chequeo_calibracion': chequeo_calibracion,
         'resultados_materiales': resultados_materiales,
         'ruta_informe_pdf': ruta_pdf,
+        'carpeta_salida_run': carpeta_salida,
         'cancelado': interrumpido,
     }
 
@@ -823,8 +1086,10 @@ def config_desde_constantes():
     return {
         'carpeta_datos': CARPETA_DATOS,
         'archivos_calibracion': dict(ARCHIVOS_CALIBRACION),
-        'temperatura_agua_c': TEMPERATURA_AGUA_C,
-        'temperatura_isoprop_cal_c': TEMPERATURA_ALC_ISOPROP_CAL_C,
+        'patron3_modelo': PATRON3_MODELO_CAL,
+        'patron3_temperatura_c': PATRON3_TEMPERATURA_CAL_C,
+        'patron4_modelo': PATRON4_MODELO_CAL,
+        'patron4_temperatura_c': PATRON4_TEMPERATURA_CAL_C,
         'materiales': MATERIALES,
         'carpeta_salida': CARPETA_SALIDA,
         'nombre_informe_pdf': NOMBRE_INFORME_PDF,

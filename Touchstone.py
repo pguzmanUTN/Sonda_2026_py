@@ -107,12 +107,16 @@ def graficar_s11_db(datos_dict, ax=None, titulo="|S11| vs Frecuencia"):
         Diccionario {nombre: datos} donde cada `datos` tiene el formato de
         `leer_s1p` (claves 'Frec' y 'Complex').
     ax : matplotlib.axes.Axes, opcional
-        Eje donde graficar. Si no se pasa, se crea una figura nueva.
+        Eje donde graficar. Si no se pasa, se crea una figura nueva (con
+        la API orientada a objetos de matplotlib, `Figure()` en vez de
+        `pyplot.subplots()`, para no tocar el estado global de pyplot --
+        ver la nota al principio de `graficar_s11_mag_fase`).
     """
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
 
     if ax is None:
-        _, ax = plt.subplots(figsize=(9, 4))
+        fig = Figure(figsize=(9, 4))
+        ax = fig.add_subplot(111)
 
     for nombre, datos in datos_dict.items():
         mag_db = 20 * np.log10(np.abs(datos['Complex']))
@@ -215,11 +219,19 @@ def graficar_s11_mag_fase(datos_dict, titulo="S11: modulo y fase", archivo_salid
     Retorna
     -------
     La ruta de `archivo_salida` si se guardo, o la Figure de matplotlib
-    si no se guardo.
+    si no se guardo (en ese caso, la Figure se construye con la API
+    orientada a objetos de matplotlib -- `Figure()` directo, en vez de
+    `pyplot.subplots()` -- para poder embeberla en vivo en la GUI, p.ej.
+    con `FigureCanvasTkAgg`, sin tocar el registro global de `pyplot`
+    (que el pipeline de analisis en el hilo de fondo usa por su cuenta;
+    ver `gui_funciones.py`). No hace falta `plt.close(fig)`: al no pasar
+    por pyplot, no queda registrada en ningun lado, y Python la libera
+    solo cuando nadie la referencia mas).
     """
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
 
-    fig, (ax_mag, ax_fase) = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
+    fig = Figure(figsize=(9, 7))
+    ax_mag, ax_fase = fig.subplots(2, 1, sharex=True)
 
     frecs_vistas = []
     fase_min = 0.0
@@ -273,7 +285,6 @@ def graficar_s11_mag_fase(datos_dict, titulo="S11: modulo y fase", archivo_salid
     fig.tight_layout()
     if archivo_salida is not None:
         fig.savefig(archivo_salida, dpi=150)
-        plt.close(fig)
         return archivo_salida
     return fig
 
@@ -304,11 +315,13 @@ def graficar_smith(datos_dict, titulo="Diagrama de Smith - S11", archivo_salida=
     Retorna
     -------
     La ruta de `archivo_salida` si se guardo, o la Figure de matplotlib
-    si no se guardo.
+    si no se guardo (construida con `Figure()` directo, no `pyplot.
+    subplots()` -- ver la nota en `graficar_s11_mag_fase`).
     """
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
 
-    fig, ax = plt.subplots(figsize=(6.5, 6.5))
+    fig = Figure(figsize=(6.5, 6.5))
+    ax = fig.add_subplot(111)
 
     # La grilla de fondo del diagrama de Smith se dibuja una sola vez, a
     # partir de la primera curva (con color='none' la traza de esa red no
@@ -335,7 +348,6 @@ def graficar_smith(datos_dict, titulo="Diagrama de Smith - S11", archivo_salida=
     fig.tight_layout()
     if archivo_salida is not None:
         fig.savefig(archivo_salida, dpi=150)
-        plt.close(fig)
         return archivo_salida
     return fig
 

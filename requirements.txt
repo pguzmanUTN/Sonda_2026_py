@@ -14,8 +14,8 @@
 # depende de tkinter y funciona sin este paso.
 
 numpy>=1.24
-matplotlib>=3.8
-scikit-rf>=1.0        # lectura/graficado de archivos Touchstone (.s1p)
-reportlab>=4.0         # generacion del informe PDF
-Pillow>=10.0            # vista previa de figuras en la GUI y escalado de imagenes en el PDF
-scipy>=1.10             # solo usado por MATS.py (lectura de .mat exploratorios)
+matplotlib>=3.8         # incluye el backend interactivo de Tkinter (zoom/pan en la GUI)
+scikit-rf>=1.0           # lectura/graficado de archivos Touchstone (.s1p)
+reportlab>=4.0            # generacion del informe PDF
+Pillow>=10.0               # opcional: solo lo usa reporte_pdf.py para ajustar tamaños de imagen en el PDF
+scipy>=1.10                # solo usado por MATS.py (lectura de .mat exploratorios)
