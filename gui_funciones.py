@@ -157,6 +157,8 @@ def config_default():
         'patron3_temperatura_c': 25.0,
         'patron4_modelo': 'alcohol_isopropilico',
         'patron4_temperatura_c': 25.0,
+        'usar_metodo_completo': True,
+        'estrategia_gn': 'minimo_gn',
         'materiales': [],
         'carpeta_salida': str(Path.cwd() / "salidas"),
         'nombre_informe_pdf': "informe_permitividad.pdf",
@@ -322,10 +324,12 @@ def validar_config(config):
     problemas = []
     carpeta = config.get('carpeta_datos', "") or ""
     archivos = config.get('archivos_calibracion', {})
+    usar_completo = bool(config.get('usar_metodo_completo', True))
 
     etiquetas = dict(_ETIQUETAS_CALIBRACION_FIJAS)
     etiquetas['patron3'] = _etiqueta_calibracion_patron(config, 'patron3_modelo', "Patron 3")
-    etiquetas['patron4'] = _etiqueta_calibracion_patron(config, 'patron4_modelo', "Patron 4")
+    if usar_completo:
+        etiquetas['patron4'] = _etiqueta_calibracion_patron(config, 'patron4_modelo', "Patron 4")
 
     for clave, etiqueta in etiquetas.items():
         ruta = archivos.get(clave, "") or ""
@@ -336,14 +340,18 @@ def validar_config(config):
             if not os.path.isfile(ruta_completa):
                 problemas.append(f"No se encuentra el archivo de '{etiqueta}': {ruta_completa}")
 
-    for clave_modelo, nombre in (('patron3_modelo', "Patron 3"), ('patron4_modelo', "Patron 4")):
+    claves_modelo = [('patron3_modelo', "Patron 3")]
+    if usar_completo:
+        claves_modelo.append(('patron4_modelo', "Patron 4"))
+    for clave_modelo, nombre in claves_modelo:
         modelo = config.get(clave_modelo)
         if not modelo or modelo not in PATRONES_TEORICOS:
             problemas.append(
                 f"El modelo teorico de '{nombre}' ('{modelo}') no es valido. "
                 f"Elegi uno de la lista en la pestaña de Calibracion.")
 
-    if config.get('patron3_modelo') and config.get('patron3_modelo') == config.get('patron4_modelo'):
+    if (usar_completo and config.get('patron3_modelo')
+            and config.get('patron3_modelo') == config.get('patron4_modelo')):
         problemas.append(
             "Patron 3 y Patron 4 tienen el mismo modelo teorico asignado: tienen "
             "que ser dos liquidos distintos entre si para que la calibracion "

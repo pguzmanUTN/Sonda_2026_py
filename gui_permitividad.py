@@ -83,6 +83,44 @@ def _generar_preview_s11(ruta_s1p, log_x=True):
 # es una Figure de matplotlib real embebida con FigureCanvasTkAgg, que ya
 # se redimensiona sola con el panel que la contiene.
 # ===========================================================================
+def _crear_indicador_archivo(parent, var_archivo, var_carpeta=None):
+    """
+    Crea (sin colocar con grid/pack -- eso lo decide el llamador) y
+    devuelve un ttk.Label chico que muestra \u2713 (verde) si el archivo
+    referenciado por `var_archivo` existe en disco, o \u2717 (rojo) si no.
+    Si `var_carpeta` se pasa, la ruta a chequear es la combinacion de
+    ambas (`os.path.join`, que ya maneja bien el caso de que `var_archivo`
+    sea una ruta absoluta -- entonces `var_carpeta` se ignora, como
+    corresponde); si no se pasa, se asume que `var_archivo` ya tiene la
+    ruta completa (p.ej. los campos que se cargan con
+    `filedialog.askopenfilename`, que siempre devuelve rutas absolutas).
+
+    El indicador se actualiza solo con cada tecla (via `trace_add` sobre
+    el/los StringVar), sin depender de ningun boton de "Verificar
+    archivos" -- se usa tanto en la pestaña de Calibracion como en los
+    dialogos de Material y de curvas (pestañas 5 y 6).
+    """
+    label = ttk.Label(parent, text="", width=2, anchor="center")
+
+    def _actualizar(*_args):
+        archivo = var_archivo.get().strip()
+        if not archivo:
+            label.configure(text="", foreground="black")
+            return
+        carpeta = var_carpeta.get().strip() if var_carpeta is not None else ""
+        ruta = os.path.join(carpeta, archivo)
+        if os.path.isfile(ruta):
+            label.configure(text="\u2713", foreground="#2e7d32")
+        else:
+            label.configure(text="\u2717", foreground="#c62828")
+
+    var_archivo.trace_add("write", _actualizar)
+    if var_carpeta is not None:
+        var_carpeta.trace_add("write", _actualizar)
+    _actualizar()
+    return label
+
+
 class VisorFigura(ttk.Frame):
     """Panel reusable que embebe una Figure de matplotlib con su barra de
     herramientas interactiva. Uso: `visor.mostrar(fig)` para mostrar una
@@ -199,8 +237,9 @@ class DialogoCurvaComparar(tk.Toplevel):
         self.var_archivo = tk.StringVar(value=curva['archivo'])
         ttk.Entry(frm, textvariable=self.var_archivo, width=40).grid(
             row=0, column=1, sticky="ew", pady=4)
+        _crear_indicador_archivo(frm, self.var_archivo).grid(row=0, column=2, padx=(4, 0))
         ttk.Button(frm, text="Examinar...", command=self._examinar_archivo).grid(
-            row=0, column=2, padx=(6, 0))
+            row=0, column=3, padx=(6, 0))
 
         ttk.Label(frm, text="Columna a graficar:").grid(row=1, column=0, sticky="w", pady=4)
         self.var_columna = tk.StringVar(value=curva['columna'])
@@ -439,15 +478,18 @@ class DialogoMaterial(tk.Toplevel):
         self.var_archivo = tk.StringVar(value=material['archivo'])
         ttk.Entry(frm, textvariable=self.var_archivo, width=36).grid(
             row=1, column=1, sticky="ew", pady=4)
+        _crear_indicador_archivo(
+            frm, self.var_archivo, getattr(master, 'var_carpeta_datos', None)).grid(
+            row=1, column=2, padx=(4, 0))
         ttk.Button(frm, text="Examinar...", command=self._examinar_archivo).grid(
-            row=1, column=2, padx=(6, 0))
+            row=1, column=3, padx=(6, 0))
 
         ttk.Label(frm, text="Modelo teorico:").grid(row=2, column=0, sticky="w", pady=4)
         self.var_modelo_etiqueta = tk.StringVar(value=gf.etiqueta_de_modelo(material.get('modelo')))
         self.combo_modelo = ttk.Combobox(
             frm, textvariable=self.var_modelo_etiqueta, state="readonly",
             values=[et for _, et in gf.listar_modelos_teoricos()], width=33)
-        self.combo_modelo.grid(row=2, column=1, columnspan=2, sticky="ew", pady=4)
+        self.combo_modelo.grid(row=2, column=1, columnspan=3, sticky="ew", pady=4)
         self.combo_modelo.bind("<<ComboboxSelected>>", self._al_cambiar_modelo)
 
         ttk.Label(frm, text="Temperatura (°C):").grid(row=3, column=0, sticky="w", pady=4)
@@ -460,21 +502,36 @@ class DialogoMaterial(tk.Toplevel):
                  "(pasos de 5°C, NPL MAT 23). No hace falta que coincida\n"
                  "exactamente con un escalon de la tabla.")
 
+        # Si el metodo completo esta deshabilitado globalmente (pestaña de
+        # Calibracion), no tiene sentido ofrecer "Completo" aca: se
+        # deshabilita el checkbox y se fuerza a False, con una nota.
+        var_usar_completo_global = getattr(master, 'var_usar_metodo_completo', None)
+        completo_deshabilitado = (
+            var_usar_completo_global is not None and not var_usar_completo_global.get())
+
         ttk.Label(frm, text="Metodos a calcular:").grid(row=4, column=0, sticky="nw", pady=4)
         metodos = material.get('metodos') or ['simplificado', 'completo']
         self.var_simplificado = tk.BooleanVar(value='simplificado' in metodos)
-        self.var_completo = tk.BooleanVar(value='completo' in metodos)
+        self.var_completo = tk.BooleanVar(
+            value=('completo' in metodos) and not completo_deshabilitado)
         frm_metodos = ttk.Frame(frm)
-        frm_metodos.grid(row=4, column=1, columnspan=2, sticky="w")
+        frm_metodos.grid(row=4, column=1, columnspan=3, sticky="w")
         ttk.Checkbutton(frm_metodos, text="Simplificado (corto + aire + patron 3)",
                         variable=self.var_simplificado).pack(anchor="w")
-        ttk.Checkbutton(frm_metodos, text="Completo (+ patron 4)",
-                        variable=self.var_completo).pack(anchor="w")
+        chk_completo = ttk.Checkbutton(frm_metodos, text="Completo (+ patron 4)",
+                                        variable=self.var_completo)
+        chk_completo.pack(anchor="w")
+        if completo_deshabilitado:
+            chk_completo.configure(state="disabled")
+            ttk.Label(frm_metodos,
+                      text="(deshabilitado: el metodo completo est\u00e1 apagado en "
+                           "la pesta\u00f1a de Calibracion)",
+                      style="Ayuda.TLabel").pack(anchor="w")
 
-        ttk.Separator(frm).grid(row=5, column=0, columnspan=3, sticky="ew", pady=10)
+        ttk.Separator(frm).grid(row=5, column=0, columnspan=4, sticky="ew", pady=10)
 
         frm_botones = ttk.Frame(frm)
-        frm_botones.grid(row=6, column=0, columnspan=3, sticky="e")
+        frm_botones.grid(row=6, column=0, columnspan=4, sticky="e")
         ttk.Button(frm_botones, text="Cancelar", command=self.destroy).pack(side="right", padx=(6, 0))
         ttk.Button(frm_botones, text="Guardar", command=self._guardar).pack(side="right")
 
@@ -677,11 +734,12 @@ class AppPermitividad(tk.Tk):
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
         ttk.Label(
             f, text="El metodo simplificado usa corto + aire + patron 3; el metodo "
-                    "completo usa los 4. Patron 3 y patron 4 pueden ser cualquier par "
+                    "completo ademas usa patron 4 (se puede deshabilitar si no interesa "
+                    "el metodo completo). Patron 3 y patron 4 pueden ser cualquier par "
                     "de liquidos con modelo teorico conocido (por defecto agua y "
                     "alcohol isopropilico, pero no hace falta calibrar si o si con "
                     "esos dos).",
-            style="Ayuda.TLabel", wraplength=760, justify="left",
+            style="Ayuda.TLabel", wraplength=800, justify="left",
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
         ttk.Label(f, text="Carpeta base (opcional):").grid(row=2, column=0, sticky="w", pady=3)
@@ -689,10 +747,21 @@ class AppPermitividad(tk.Tk):
         entry_carpeta = ttk.Entry(f, textvariable=self.var_carpeta_datos)
         entry_carpeta.grid(row=2, column=1, sticky="ew", pady=3)
         ttk.Button(f, text="Examinar...", command=self._examinar_carpeta_datos).grid(
-            row=2, column=2, padx=(6, 0), pady=3)
+            row=2, column=3, padx=(6, 0), pady=3)
         _tooltip(entry_carpeta,
                  "Opcional. Si elegis los archivos con 'Examinar...' (rutas\n"
                  "absolutas), podes dejar esto vacio.")
+
+        # Indicador ✓/✗ de archivo (feedback inmediato, sin depender del
+        # boton "Verificar archivos"): se actualiza solo con cada tecla,
+        # via trace_add sobre el StringVar del campo (y de la carpeta
+        # base, ya que la ruta completa depende de ambos).
+        self._widgets_patron4 = []  # para habilitar/deshabilitar en bloque
+
+        def _indicador_archivo(parent, var_archivo, col, fila_):
+            label = _crear_indicador_archivo(parent, var_archivo, self.var_carpeta_datos)
+            label.grid(row=fila_, column=col, padx=(4, 0))
+            return label
 
         # Cortocircuito y aire: son siempre los mismos 2 (no son liquidos
         # con modelo de Debye, y el algoritmo los necesita especificamente
@@ -704,9 +773,10 @@ class AppPermitividad(tk.Tk):
             var = tk.StringVar()
             self.vars_calibracion[clave] = var
             ttk.Entry(f, textvariable=var).grid(row=fila, column=1, sticky="ew", pady=3)
+            _indicador_archivo(f, var, 2, fila)
             ttk.Button(f, text="Examinar...",
                        command=lambda c=clave: self._examinar_archivo_calibracion(c)).grid(
-                row=fila, column=2, padx=(6, 0), pady=3)
+                row=fila, column=3, padx=(6, 0), pady=3)
             fila += 1
 
         # Patron 3 y patron 4: aca es donde entra la flexibilidad -- cada
@@ -728,28 +798,78 @@ class AppPermitividad(tk.Tk):
             ttk.Label(f, text=etiqueta).grid(row=fila, column=0, sticky="w", pady=3)
             var_archivo = tk.StringVar()
             self.vars_calibracion[clave] = var_archivo
-            ttk.Entry(f, textvariable=var_archivo).grid(row=fila, column=1, sticky="ew", pady=3)
-            ttk.Button(f, text="Examinar...",
-                       command=lambda c=clave: self._examinar_archivo_calibracion(c)).grid(
-                row=fila, column=2, padx=(6, 0), pady=3)
+            entry_p = ttk.Entry(f, textvariable=var_archivo)
+            entry_p.grid(row=fila, column=1, sticky="ew", pady=3)
+            _indicador_archivo(f, var_archivo, 2, fila)
+            btn_examinar = ttk.Button(
+                f, text="Examinar...",
+                command=lambda c=clave: self._examinar_archivo_calibracion(c))
+            btn_examinar.grid(row=fila, column=3, padx=(6, 0), pady=3)
 
-            ttk.Label(f, text="  Liquido:").grid(row=fila, column=3, sticky="w")
+            lbl_liquido = ttk.Label(f, text="  Liquido:")
+            lbl_liquido.grid(row=fila, column=4, sticky="w")
             var_modelo = tk.StringVar()
             self.vars_modelo_calibracion[clave] = var_modelo
             combo = ttk.Combobox(f, textvariable=var_modelo, state="readonly",
                                   values=modelos_calibracion, width=24)
-            combo.grid(row=fila, column=4, sticky="w", padx=(4, 0), pady=3)
+            combo.grid(row=fila, column=5, sticky="w", padx=(4, 0), pady=3)
 
-            ttk.Label(f, text="  T (°C):").grid(row=fila, column=5, sticky="w")
+            lbl_temp = ttk.Label(f, text="  T (°C):")
+            lbl_temp.grid(row=fila, column=6, sticky="w")
             var_temp = tk.DoubleVar(value=25.0)
             self.vars_temp_calibracion[clave] = var_temp
             spin = ttk.Spinbox(f, from_=-20, to=150, increment=0.5,
                                 textvariable=var_temp, width=8)
-            spin.grid(row=fila, column=6, sticky="w", padx=(2, 0), pady=3)
+            spin.grid(row=fila, column=7, sticky="w", padx=(2, 0), pady=3)
             _tooltip(spin, tooltips_patron[clave])
+
+            if clave == 'patron4':
+                self._widgets_patron4 = [entry_p, btn_examinar, lbl_liquido, combo,
+                                          lbl_temp, spin]
             fila += 1
 
-        ttk.Separator(f).grid(row=fila, column=0, columnspan=7, sticky="ew", pady=12)
+        # --- Habilitar/deshabilitar el metodo completo por completo ---
+        frm_completo = ttk.Frame(f)
+        frm_completo.grid(row=fila, column=0, columnspan=8, sticky="w", pady=(10, 0))
+        self.var_usar_metodo_completo = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            frm_completo, text="Habilitar metodo completo (usa Patron 4 y calcula Gn)",
+            variable=self.var_usar_metodo_completo,
+            command=self._al_cambiar_usar_metodo_completo,
+        ).pack(side="left")
+        fila += 1
+
+        frm_estrategia = ttk.Frame(f)
+        frm_estrategia.grid(row=fila, column=0, columnspan=8, sticky="w", pady=(4, 0))
+        ttk.Label(frm_estrategia, text="   Punto de arranque de Gn:").pack(side="left")
+        self.var_estrategia_gn = tk.StringVar(value="minimo_gn")
+        self.radio_estrategia_minimo = ttk.Radiobutton(
+            frm_estrategia, text="Autom\u00e1tico (m\u00ednimo de |Gn|)",
+            value="minimo_gn", variable=self.var_estrategia_gn)
+        self.radio_estrategia_minimo.pack(side="left", padx=(6, 0))
+        self.radio_estrategia_max = ttk.Radiobutton(
+            frm_estrategia, text="Frecuencia m\u00e1s alta (cl\u00e1sico)",
+            value="frecuencia_maxima", variable=self.var_estrategia_gn)
+        self.radio_estrategia_max.pack(side="left", padx=(10, 0))
+        self.radio_estrategia_comparar = ttk.Radiobutton(
+            frm_estrategia, text="Comparar ambas",
+            value="comparar_ambas", variable=self.var_estrategia_gn)
+        self.radio_estrategia_comparar.pack(side="left", padx=(10, 0))
+        _tooltip(frm_estrategia,
+                 "Donde arranca la 'marcha en frecuencia' del metodo completo:\n"
+                 "- Automatico: en el punto donde |Gn(f)| es realmente minimo en\n"
+                 "  todo el barrido (mas confiable, sirve para cualquier forma de\n"
+                 "  Gn(f), incluso si el minimo no cae en un extremo).\n"
+                 "- Clasico: siempre en la frecuencia mas alta. Valido solo si Gn\n"
+                 "  decrece en forma monotona con la frecuencia; se deja disponible\n"
+                 "  para comparar contra el automatico.\n"
+                 "- Comparar ambas: corre las dos y las muestra juntas (patrones 3/4\n"
+                 "  y cada material con metodo completo), para ver de un vistazo si\n"
+                 "  la eleccion cambia algo con tus datos, sin correr el analisis dos\n"
+                 "  veces a mano.")
+        fila += 1
+
+        ttk.Separator(f).grid(row=fila, column=0, columnspan=8, sticky="ew", pady=12)
         fila += 1
 
         ttk.Label(
@@ -759,8 +879,23 @@ class AppPermitividad(tk.Tk):
                     "pestaña de Materiales -- ahi conviene dejar tildado solo "
                     "'Simplificado', porque comparar ese mismo liquido con el metodo "
                     "completo da una comparacion circular sin sentido.",
-            style="Ayuda.TLabel", wraplength=760, justify="left",
-        ).grid(row=fila, column=0, columnspan=7, sticky="w", pady=(2, 0))
+            style="Ayuda.TLabel", wraplength=800, justify="left",
+        ).grid(row=fila, column=0, columnspan=8, sticky="w", pady=(2, 0))
+
+    def _al_cambiar_usar_metodo_completo(self):
+        activo = bool(self.var_usar_metodo_completo.get())
+        estado = "normal" if activo else "disabled"
+        for widget in self._widgets_patron4:
+            try:
+                if isinstance(widget, ttk.Combobox):
+                    widget.configure(state=("readonly" if activo else "disabled"))
+                else:
+                    widget.configure(state=estado)
+            except tk.TclError:
+                pass
+        self.radio_estrategia_minimo.configure(state=estado)
+        self.radio_estrategia_max.configure(state=estado)
+        self.radio_estrategia_comparar.configure(state=estado)
 
     def _examinar_carpeta_datos(self):
         ruta = filedialog.askdirectory(title="Carpeta base de datos", parent=self)
@@ -810,6 +945,9 @@ class AppPermitividad(tk.Tk):
         frm_botones = ttk.Frame(f)
         frm_botones.grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Button(frm_botones, text="Agregar...", command=self._agregar_material).pack(side="left")
+        ttk.Button(frm_botones, text="Agregar carpeta...",
+                   command=self._agregar_carpeta_materiales).pack(side="left", padx=6)
+        ttk.Button(frm_botones, text="Duplicar", command=self._duplicar_material).pack(side="left")
         ttk.Button(frm_botones, text="Editar...", command=self._editar_material).pack(side="left", padx=6)
         ttk.Button(frm_botones, text="Quitar", command=self._quitar_material).pack(side="left")
         ttk.Separator(frm_botones, orient="vertical").pack(side="left", fill="y", padx=10)
@@ -835,6 +973,81 @@ class AppPermitividad(tk.Tk):
         if dialogo.resultado is not None:
             self._materiales.append(dialogo.resultado)
             self._refrescar_tabla_materiales()
+
+    def _agregar_carpeta_materiales(self):
+        """Escanea una carpeta elegida por el usuario y agrega un
+        material por cada .s1p encontrado (nombre = nombre de archivo sin
+        extension, sin modelo teorico asignado -- se puede editar despues
+        con 'Editar...'). Util para cargar de una sola vez todas las
+        muestras de una sesion de laboratorio en vez de repetir el
+        dialogo 'Agregar...' una por una. No duplica archivos que ya
+        estuvieran cargados (comparando la ruta completa resuelta)."""
+        carpeta = filedialog.askdirectory(
+            title="Elegir carpeta con archivos .s1p", parent=self)
+        if not carpeta:
+            return
+
+        try:
+            archivos = sorted(
+                nombre for nombre in os.listdir(carpeta)
+                if nombre.lower().endswith('.s1p')
+                and os.path.isfile(os.path.join(carpeta, nombre)))
+        except OSError as exc:
+            messagebox.showerror(
+                "Error al leer la carpeta", f"No se pudo leer '{carpeta}':\n{exc}", parent=self)
+            return
+
+        if not archivos:
+            messagebox.showinfo(
+                "Agregar carpeta", f"No se encontraron archivos .s1p en:\n{carpeta}", parent=self)
+            return
+
+        carpeta_base = self.var_carpeta_datos.get().strip()
+        ya_cargados = {
+            os.path.normcase(os.path.normpath(os.path.join(carpeta_base, m['archivo'])))
+            for m in self._materiales
+        }
+        metodos_default = (['simplificado', 'completo']
+                            if self.var_usar_metodo_completo.get() else ['simplificado'])
+
+        agregados = omitidos = 0
+        for nombre_archivo in archivos:
+            ruta_completa = os.path.join(carpeta, nombre_archivo)
+            clave = os.path.normcase(os.path.normpath(ruta_completa))
+            if clave in ya_cargados:
+                omitidos += 1
+                continue
+            self._materiales.append({
+                'nombre': os.path.splitext(nombre_archivo)[0],
+                'archivo': ruta_completa,
+                'modelo': gf.SIN_MODELO,
+                'temperatura': 25.0,
+                'metodos': list(metodos_default),
+            })
+            ya_cargados.add(clave)
+            agregados += 1
+
+        self._refrescar_tabla_materiales()
+        mensaje = f"Se agregaron {agregados} material(es) desde la carpeta."
+        if omitidos:
+            mensaje += f" ({omitidos} ya estaban cargados, se omitieron.)"
+        self._status(mensaje)
+        if agregados:
+            messagebox.showinfo("Agregar carpeta", mensaje, parent=self)
+
+    def _duplicar_material(self):
+        idx = self._indice_seleccionado()
+        if idx is None:
+            messagebox.showinfo("Duplicar material", "Elegi primero una fila de la tabla.", parent=self)
+            return
+        clon = copy.deepcopy(self._materiales[idx])
+        clon['nombre'] = f"{clon['nombre']} (copia)"
+        dialogo = DialogoMaterial(self, material=clon)
+        self.wait_window(dialogo)
+        if dialogo.resultado is not None:
+            self._materiales.insert(idx + 1, dialogo.resultado)
+            self._refrescar_tabla_materiales()
+            self.tabla_materiales.selection_set(str(idx + 1))
 
     def _editar_material(self):
         idx = self._indice_seleccionado()
@@ -1163,6 +1376,8 @@ class AppPermitividad(tk.Tk):
         frm_botones = ttk.Frame(frm_izq)
         frm_botones.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(frm_botones, text="Agregar...", command=self._agregar_curva_comparar).pack(side="left")
+        ttk.Button(frm_botones, text="Duplicar", command=self._duplicar_curva_comparar).pack(
+            side="left", padx=6)
         ttk.Button(frm_botones, text="Editar...", command=self._editar_curva_comparar).pack(
             side="left", padx=6)
         ttk.Button(frm_botones, text="Quitar", command=self._quitar_curva_comparar).pack(side="left")
@@ -1204,6 +1419,21 @@ class AppPermitividad(tk.Tk):
             self._curvas_comparar.append(dialogo.resultado)
             self._refrescar_tabla_comparar()
             self._graficar_comparacion_curvas()
+
+    def _duplicar_curva_comparar(self):
+        idx = self._indice_curva_comparar_seleccionada()
+        if idx is None:
+            messagebox.showinfo("Duplicar curva", "Elegi primero una fila de la tabla.", parent=self)
+            return
+        clon = dict(self._curvas_comparar[idx])
+        clon['etiqueta'] = f"{clon['etiqueta']} (copia)"
+        dialogo = DialogoCurvaComparar(self, curva=clon)
+        self.wait_window(dialogo)
+        if dialogo.resultado is not None:
+            self._curvas_comparar.insert(idx + 1, dialogo.resultado)
+            self._refrescar_tabla_comparar()
+            self._graficar_comparacion_curvas()
+            self.tabla_comparar.selection_set(str(idx + 1))
 
     def _editar_curva_comparar(self):
         idx = self._indice_curva_comparar_seleccionada()
@@ -1322,6 +1552,8 @@ class AppPermitividad(tk.Tk):
         frm_botones = ttk.Frame(frm_izq)
         frm_botones.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(frm_botones, text="Agregar...", command=self._agregar_modelo).pack(side="left")
+        ttk.Button(frm_botones, text="Duplicar", command=self._duplicar_modelo).pack(
+            side="left", padx=6)
         ttk.Button(frm_botones, text="Editar...", command=self._editar_modelo).pack(side="left", padx=6)
         ttk.Button(frm_botones, text="Quitar", command=self._quitar_modelo).pack(side="left")
         ttk.Separator(frm_botones, orient="vertical").pack(side="left", fill="y", padx=10)
@@ -1329,11 +1561,21 @@ class AppPermitividad(tk.Tk):
         ttk.Button(frm_botones, text="Bajar", command=lambda: self._mover_modelo(1)).pack(
             side="left", padx=6)
 
+        boton_usar_actuales = ttk.Button(
+            frm_izq, text="Usar Patr\u00f3n 3/4 actuales", command=self._usar_patrones_actuales)
+        boton_usar_actuales.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        _tooltip(boton_usar_actuales,
+                 "Agrega a la lista el/los liquido(s) configurados AHORA MISMO como\n"
+                 "Patron 3 (y Patron 4, si el metodo completo esta habilitado) en la\n"
+                 "pestaña de Calibracion, con su temperatura tal cual esta ahi -- para\n"
+                 "no tener que volver a tipearlos si solo queres ver como luce la\n"
+                 "calibracion vigente.")
+
         self.var_log_x_modelos = tk.BooleanVar(value=True)
         ttk.Checkbutton(frm_izq, text="Escala logaritmica en frecuencia",
                          variable=self.var_log_x_modelos,
                          command=self._graficar_modelos).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         # --- Panel derecho: grafico interactivo ---
         frm_der = ttk.LabelFrame(paned, text="er' / er'' superpuestos")
@@ -1362,6 +1604,64 @@ class AppPermitividad(tk.Tk):
             self._curvas_modelos.append(dialogo.resultado)
             self._refrescar_tabla_modelos()
             self._graficar_modelos()
+
+    def _duplicar_modelo(self):
+        idx = self._indice_modelo_seleccionado()
+        if idx is None:
+            messagebox.showinfo("Duplicar modelo", "Elegi primero una fila de la tabla.", parent=self)
+            return
+        clon = dict(self._curvas_modelos[idx])
+        clon['etiqueta'] = f"{clon['etiqueta']} (copia)"
+        dialogo = DialogoModeloTeorico(self, curva=clon)
+        self.wait_window(dialogo)
+        if dialogo.resultado is not None:
+            self._curvas_modelos.insert(idx + 1, dialogo.resultado)
+            self._refrescar_tabla_modelos()
+            self._graficar_modelos()
+            self.tabla_modelos.selection_set(str(idx + 1))
+
+    def _usar_patrones_actuales(self):
+        """Agrega el/los liquido(s) configurados AHORA MISMO como Patron 3
+        (y Patron 4, si el metodo completo esta habilitado) en la pestaña
+        de Calibracion, con su temperatura tal cual esta ahi -- para no
+        tener que volver a tipearlos si solo se quiere ver como luce la
+        calibracion vigente. Usa el rango de frecuencias configurado en
+        la pestaña 'Salida y ejecucion' (F min/F max)."""
+        f_min = float(self._obtener_double(self.var_f_min, 0.5))
+        f_max = float(self._obtener_double(self.var_f_max, 6.0))
+        agregadas = 0
+
+        modelo_p3 = gf.clave_de_etiqueta(self.vars_modelo_calibracion['patron3'].get())
+        if modelo_p3:
+            temp_p3 = float(self._obtener_double(self.vars_temp_calibracion['patron3'], 25.0))
+            self._curvas_modelos.append({
+                'etiqueta': f"Patron 3 actual ({gf.etiqueta_de_modelo(modelo_p3)}, {temp_p3:.1f}\u00b0C)",
+                'modelo': modelo_p3, 'temperatura': temp_p3,
+                'f_min_ghz': f_min, 'f_max_ghz': f_max, 'n_puntos': 200,
+            })
+            agregadas += 1
+
+        if self.var_usar_metodo_completo.get():
+            modelo_p4 = gf.clave_de_etiqueta(self.vars_modelo_calibracion['patron4'].get())
+            if modelo_p4:
+                temp_p4 = float(self._obtener_double(self.vars_temp_calibracion['patron4'], 25.0))
+                self._curvas_modelos.append({
+                    'etiqueta': f"Patron 4 actual ({gf.etiqueta_de_modelo(modelo_p4)}, "
+                                f"{temp_p4:.1f}\u00b0C)",
+                    'modelo': modelo_p4, 'temperatura': temp_p4,
+                    'f_min_ghz': f_min, 'f_max_ghz': f_max, 'n_puntos': 200,
+                })
+                agregadas += 1
+
+        if agregadas:
+            self._refrescar_tabla_modelos()
+            self._graficar_modelos()
+            self._status(f"Se agregaron {agregadas} curva(s) desde la calibracion actual.")
+        else:
+            messagebox.showinfo(
+                "Usar patrones actuales",
+                "No hay ningun modelo teorico elegido todavia en la pesta\u00f1a de "
+                "Calibracion.", parent=self)
 
     def _editar_modelo(self):
         idx = self._indice_modelo_seleccionado()
@@ -1460,6 +1760,8 @@ class AppPermitividad(tk.Tk):
             'patron4_modelo': gf.clave_de_etiqueta(self.vars_modelo_calibracion['patron4'].get()),
             'patron4_temperatura_c': float(self._obtener_double(
                 self.vars_temp_calibracion['patron4'], 25.0)),
+            'usar_metodo_completo': bool(self.var_usar_metodo_completo.get()),
+            'estrategia_gn': self.var_estrategia_gn.get(),
             'materiales': copy.deepcopy(self._materiales),
             'carpeta_salida': self.var_carpeta_salida.get().strip(),
             'nombre_informe_pdf': self.var_nombre_pdf.get().strip() or "informe_permitividad.pdf",
@@ -1490,6 +1792,9 @@ class AppPermitividad(tk.Tk):
             gf.etiqueta_de_modelo(config.get('patron4_modelo') or 'alcohol_isopropilico'))
         self.vars_temp_calibracion['patron4'].set(
             float(config.get('patron4_temperatura_c', 25.0) or 25.0))
+        self.var_usar_metodo_completo.set(bool(config.get('usar_metodo_completo', True)))
+        self.var_estrategia_gn.set(config.get('estrategia_gn') or 'minimo_gn')
+        self._al_cambiar_usar_metodo_completo()
         self._materiales = copy.deepcopy(config.get('materiales', []) or [])
         self._refrescar_tabla_materiales()
         self.var_carpeta_salida.set(config.get('carpeta_salida', "") or "")
@@ -1783,10 +2088,18 @@ class AppPermitividad(tk.Tk):
             graficos[f"Chequeo de calibracion ({etiqueta_p3})"] = (
                 lambda d=d: ap.graficar_comparacion(
                     d['frecs'], d['medido'], d['teorico'], d['titulo'], log_x=d['log_x']))
+        chequeo_p4 = chequeo.get('patron4')
+        if chequeo_p4 and chequeo_p4.get('datos_grafico'):
+            etiqueta_p4 = chequeo.get('etiqueta_patron4') or "patron 4"
+            d4 = chequeo_p4['datos_grafico']
+            graficos[f"Chequeo de calibracion ({etiqueta_p4})"] = (
+                lambda d4=d4: ap.graficar_comparacion(
+                    d4['frecs'], d4['medido'], d4['teorico'], d4['titulo'], log_x=d4['log_x']))
         if chequeo.get('datos_grafico_Gn'):
             dg = chequeo['datos_grafico_Gn']
             graficos["Diagnostico: Gn(f) (calibracion)"] = (
-                lambda dg=dg: ap.graficar_Gn(dg['frecs'], dg['Gn'], log_x=dg['log_x']))
+                lambda dg=dg: ap.graficar_Gn(dg['frecs'], dg['Gn'], log_x=dg['log_x'],
+                                              marcas_inicio=dg.get('marcas_inicio')))
         for r in resultado.get('resultados_materiales', []):
             # Ojo: antes tambien se listaban aca "<material> - S11
             # (modulo/fase)" y "<material> - S11 (Smith)". Se sacaron

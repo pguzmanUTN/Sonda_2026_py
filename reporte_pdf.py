@@ -45,6 +45,22 @@ _ESTILOS.add(ParagraphStyle(name='Nota', parent=_ESTILOS['Normal'],
 _ESTILOS.add(ParagraphStyle(name='AvisoCancelado', parent=_ESTILOS['Normal'],
                              fontSize=10.5, fontName='Helvetica-Bold',
                              textColor=colors.HexColor('#b34700'), alignment=TA_CENTER))
+# Estilos para celdas de tabla: a diferencia de un string plano (lo que
+# se usaba antes), un Paragraph SI hace salto de linea automatico si el
+# texto no entra en el ancho de columna disponible. Sin esto, una
+# etiqueta larga (un modelo teorico con nombre largo, una ruta de
+# archivo, "Medido (completo, 4 patrones, Automatico)", etc.) no se
+# recorta ni ajusta: se dibuja igual, se sale de su celda y queda
+# superpuesta con el texto de al lado -- se ve roto aunque el dato en si
+# este bien.
+_ESTILOS.add(ParagraphStyle(name='CeldaTabla', parent=_ESTILOS['Normal'],
+                             fontSize=8.5, leading=10.5, alignment=TA_CENTER))
+_ESTILOS.add(ParagraphStyle(name='CeldaTablaEncabezado', parent=_ESTILOS['CeldaTabla'],
+                             fontName='Helvetica-Bold', textColor=colors.white))
+_ESTILOS.add(ParagraphStyle(name='CeldaMetadata', parent=_ESTILOS['Normal'],
+                             fontSize=9.5, leading=12))
+_ESTILOS.add(ParagraphStyle(name='CeldaMetadataLabel', parent=_ESTILOS['CeldaMetadata'],
+                             fontName='Helvetica-Bold'))
 
 _COLOR_ENCABEZADO = colors.HexColor('#2c3e50')
 _COLOR_FILA_PAR = colors.HexColor('#f2f2f2')
@@ -94,14 +110,17 @@ def _tabla_errores(errores):
     errores: dict {etiqueta: {'err_re_medio','err_re_max','err_im_medio','err_im_max'}}
     (valores en %, ya calculados con funciones.error_relativo_porcentual).
     """
-    datos = [["Metodo", "Error medio\ner'", "Error max\ner'", "Error medio\ner''", "Error max\ner''"]]
+    encabezado = ["Metodo", "Error medio\ner'", "Error max\ner'", "Error medio\ner''", "Error max\ner''"]
+    datos = [[Paragraph(h, _ESTILOS['CeldaTablaEncabezado']) for h in encabezado]]
     for etiqueta, e in errores.items():
         datos.append([
-            etiqueta,
-            f"{e['err_re_medio']:.2f}%", f"{e['err_re_max']:.2f}%",
-            f"{e['err_im_medio']:.2f}%", f"{e['err_im_max']:.2f}%",
+            Paragraph(str(etiqueta), _ESTILOS['CeldaTabla']),
+            Paragraph(f"{e['err_re_medio']:.2f}%", _ESTILOS['CeldaTabla']),
+            Paragraph(f"{e['err_re_max']:.2f}%", _ESTILOS['CeldaTabla']),
+            Paragraph(f"{e['err_im_medio']:.2f}%", _ESTILOS['CeldaTabla']),
+            Paragraph(f"{e['err_im_max']:.2f}%", _ESTILOS['CeldaTabla']),
         ])
-    ancho_primera = 6 * cm
+    ancho_primera = 6.5 * cm
     ancho_resto = (_ANCHO_PAGINA_UTIL - ancho_primera) / 4
     t = Table(datos, hAlign='LEFT',
               colWidths=[ancho_primera] + [ancho_resto] * 4)
@@ -116,12 +135,12 @@ def _tabla_resumen(frecs_ghz, columnas):
                 (mismo largo que frecs_ghz).
     """
     encabezado = ["f (GHz)"] + list(columnas.keys())
-    datos = [encabezado]
+    datos = [[Paragraph(h, _ESTILOS['CeldaTablaEncabezado']) for h in encabezado]]
     for i, f in enumerate(frecs_ghz):
-        fila = [f"{f:.2f}"]
+        fila = [Paragraph(f"{f:.2f}", _ESTILOS['CeldaTabla'])]
         for col in columnas.values():
             v = col[i]
-            fila.append(f"{v.real:.2f} - {abs(v.imag):.2f}j")
+            fila.append(Paragraph(f"{v.real:.2f} - {abs(v.imag):.2f}j", _ESTILOS['CeldaTabla']))
         datos.append(fila)
 
     ancho_primera = 2.2 * cm
@@ -163,28 +182,62 @@ def _fila_temperatura(etiqueta, valor):
 
 def _tabla_metadata(metadata):
     fecha = metadata.get('fecha') or datetime.now().strftime("%d/%m/%Y %H:%M")
+    usar_completo = metadata.get('usar_metodo_completo', True)
     etiqueta_p3 = metadata.get('patron3_etiqueta') or metadata.get('patron3_modelo') or "Patron 3"
-    etiqueta_p4 = metadata.get('patron4_etiqueta') or metadata.get('patron4_modelo') or "Patron 4"
     filas = [
         ["Fecha de generacion", fecha],
         _fila_temperatura(f"Patron 3 ({etiqueta_p3}) - T (CAL)",
                            metadata.get('patron3_temperatura')),
-        _fila_temperatura(f"Patron 4 ({etiqueta_p4}) - T (CAL)",
-                           metadata.get('patron4_temperatura')),
-        ["Banda analizada", f"{metadata['f_min_ghz']} - {metadata['f_max_ghz']} GHz"],
     ]
+    if usar_completo:
+        etiqueta_p4 = metadata.get('patron4_etiqueta') or metadata.get('patron4_modelo') or "Patron 4"
+        filas.append(_fila_temperatura(f"Patron 4 ({etiqueta_p4}) - T (CAL)",
+                                        metadata.get('patron4_temperatura')))
+        estrategia = metadata.get('estrategia_gn') or "minimo_gn"
+        etiquetas_estrategia = {
+            'minimo_gn': "m\u00ednimo de |Gn| en el barrido (autom\u00e1tico)",
+            'frecuencia_maxima': "frecuencia m\u00e1s alta (cl\u00e1sico)",
+            'comparar_ambas': "ambas estrategias, comparadas",
+        }
+        etiqueta_estrategia = etiquetas_estrategia.get(estrategia, estrategia)
+        filas.append(["Arranque de Gn (m\u00e9todo completo)", etiqueta_estrategia])
+    else:
+        filas.append(["M\u00e9todo completo", "No usado (solo m\u00e9todo simplificado)"])
+    filas.append(["Banda analizada", f"{metadata['f_min_ghz']} - {metadata['f_max_ghz']} GHz"])
     for clave, archivo in metadata.get('archivos_calibracion', {}).items():
-        filas.append([f"Patron de calibracion: {clave}", archivo])
+        # Solo el nombre de archivo, no la ruta completa: una ruta larga
+        # (tipica en Windows, con varias carpetas anidadas) no aporta
+        # nada util aca y se ve mal si no entra en el ancho de columna.
+        # La ruta completa de cada .s1p usado sigue quedando disponible
+        # igual en la carpeta de salida (se copian ahi -- ver
+        # `analisis_permitividad._copiar_insumos`), asi que no se pierde
+        # informacion, solo se saca del PDF lo que no hace falta mostrar.
+        nombre_archivo = os.path.basename(archivo) if archivo else archivo
+        filas.append([f"Patron de calibracion: {clave}", nombre_archivo])
 
-    t = Table(filas, hAlign='LEFT', colWidths=[7 * cm, 10 * cm])
+    # Un Paragraph SI hace salto de linea automatico si el texto no entra
+    # en el ancho de columna disponible -- a diferencia de un string
+    # plano (lo que se usaba antes), que en ese caso no se recorta ni
+    # ajusta: se dibuja igual, se sale de su celda y queda superpuesto
+    # con el texto de al lado (se ve roto aunque el dato en si este bien;
+    # pasaba sobre todo con nombres de modelo largos como "Agua
+    # (Liebe-Hufford-Manabe)" en la etiqueta, o con rutas de archivo
+    # largas antes de este cambio).
+    filas_wrap = [
+        [Paragraph(str(etiqueta), _ESTILOS['CeldaMetadataLabel']),
+         Paragraph(str(valor), _ESTILOS['CeldaMetadata'])]
+        for etiqueta, valor in filas
+    ]
+
+    t = Table(filas_wrap, hAlign='LEFT', colWidths=[7 * cm, 10 * cm])
     t.setStyle(TableStyle([
-        ('FONTSIZE', (0, 0), (-1, -1), 9.5),
         ('GRID', (0, 0), (-1, -1), 0.4, colors.lightgrey),
         ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#eef2f5')),
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('TOPPADDING', (0, 0), (-1, -1), 5),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
     ]))
     return t
 
@@ -284,6 +337,33 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
             bloque.append(Spacer(1, 0.3 * cm))
             bloque.append(_tabla_errores(chequeo_calibracion['errores']))
         story.append(KeepTogether(bloque))
+
+        # Chequeo ANALOGO para el patron 4 (solo si el metodo completo
+        # esta habilitado -- ver analisis_permitividad.ejecutar_analisis).
+        # Da una segunda validacion independiente de la calibracion: si
+        # el patron 3 pasa pero el patron 4 no (o al reves), el problema
+        # esta especificamente en la medicion/modelo de ese patron.
+        chequeo_p4 = chequeo_calibracion.get('patron4')
+        if chequeo_p4 is not None:
+            bloque_p4 = [
+                Paragraph(f"Chequeo de calibraci\u00f3n ({etiqueta_p4})", _ESTILOS['NombreMaterial']),
+                Paragraph(
+                    f"Mismo chequeo que el de arriba, pero para {etiqueta_p4} (el 4to "
+                    "patron): al procesarlo como si fuera un material m\u00e1s, el "
+                    "resultado tiene que coincidir pr\u00e1cticamente con su propio "
+                    "modelo te\u00f3rico. Da una validaci\u00f3n independiente de la de "
+                    f"{etiqueta_p3} -- un problema espec\u00edfico de este patr\u00f3n "
+                    "puede no notarse mirando solo el chequeo anterior.",
+                    _ESTILOS['Normal']),
+                Spacer(1, 0.3 * cm),
+            ]
+            if chequeo_p4.get('figura') and os.path.isfile(chequeo_p4['figura']):
+                bloque_p4.append(_imagen_ajustada(chequeo_p4['figura']))
+            if chequeo_p4.get('errores'):
+                bloque_p4.append(Spacer(1, 0.3 * cm))
+                bloque_p4.append(_tabla_errores(chequeo_p4['errores']))
+            story.append(Spacer(1, 0.3 * cm))
+            story.append(KeepTogether(bloque_p4))
 
         # Diagnostico aparte: Gn(f) no depende del patron 3 en particular
         # sino de los 4 patrones de calibracion en conjunto, asi que va en

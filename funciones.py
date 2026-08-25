@@ -223,7 +223,8 @@ def _resolver_raiz_fisica(coeficientes, semilla):
 
 def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
                          S11_patron4, S11_corto, Er_patron3, Er_patron4,
-                         Er_aire=ER_AIRE, verbose=False):
+                         Er_aire=ER_AIRE, verbose=False,
+                         estrategia_semilla='minimo_gn'):
     """
     Calcula la permitividad relativa compleja del DUT a partir del modelo
     de admitancia "completo" (con conductancia de radiacion normalizada Gn),
@@ -267,6 +268,27 @@ def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
         analizados con el metodo completo, no solo el del propio patron 4.
     Er_aire : float
         Permitividad relativa del aire (por defecto 1.0006).
+    estrategia_semilla : {'minimo_gn', 'frecuencia_maxima'}
+        Donde arranca la "marcha" en frecuencia (ver mas abajo):
+
+        - 'minimo_gn' (default): arranca en el punto donde |Gn(f)| es
+          MINIMO en todo el barrido -- ahi el metodo simplificado (que
+          asume Gn=0) da la mejor semilla posible, sea cual sea la
+          frecuencia donde ocurra -- y marcha desde ahi hacia AMBOS lados
+          (frecuencias mas altas y mas bajas).
+        - 'frecuencia_maxima': arranca siempre en la frecuencia MAS ALTA
+          del barrido (equivalente a marchar en una sola direccion,
+          descendente). Es el comportamiento de versiones anteriores de
+          esta funcion, valido solo si C0/G0 son aproximadamente
+          constantes en todo el barrido (ahi |Gn| decrece en forma
+          monotona con la frecuencia, y el maximo es tambien el minimo de
+          |Gn|). En patrones reales eso no siempre se cumple -- la sonda
+          deja de comportarse como un capacitor+conductancia ideales y
+          empieza a irradiar de forma mas compleja a medida que la
+          longitud de onda se acerca al tamano de la sonda -- por eso
+          'minimo_gn' es el default; esta opcion se deja disponible para
+          comparar ambas estrategias o por si en algun caso puntual se
+          prefiere forzar el comportamiento clasico.
 
     Retorna
     -------
@@ -332,13 +354,27 @@ def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
     # resuelto como semilla del siguiente.
     idx_gn_minimo = int(np.argmin(np.abs(Gn)))
     orden = np.argsort(frecs)  # indices en orden ASCENDENTE de frecuencia
-    pos_inicio = int(np.where(orden == idx_gn_minimo)[0][0])
+
+    if estrategia_semilla == 'minimo_gn':
+        pos_inicio = int(np.where(orden == idx_gn_minimo)[0][0])
+    elif estrategia_semilla == 'frecuencia_maxima':
+        # El ultimo en orden ASCENDENTE es la frecuencia mas alta. Con
+        # pos_inicio ahi, el bucle "hacia arriba" de mas abajo no tiene
+        # nada que recorrer (ya es el ultimo indice), asi que el resultado
+        # es exactamente el comportamiento clasico: una sola marcha
+        # descendente arrancando en la frecuencia mas alta.
+        pos_inicio = len(orden) - 1
+    else:
+        raise ValueError(
+            f"estrategia_semilla invalida: {estrategia_semilla!r} "
+            f"(opciones validas: 'minimo_gn', 'frecuencia_maxima')")
 
     if verbose:
-        print(f"  [get_er_DUT_completo] |Gn| minimo en f="
-              f"{frecs[idx_gn_minimo] / 1e9:.4f} GHz (|Gn|="
-              f"{abs(Gn[idx_gn_minimo]):.4g}) -- la marcha arranca ahi y "
-              f"avanza hacia ambos lados.")
+        print(f"  [get_er_DUT_completo] estrategia='{estrategia_semilla}': "
+              f"la marcha arranca en f={frecs[orden[pos_inicio]] / 1e9:.4f} GHz "
+              f"(|Gn| ahi = {abs(Gn[orden[pos_inicio]]):.4g}; el minimo real de "
+              f"|Gn| en todo el barrido es {abs(Gn[idx_gn_minimo]):.4g}, en "
+              f"f={frecs[idx_gn_minimo] / 1e9:.4f} GHz).")
 
     def _resolver_en(n, semilla):
         coef_X = Er_patron3[n] + Gn[n] * (Er_patron3[n] ** 2.5)

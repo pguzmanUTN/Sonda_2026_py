@@ -407,7 +407,7 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
     return fig
 
 
-def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True):
+def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True, marcas_inicio=None):
     """
     Grafica la conductancia normalizada Gn(f) calculada a partir de los 4
     patrones de calibracion (ver `funciones.calcular_Gn`), en modulo y
@@ -423,6 +423,16 @@ def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True):
     unico que entra en el calculo de Gn y en ningun otro lado del metodo
     simplificado, por lo que un problema ahi puede pasar desapercibido si
     solo se mira el chequeo de calibracion del patron 3).
+
+    marcas_inicio : dict {etiqueta: frecuencia_hz}, opcional
+        Dibuja una linea vertical punteada en cada frecuencia indicada,
+        marcando donde arranca la "marcha en frecuencia" del metodo
+        completo con cada estrategia (ver `funciones.get_er_DUT_completo`,
+        parametro `estrategia_semilla`) -- para ver de un vistazo si el
+        punto de arranque cae en una zona con |Gn| chico (deseable) o no,
+        sin tener que leer el log de texto. Si son 2 marcas (una por
+        estrategia, cuando se esta comparando "automatico" vs. "clasico"),
+        quedan una al lado de la otra con colores distintos.
     """
     from matplotlib.figure import Figure
     fig = Figure(figsize=(9, 6))
@@ -434,14 +444,17 @@ def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True):
     # hace con la fase de S11 en Touchstone.graficar_s11_mag_fase.
     fase_Gn = np.degrees(np.unwrap(np.angle(Gn)))
 
-    ax_mag.plot(frecs / 1e9, mag_Gn, linewidth=1.6, color='tab:purple')
+    tiene_marcas = bool(marcas_inicio)
+    ax_mag.plot(frecs / 1e9, mag_Gn, linewidth=1.6, color='tab:purple',
+                label="|Gn(f)|" if tiene_marcas else None, zorder=3)
     ax_mag.set_ylabel("|Gn|")
     ax_mag.set_title("Conductancia normalizada Gn(f) \u2014 diagnostico de calibracion")
     ax_mag.minorticks_on()
     ax_mag.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
     ax_mag.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
 
-    ax_fase.plot(frecs / 1e9, fase_Gn, linewidth=1.6, color='tab:purple')
+    ax_fase.plot(frecs / 1e9, fase_Gn, linewidth=1.6, color='tab:purple',
+                 label="Fase Gn(f)" if tiene_marcas else None, zorder=3)
     ax_fase.set_xlabel("Frecuencia (GHz)")
     ax_fase.set_ylabel("Fase Gn (\u00b0)")
     ax_fase.minorticks_on()
@@ -454,6 +467,18 @@ def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True):
     ax_fase.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
     ax_fase.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
     ax_fase.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+
+    if marcas_inicio:
+        colores_marca = ['#d62728', '#2ca02c', '#ff7f0e']
+        for i, (etiqueta, f_hz) in enumerate(marcas_inicio.items()):
+            color = colores_marca[i % len(colores_marca)]
+            f_ghz = f_hz / 1e9
+            ax_mag.axvline(f_ghz, color=color, linestyle='--', linewidth=1.4,
+                            label=f"Arranque: {etiqueta}", zorder=2)
+            ax_fase.axvline(f_ghz, color=color, linestyle='--', linewidth=1.4,
+                             label=f"Arranque: {etiqueta}", zorder=2)
+        ax_mag.legend(fontsize=8)
+        ax_fase.legend(fontsize=8)
 
     if log_x and frecs.size > 0 and np.all(frecs > 0):
         ax_mag.set_xscale('log')
@@ -669,10 +694,57 @@ def generar_grilla_frecuencias(f_min_ghz, f_max_ghz, n_puntos, log_x=True):
     return np.linspace(f_min_hz, f_max_hz, n_puntos)
 
 
+# Nombres lindos para cada estrategia, usados tanto en etiquetas de
+# graficos/tablas como en metadata del PDF.
+ETIQUETA_ESTRATEGIA_GN = {
+    'minimo_gn': "Autom\u00e1tico (m\u00ednimo de |Gn|)",
+    'frecuencia_maxima': "Cl\u00e1sico (frecuencia m\u00e1s alta)",
+    'comparar_ambas': "Comparar ambas",
+}
+
+
+def _calcular_metodo_completo(frecs, s11_dut, s11_patron3, s11_aire, s11_patron4,
+                               s11_corto, Er_patron3, Er_patron4, estrategia_gn,
+                               prefijo="Medido (completo", verbose=False):
+    """
+    Calcula el metodo completo para un DUT (`s11_dut`), respetando
+    `estrategia_gn`:
+
+    - 'minimo_gn' / 'frecuencia_maxima': una sola corrida con esa
+      estrategia. Devuelve {f"{prefijo})": resultado} (una sola entrada).
+    - 'comparar_ambas': corre LAS DOS estrategias (automatica y clasica)
+      y devuelve las dos, con etiquetas distintas -- para poder ver de
+      un vistazo si la eleccion de estrategia cambia algo con los datos
+      reales, sin tener que correr el analisis dos veces a mano.
+
+    Se usa tanto para el chequeo de calibracion (patron 3 y patron 4,
+    tratados como si fueran un DUT mas) como para cada material en
+    `procesar_material` -- `prefijo` es lo unico que cambia entre esos
+    usos, para que la etiqueta final tenga sentido en cada contexto.
+
+    Retorna un dict {etiqueta: ndarray complejo} con 1 o 2 entradas.
+    """
+    if estrategia_gn == 'comparar_ambas':
+        return {
+            f"{prefijo}, Autom\u00e1tico)": get_er_DUT_completo(
+                frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='minimo_gn'),
+            f"{prefijo}, Cl\u00e1sico)": get_er_DUT_completo(
+                frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='frecuencia_maxima'),
+        }
+    return {
+        f"{prefijo})": get_er_DUT_completo(
+            frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+            Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla=estrategia_gn),
+    }
+
+
 def procesar_material(material, carpeta_datos, cache, frecs,
                        s11_corto, s11_aire, s11_patron3, s11_patron4,
                        Er_patron3, Er_patron4, carpeta_salida=None,
-                       f_min_ghz=None, f_max_ghz=None, log_x=None):
+                       f_min_ghz=None, f_max_ghz=None, log_x=None,
+                       estrategia_gn='minimo_gn'):
     """Procesa una entrada de MATERIALES: lee su .s1p, calcula la
     permitividad con los metodos indicados, grafica (contra la curva
     teorica si se conoce, o solo lo medido si no), exporta CSV y devuelve
@@ -682,11 +754,17 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     `Er_patron3`/`Er_patron4`: permitividad teorica de los patrones 3 y 4
     de la calibracion, YA EVALUADA en `frecs` (ver `ejecutar_analisis`,
     que resuelve que modelo y temperatura usar para cada uno).
+    `s11_patron4`/`Er_patron4` pueden ser None si el metodo completo esta
+    deshabilitado (sin patron 4): en ese caso, cualquier material que
+    pida 'completo' en sus metodos simplemente se omite (con un aviso),
+    y solo se calcula lo que haya pedido con 'simplificado'.
     `carpeta_salida`, `f_min_ghz`, `f_max_ghz`, `log_x`: si se omiten
     (None), se usan las constantes definidas mas arriba en este archivo
     (comportamiento identico al de antes). `ejecutar_analisis` los pasa
     explicitamente para poder usar valores distintos (p.ej. los que cargo
-    la GUI) sin tocar esas constantes."""
+    la GUI) sin tocar esas constantes.
+    `estrategia_gn`: se pasa tal cual a `funciones.get_er_DUT_completo`
+    (parametro `estrategia_semilla`) -- ver su docstring."""
     carpeta_salida = CARPETA_SALIDA if carpeta_salida is None else carpeta_salida
     f_min_ghz = F_MIN_GHZ if f_min_ghz is None else f_min_ghz
     f_max_ghz = F_MAX_GHZ if f_max_ghz is None else f_max_ghz
@@ -720,9 +798,15 @@ def procesar_material(material, carpeta_datos, cache, frecs,
         resultados['Medido (simplificado, 3 patrones)'] = get_er_DUTm(
             frecs, s11_dut, s11_patron3, s11_aire, s11_corto, Er_patron3)
     if 'completo' in metodos:
-        resultados['Medido (completo, 4 patrones)'] = get_er_DUT_completo(
-            frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
-            Er_patron3, Er_patron4, verbose=True)
+        if s11_patron4 is None or Er_patron4 is None:
+            print(f"  [aviso] '{nombre}' tenia tildado el metodo completo, pero el "
+                  f"metodo completo esta deshabilitado (sin patron 4): se omite y "
+                  f"solo se calcula lo que haya con el metodo simplificado.")
+        else:
+            resultados.update(_calcular_metodo_completo(
+                frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                Er_patron3, Er_patron4, estrategia_gn,
+                prefijo="Medido (completo, 4 patrones", verbose=True))
 
     modelo = material.get('modelo') or None
     temperatura_material = float(material.get('temperatura', 25.0)) if modelo else None
@@ -833,8 +917,25 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
                                   durante la calibracion.
         'patron4_modelo'       : idem para el 4to patron (default:
                                   'alcohol_isopropilico'), solo usado por
-                                  el metodo completo.
+                                  el metodo completo. Se ignora por
+                                  completo si 'usar_metodo_completo' es
+                                  False.
         'patron4_temperatura_c': float, temperatura real de ese liquido.
+        'usar_metodo_completo' : bool, opcional (default True). Si es
+                                  False, no hace falta el patron 4 para
+                                  nada (ni archivo, ni modelo/temperatura):
+                                  todos los materiales se procesan
+                                  UNICAMENTE con el metodo simplificado,
+                                  sin calcular Gn ni el diagnostico
+                                  correspondiente. Util si solo interesan
+                                  materiales de bajas perdidas y no se
+                                  quiere medir/calibrar un 4to patron.
+        'estrategia_gn'        : 'minimo_gn' (default) o
+                                  'frecuencia_maxima' -- se pasa tal cual
+                                  a `funciones.get_er_DUT_completo` (ver
+                                  su parametro `estrategia_semilla`). Sin
+                                  efecto si 'usar_metodo_completo' es
+                                  False.
         'materiales'           : lista de dicts {nombre, archivo, modelo,
                                   temperatura, metodos} (ver formato de
                                   MATERIALES mas arriba).
@@ -904,11 +1005,22 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     T_patron3 = float(config.get('patron3_temperatura_c', PATRON3_TEMPERATURA_CAL_C))
     modelo_patron4 = config.get('patron4_modelo') or PATRON4_MODELO_CAL
     T_patron4 = float(config.get('patron4_temperatura_c', PATRON4_TEMPERATURA_CAL_C))
+    # Si esta en False, no hace falta el patron 4 en absoluto: ni el
+    # archivo, ni el modelo/temperatura, ni Gn. Util cuando solo interesa
+    # el metodo simplificado (p.ej. materiales de bajas perdidas) y no se
+    # quiere tener que medir/calibrar un 4to patron para nada.
+    usar_metodo_completo = bool(config.get('usar_metodo_completo', True))
+    # Donde arranca la "marcha" en frecuencia del metodo completo -- ver
+    # el parametro homonimo de `funciones.get_er_DUT_completo`. Sin efecto
+    # si usar_metodo_completo es False.
+    estrategia_gn = config.get('estrategia_gn', 'minimo_gn')
     f_min_ghz = config['f_min_ghz']
     f_max_ghz = config['f_max_ghz']
     log_x = config.get('escala_log_frecuencia', ESCALA_LOG_FRECUENCIA)
     materiales = config['materiales']
-    archivos_cal = config['archivos_calibracion']
+    archivos_cal = dict(config['archivos_calibracion'])
+    if not usar_metodo_completo:
+        archivos_cal.pop('patron4', None)  # no se lee ni se valida si no hace falta
     total_pasos = len(materiales) + 2  # calibracion + N materiales + informe PDF
 
     if cancelado():
@@ -935,14 +1047,22 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     s11_corto = calib['corto']['Complex']
     s11_aire = calib['aire']['Complex']
     s11_patron3 = calib['patron3']['Complex']
-    s11_patron4 = calib['patron4']['Complex']
+    s11_patron4 = calib['patron4']['Complex'] if usar_metodo_completo else None
 
     etiqueta_p3 = etiqueta_patron(modelo_patron3) or modelo_patron3
-    etiqueta_p4 = etiqueta_patron(modelo_patron4) or modelo_patron4
     log(f"  Patron 3 = {etiqueta_p3} a {T_patron3:.1f}\u00b0C")
-    log(f"  Patron 4 = {etiqueta_p4} a {T_patron4:.1f}\u00b0C")
     Er_patron3 = PATRONES_TEORICOS[modelo_patron3](frecs, T=T_patron3)
-    Er_patron4 = PATRONES_TEORICOS[modelo_patron4](frecs, T=T_patron4)
+
+    if usar_metodo_completo:
+        etiqueta_p4 = etiqueta_patron(modelo_patron4) or modelo_patron4
+        log(f"  Patron 4 = {etiqueta_p4} a {T_patron4:.1f}\u00b0C "
+            f"(estrategia de Gn: {estrategia_gn})")
+        Er_patron4 = PATRONES_TEORICOS[modelo_patron4](frecs, T=T_patron4)
+    else:
+        etiqueta_p4 = None
+        Er_patron4 = None
+        log("  Metodo completo deshabilitado: no se usa Patron 4 ni se calcula Gn "
+            "(todos los materiales se procesan solo con el metodo simplificado).")
 
     _copiar_insumos(carpeta_datos, archivos_cal, materiales, carpeta_dia, log)
 
@@ -957,15 +1077,25 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     er_p3_teo = Er_patron3
     er_p3_simpl = get_er_DUTm(frecs, s11_patron3, s11_patron3, s11_aire, s11_corto,
                                Er_patron3)
-    er_p3_compl = get_er_DUT_completo(frecs, s11_patron3, s11_patron3, s11_aire,
-                                       s11_patron4, s11_corto, Er_patron3, Er_patron4)
 
     mascara = (frecs >= f_min_ghz * 1e9) & (frecs <= f_max_ghz * 1e9)
+    medido_p3 = {"Medido (simplificado)": er_p3_simpl[mascara]}
+    errores_p3 = {
+        "Metodo simplificado": reportar_error(
+            "Metodo simplificado", er_p3_simpl[mascara], er_p3_teo[mascara]),
+    }
+    if usar_metodo_completo:
+        resultados_p3_completo = _calcular_metodo_completo(
+            frecs, s11_patron3, s11_patron3, s11_aire, s11_patron4, s11_corto,
+            Er_patron3, Er_patron4, estrategia_gn, prefijo="Medido (completo")
+        for etiqueta, arr in resultados_p3_completo.items():
+            medido_p3[etiqueta] = arr[mascara]
+            errores_p3[etiqueta] = reportar_error(etiqueta, arr[mascara], er_p3_teo[mascara])
+
     ruta_figura_p3 = os.path.join(carpeta_salida, "chequeo_calibracion_patron3.png")
     graficar_comparacion(
         frecs[mascara],
-        {"Medido (simplificado)": er_p3_simpl[mascara],
-         "Medido (completo)": er_p3_compl[mascara]},
+        medido_p3,
         er_p3_teo[mascara],
         f"{etiqueta_p3}: chequeo de calibracion (medido vs. teorico)",
         ruta_figura_p3,
@@ -975,23 +1105,65 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         'figura': ruta_figura_p3,
         'etiqueta_patron3': etiqueta_p3,
         'etiqueta_patron4': etiqueta_p4,
-        'errores': {
-            "Metodo simplificado": reportar_error(
-                "Metodo simplificado", er_p3_simpl[mascara], er_p3_teo[mascara]),
-            "Metodo completo": reportar_error(
-                "Metodo completo    ", er_p3_compl[mascara], er_p3_teo[mascara]),
-        },
+        'errores': errores_p3,
         # Datos crudos para reconstruir la figura en vivo en la GUI -- ver
         # `procesar_material` (misma idea) y gui_permitividad.VisorFigura.
         'datos_grafico': {
             'frecs': frecs[mascara],
-            'medido': {"Medido (simplificado)": er_p3_simpl[mascara],
-                       "Medido (completo)": er_p3_compl[mascara]},
+            'medido': medido_p3,
             'teorico': er_p3_teo[mascara],
             'titulo': f"{etiqueta_p3}: chequeo de calibracion (medido vs. teorico)",
             'log_x': log_x,
         },
     }
+
+    # -----------------------------------------------------------------
+    # Chequeo de calibracion ANALOGO para el patron 4 (si esta habilitado):
+    # mismo principio que el de arriba para el patron 3 -- se lo "mide"
+    # como si fuera un DUT mas y se compara contra su propio modelo
+    # teorico. Da una segunda validacion independiente de la calibracion,
+    # gratis: si el patron 3 da ~0% de error pero el patron 4 no, el
+    # problema esta especificamente en la medicion/modelo de ese 4to
+    # patron (y viceversa), algo que el chequeo del patron 3 solo no
+    # puede detectar por si mismo.
+    # -----------------------------------------------------------------
+    if usar_metodo_completo:
+        log(f"\nChequeo de calibracion ({etiqueta_p4} medido vs. teorico, debe dar ~0% de error)...")
+        er_p4_teo = Er_patron4
+        er_p4_simpl = get_er_DUTm(frecs, s11_patron4, s11_patron3, s11_aire, s11_corto,
+                                   Er_patron3)
+        medido_p4 = {"Medido (simplificado)": er_p4_simpl[mascara]}
+        errores_p4 = {
+            "Metodo simplificado": reportar_error(
+                "Metodo simplificado", er_p4_simpl[mascara], er_p4_teo[mascara]),
+        }
+        resultados_p4_completo = _calcular_metodo_completo(
+            frecs, s11_patron4, s11_patron3, s11_aire, s11_patron4, s11_corto,
+            Er_patron3, Er_patron4, estrategia_gn, prefijo="Medido (completo")
+        for etiqueta, arr in resultados_p4_completo.items():
+            medido_p4[etiqueta] = arr[mascara]
+            errores_p4[etiqueta] = reportar_error(etiqueta, arr[mascara], er_p4_teo[mascara])
+
+        ruta_figura_p4 = os.path.join(carpeta_salida, "chequeo_calibracion_patron4.png")
+        graficar_comparacion(
+            frecs[mascara],
+            medido_p4,
+            er_p4_teo[mascara],
+            f"{etiqueta_p4}: chequeo de calibracion (medido vs. teorico)",
+            ruta_figura_p4,
+            log_x=log_x,
+        )
+        chequeo_calibracion['patron4'] = {
+            'figura': ruta_figura_p4,
+            'errores': errores_p4,
+            'datos_grafico': {
+                'frecs': frecs[mascara],
+                'medido': medido_p4,
+                'teorico': er_p4_teo[mascara],
+                'titulo': f"{etiqueta_p4}: chequeo de calibracion (medido vs. teorico)",
+                'log_x': log_x,
+            },
+        }
 
     # -----------------------------------------------------------------
     # Diagnostico adicional: conductancia normalizada Gn(f), calculada
@@ -1001,15 +1173,34 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     # alguno de los patrones (sobre todo el patron 4, el unico que
     # interviene en este calculo). Ver funciones.calcular_Gn.
     # -----------------------------------------------------------------
-    log("Calculando conductancia normalizada Gn(f) (diagnostico de calibracion)...")
-    Gn_cal = calcular_Gn(frecs, s11_patron3, s11_aire, s11_patron4, s11_corto,
-                          Er_patron3, Er_patron4)
-    ruta_figura_Gn = os.path.join(carpeta_salida, "chequeo_calibracion_Gn.png")
-    graficar_Gn(frecs[mascara], Gn_cal[mascara], ruta_figura_Gn, log_x=log_x)
-    chequeo_calibracion['figura_Gn'] = ruta_figura_Gn
-    chequeo_calibracion['datos_grafico_Gn'] = {
-        'frecs': frecs[mascara], 'Gn': Gn_cal[mascara], 'log_x': log_x,
-    }
+    if usar_metodo_completo:
+        log("Calculando conductancia normalizada Gn(f) (diagnostico de calibracion)...")
+        Gn_cal = calcular_Gn(frecs, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                              Er_patron3, Er_patron4)
+
+        # Donde arrancaria la "marcha en frecuencia" con cada estrategia
+        # -- se calcula aca (no adentro de get_er_DUT_completo) porque
+        # solo depende de Gn y de la estrategia, no del DUT en si, asi
+        # que es la misma para todos los materiales de esta corrida. Se
+        # marca en el grafico de Gn(f) para ver de un vistazo si el
+        # punto de arranque cae en una zona con |Gn| chico (deseable) o
+        # no, sin tener que ir a leer el log de texto.
+        marcas_inicio_gn = {}
+        if estrategia_gn in ('minimo_gn', 'comparar_ambas'):
+            idx_auto = int(np.argmin(np.abs(Gn_cal)))
+            marcas_inicio_gn[ETIQUETA_ESTRATEGIA_GN['minimo_gn']] = frecs[idx_auto]
+        if estrategia_gn in ('frecuencia_maxima', 'comparar_ambas'):
+            idx_clasico = int(np.argmax(frecs))
+            marcas_inicio_gn[ETIQUETA_ESTRATEGIA_GN['frecuencia_maxima']] = frecs[idx_clasico]
+
+        ruta_figura_Gn = os.path.join(carpeta_salida, "chequeo_calibracion_Gn.png")
+        graficar_Gn(frecs[mascara], Gn_cal[mascara], ruta_figura_Gn, log_x=log_x,
+                    marcas_inicio=marcas_inicio_gn)
+        chequeo_calibracion['figura_Gn'] = ruta_figura_Gn
+        chequeo_calibracion['datos_grafico_Gn'] = {
+            'frecs': frecs[mascara], 'Gn': Gn_cal[mascara], 'log_x': log_x,
+            'marcas_inicio': marcas_inicio_gn,
+        }
 
     progreso(1, total_pasos, "Calibraci\u00f3n completa")
 
@@ -1034,6 +1225,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             s11_corto, s11_aire, s11_patron3, s11_patron4,
             Er_patron3, Er_patron4, carpeta_salida=carpeta_salida,
             f_min_ghz=f_min_ghz, f_max_ghz=f_max_ghz, log_x=log_x,
+            estrategia_gn=estrategia_gn,
         )
         if resultado is not None:
             resultados_materiales.append(resultado)
@@ -1049,9 +1241,11 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         'patron3_modelo': modelo_patron3,
         'patron3_etiqueta': etiqueta_p3,
         'patron3_temperatura': T_patron3,
-        'patron4_modelo': modelo_patron4,
-        'patron4_etiqueta': etiqueta_p4,
-        'patron4_temperatura': T_patron4,
+        'usar_metodo_completo': usar_metodo_completo,
+        'patron4_modelo': modelo_patron4 if usar_metodo_completo else None,
+        'patron4_etiqueta': etiqueta_p4 if usar_metodo_completo else None,
+        'patron4_temperatura': T_patron4 if usar_metodo_completo else None,
+        'estrategia_gn': estrategia_gn if usar_metodo_completo else None,
         'f_min_ghz': f_min_ghz,
         'f_max_ghz': f_max_ghz,
         'archivos_calibracion': archivos_cal,

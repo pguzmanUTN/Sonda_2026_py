@@ -1,0 +1,76 @@
+{
+  "version": 2,
+  "carpeta_datos": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm",
+  "archivos_calibracion": {
+    "corto": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/sonda21-short.s1p",
+    "aire": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/sonda21-aire.s1p",
+    "patron3": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/sonda 21-agua 35mm prof base plastico ancha 06-08.s1p",
+    "patron4": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/sonda21-alcisoprop25-06.s1p"
+  },
+  "patron3_modelo": "agua",
+  "patron3_temperatura_c": 15.0,
+  "patron4_modelo": "alcohol_isopropilico",
+  "patron4_temperatura_c": 15.0,
+  "usar_metodo_completo": true,
+  "estrategia_gn": "frecuencia_maxima",
+  "materiales": [
+    {
+      "nombre": "sonda 21-agua 35mm prof base plastico ancha 06-08",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm\\sonda 21-agua 35mm prof base plastico ancha 06-08.s1p",
+      "modelo": "agua",
+      "temperatura": 15.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    },
+    {
+      "nombre": "sonda21-agua25-06",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm\\sonda21-agua25-06.s1p",
+      "modelo": "agua",
+      "temperatura": 15.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    },
+    {
+      "nombre": "sonda21-alc-etilico25-06",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm\\sonda21-alc-etilico25-06.s1p",
+      "modelo": "alcohol_etilico",
+      "temperatura": 15.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    },
+    {
+      "nombre": "sonda21-alcisoprop25-06",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm\\sonda21-alcisoprop25-06.s1p",
+      "modelo": "alcohol_isopropilico",
+      "temperatura": 15.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    }
+  ],
+  "carpeta_salida": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm",
+  "nombre_informe_pdf": "Sonda21_Freqmasalta.pdf",
+  "f_min_ghz": 0.001,
+  "f_max_ghz": 2.0,
+  "escala_log_frecuencia": true,
+  "curvas_comparacion": [
+    {
+      "etiqueta": "tabla_sonda21_agua25_06 — Medido (completo, 4 patrones)",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/2026-08-25/00-44-27/tabla_sonda21_agua25_06.csv",
+      "columna": "Medido (completo, 4 patrones)"
+    },
+    {
+      "etiqueta": "tabla_sonda21_agua25_06",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/2026-08-25/00-43-18/tabla_sonda21_agua25_06.csv",
+      "columna": "Medido (completo, 4 patrones)"
+    }
+  ],
+  "curvas_modelos": []
+}

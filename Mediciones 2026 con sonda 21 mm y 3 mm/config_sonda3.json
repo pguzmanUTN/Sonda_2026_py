@@ -1,0 +1,66 @@
+{
+  "version": 2,
+  "carpeta_datos": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm",
+  "archivos_calibracion": {
+    "corto": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/sonda3-short.s1p",
+    "aire": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/sonda3-aire.s1p",
+    "patron3": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/sonda3-agua.s1p",
+    "patron4": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/sonda3-alc-isoprop.s1p"
+  },
+  "patron3_modelo": "agua",
+  "patron3_temperatura_c": 15.0,
+  "patron4_modelo": "alcohol_isopropilico",
+  "patron4_temperatura_c": 15.0,
+  "usar_metodo_completo": true,
+  "estrategia_gn": "minimo_gn",
+  "materiales": [
+    {
+      "nombre": "sonda3-agua",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm\\sonda3-agua.s1p",
+      "modelo": "agua",
+      "temperatura": 15.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    },
+    {
+      "nombre": "sonda3-alc-etilico",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm\\sonda3-alc-etilico.s1p",
+      "modelo": "alcohol_etilico",
+      "temperatura": 15.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    },
+    {
+      "nombre": "sonda3-alc-isoprop",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm\\sonda3-alc-isoprop.s1p",
+      "modelo": "alcohol_isopropilico",
+      "temperatura": 15.0,
+      "metodos": [
+        "simplificado",
+        "completo"
+      ]
+    }
+  ],
+  "carpeta_salida": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm",
+  "nombre_informe_pdf": "Sonda3_Gn_min",
+  "f_min_ghz": 0.1,
+  "f_max_ghz": 6.0,
+  "escala_log_frecuencia": true,
+  "curvas_comparacion": [
+    {
+      "etiqueta": "tabla_sonda3_alc_etilico Gn Freq mas alta",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/2026-08-25/00-31-28/tabla_sonda3_alc_etilico.csv",
+      "columna": "Medido (completo, 4 patrones)"
+    },
+    {
+      "etiqueta": "tabla_sonda3_alc_etilico Gn min",
+      "archivo": "F:/DESCARGAS/Materias/2026/MD2/Sonda_2026_py/Mediciones 2026 con sonda 21 mm y 3 mm/2026-08-25/00-35-51/tabla_sonda3_alc_etilico.csv",
+      "columna": "Medido (completo, 4 patrones)"
+    }
+  ],
+  "curvas_modelos": []
+}
