@@ -447,13 +447,42 @@ def error_relativo_porcentual(Er_medido, Er_teorico):
     Error relativo porcentual de la parte real e imaginaria de la
     permitividad medida respecto de la curva teorica, punto a punto.
 
+    Cuidado con el denominador: desde que existen los modelos de
+    permitividad ESTATICA de `Patrones.py` (acetona, ciclohexano, fluido
+    de silicona -- liquidos para los que NPL no publica un ajuste de
+    relajacion), la curva teorica puede tener er'' identicamente 0. En
+    ese caso el error relativo de la parte imaginaria no esta definido:
+    antes esto daba `inf`/`-inf` (o `nan` donde medido y teorico eran
+    ambos 0) y despues se propagaba a las tablas del informe como
+    "inf%", que parece un error de calculo cuando en realidad la
+    pregunta misma no tiene sentido.
+
+    Ahora, donde el denominador es 0, se devuelve `np.nan` de forma
+    explicita y sin emitir el RuntimeWarning de division por cero de
+    numpy. Los consumidores (`analisis_permitividad.calcular_error`,
+    que promedia con nanmean/nanmax, y `reporte_pdf`, que imprime "n/a")
+    ya saben interpretar ese NaN.
+
     Retorna
     -------
-    (error_real, error_imag) en % , mismos largos que las entradas.
+    (error_real, error_imag) en %, mismos largos que las entradas. Un
+    NaN en `error_imag` significa "no aplica: la referencia no modela
+    perdidas", no "fallo el calculo".
     """
     Er_medido = np.asarray(Er_medido, dtype=complex)
     Er_teorico = np.asarray(Er_teorico, dtype=complex)
 
-    err_real = 100 * (np.real(Er_medido) - np.real(Er_teorico)) / np.real(Er_teorico)
-    err_imag = 100 * (np.imag(Er_medido) - np.imag(Er_teorico)) / np.imag(Er_teorico)
+    ref_real = np.real(Er_teorico)
+    ref_imag = np.imag(Er_teorico)
+
+    # `where=` evita el warning de division por cero y deja el valor de
+    # salida en lo que haya inicializado `out` (NaN) en esas posiciones.
+    err_real = np.full(ref_real.shape, np.nan, dtype=float)
+    np.divide(100 * (np.real(Er_medido) - ref_real), ref_real,
+              out=err_real, where=(ref_real != 0))
+
+    err_imag = np.full(ref_imag.shape, np.nan, dtype=float)
+    np.divide(100 * (np.imag(Er_medido) - ref_imag), ref_imag,
+              out=err_imag, where=(ref_imag != 0))
+
     return err_real, err_imag

@@ -18,6 +18,7 @@ from tkinter import ttk, filedialog, messagebox
 
 import gui_funciones as gf
 import analisis_permitividad as ap
+import Patrones as P
 
 # matplotlib ya queda forzado al backend 'Agg' por gui_funciones.py (se
 # importa arriba, y ese modulo lo hace ANTES de importar analisis_
@@ -119,6 +120,128 @@ def _crear_indicador_archivo(parent, var_archivo, var_carpeta=None):
         var_carpeta.trace_add("write", _actualizar)
     _actualizar()
     return label
+
+
+class CartelAdvertencia(ttk.Frame):
+    """
+    Cartel de advertencia reusable (un recuadro de color con titulo y
+    texto) para avisar de las limitaciones de un modelo teorico.
+
+    Existe sobre todo por los modelos de permitividad ESTATICA que trae
+    `Patrones.py` -- acetona, ciclohexano y fluido de silicona --, que NO
+    tienen ecuacion de Debye ajustada y devuelven una permitividad
+    constante en frecuencia. Elegir uno de esos sin darse cuenta llevaria
+    a comparar contra una referencia que no significa lo que uno cree
+    (sobre todo en er'', que en esos modelos es 0 por no estar modelado),
+    asi que la advertencia tiene que verse en la GUI, no solo en el PDF.
+
+    Uso:
+        cartel = CartelAdvertencia(parent)
+        cartel.grid(...)            # o .pack(...)
+        cartel.mostrar_modelo('acetona')   # se llena y se hace visible
+        cartel.ocultar()                   # se esconde (no ocupa lugar)
+
+    El propio widget se oculta solo (`grid_remove`/`pack_forget`) cuando
+    el modelo no tiene advertencia, asi no deja un hueco vacio en el
+    layout.
+    """
+
+    # (color del borde/titulo, color de fondo) por nivel, en la misma
+    # linea que la paleta del informe PDF (reporte_pdf._COLORES_ADVERTENCIA)
+    # para que el cartel en pantalla y la caja del PDF se vean coherentes.
+    _COLORES = {
+        'info': ("#2c5d8f", "#eaf2fa"),
+        'aviso': ("#8a6100", "#fdf4e0"),
+        'critico': ("#a32020", "#fdeaea"),
+    }
+
+    def __init__(self, master, wraplength=560, **kwargs):
+        super().__init__(master, **kwargs)
+        self._wraplength = wraplength
+        self._visible = False
+        self._geometria = None  # 'grid' | 'pack', segun como lo ubique el padre
+
+        self._marco = tk.Frame(self, bd=1, relief="solid")
+        self._marco.pack(fill="both", expand=True)
+
+        self._lbl_titulo = tk.Label(
+            self._marco, anchor="w", justify="left", font=("", 9, "bold"),
+            wraplength=wraplength, padx=8, pady=(0))
+        self._lbl_titulo.pack(fill="x", padx=2, pady=(6, 0))
+
+        self._lbl_texto = tk.Label(
+            self._marco, anchor="w", justify="left", font=("", 8),
+            wraplength=wraplength, padx=8)
+        self._lbl_texto.pack(fill="x", padx=2, pady=(3, 7))
+
+    # -- API --------------------------------------------------------
+    def mostrar_modelo(self, clave_modelo):
+        """Muestra la advertencia del modelo `clave_modelo` (clave de
+        Patrones.PATRONES_TEORICOS), o se oculta si ese modelo no tiene
+        ninguna. Devuelve True si quedo visible."""
+        texto = P.advertencia_patron(clave_modelo) if clave_modelo else None
+        if not texto:
+            self.ocultar()
+            return False
+        etiqueta = gf.etiqueta_de_modelo(clave_modelo)
+        nivel = P.nivel_advertencia_patron(clave_modelo)
+        titulo = (f"Sin ecuación de Debye — {etiqueta}"
+                  if P.es_modelo_estatico(clave_modelo)
+                  else f"Atención — {etiqueta}")
+        self.mostrar(titulo, texto, nivel)
+        return True
+
+    def mostrar(self, titulo, texto, nivel='aviso'):
+        """Muestra un cartel con texto libre (para avisos que no salen de
+        un modelo en particular, p.ej. reparos de calibracion)."""
+        color_borde, color_fondo = self._COLORES.get(nivel, self._COLORES['aviso'])
+        simbolo = "ⓘ" if nivel == 'info' else "⚠"
+        self._marco.configure(background=color_fondo, highlightbackground=color_borde,
+                               highlightcolor=color_borde, highlightthickness=2)
+        self._lbl_titulo.configure(text=f"{simbolo}  {titulo}",
+                                    background=color_fondo, foreground=color_borde)
+        self._lbl_texto.configure(text=str(texto).strip(), background=color_fondo,
+                                   foreground="#222222")
+        self._revelar()
+
+    def ocultar(self):
+        if not self._visible:
+            return
+        if self._geometria == 'grid':
+            self.grid_remove()
+        elif self._geometria == 'pack':
+            self.pack_forget()
+        self._visible = False
+
+    def ajustar_wraplength(self, ancho_px):
+        """Reajusta el ancho de wrap (util si el panel que lo contiene
+        cambia de tamaño)."""
+        ancho = max(int(ancho_px), 200)
+        self._wraplength = ancho
+        self._lbl_titulo.configure(wraplength=ancho)
+        self._lbl_texto.configure(wraplength=ancho)
+
+    # -- interno ----------------------------------------------------
+    def grid(self, **kwargs):
+        self._geometria = 'grid'
+        self._grid_kwargs = kwargs
+        super().grid(**kwargs)
+        self._visible = True
+
+    def pack(self, **kwargs):
+        self._geometria = 'pack'
+        self._pack_kwargs = kwargs
+        super().pack(**kwargs)
+        self._visible = True
+
+    def _revelar(self):
+        if self._visible:
+            return
+        if self._geometria == 'grid':
+            super().grid(**getattr(self, '_grid_kwargs', {}))
+        elif self._geometria == 'pack':
+            super().pack(**getattr(self, '_pack_kwargs', {}))
+        self._visible = True
 
 
 class VisorFigura(ttk.Frame):
@@ -397,11 +520,19 @@ class DialogoModeloTeorico(tk.Toplevel):
 
         ttk.Separator(frm).grid(row=5, column=0, columnspan=3, sticky="ew", pady=10)
 
+        # Mismo cartel que en el dialogo de Material: avisa si el modelo
+        # elegido no tiene ecuacion de relajacion (permitividad constante).
+        self.cartel_modelo = CartelAdvertencia(frm, wraplength=430)
+        self.cartel_modelo.grid(row=6, column=0, columnspan=3, sticky="ew",
+                                 pady=(0, 8))
+        self.cartel_modelo.ocultar()
+
         frm_botones = ttk.Frame(frm)
-        frm_botones.grid(row=6, column=0, columnspan=3, sticky="e")
+        frm_botones.grid(row=7, column=0, columnspan=3, sticky="e")
         ttk.Button(frm_botones, text="Cancelar", command=self.destroy).pack(side="right", padx=(6, 0))
         ttk.Button(frm_botones, text="Guardar", command=self._guardar).pack(side="right")
 
+        self._al_cambiar_algo()
         self.bind("<Return>", lambda _e: self._guardar())
         self.bind("<Escape>", lambda _e: self.destroy())
         self.update_idletasks()
@@ -412,6 +543,11 @@ class DialogoModeloTeorico(tk.Toplevel):
         if not self.var_etiqueta.get().strip() and self.var_modelo_etiqueta.get():
             self.var_etiqueta.set(
                 f"{self.var_modelo_etiqueta.get()} a {self.var_temperatura.get():.1f}\u00b0C")
+        # Cartel de advertencia del modelo elegido (se oculta solo si el
+        # modelo no tiene ninguna).
+        self.cartel_modelo.mostrar_modelo(
+            gf.clave_de_etiqueta(self.var_modelo_etiqueta.get()))
+        self.update_idletasks()
 
     def _guardar(self):
         modelo = gf.clave_de_etiqueta(self.var_modelo_etiqueta.get())
@@ -530,8 +666,17 @@ class DialogoMaterial(tk.Toplevel):
 
         ttk.Separator(frm).grid(row=5, column=0, columnspan=4, sticky="ew", pady=10)
 
+        # Cartel de advertencia del modelo teorico elegido: se llena solo
+        # al cambiar el combobox (ver _al_cambiar_modelo). Solo aparece si
+        # el modelo tiene advertencia -- p.ej. acetona/ciclohexano/
+        # silicona, que no tienen ecuacion de Debye.
+        self.cartel_modelo = CartelAdvertencia(frm, wraplength=430)
+        self.cartel_modelo.grid(row=6, column=0, columnspan=4, sticky="ew",
+                                 pady=(0, 8))
+        self.cartel_modelo.ocultar()
+
         frm_botones = ttk.Frame(frm)
-        frm_botones.grid(row=6, column=0, columnspan=4, sticky="e")
+        frm_botones.grid(row=7, column=0, columnspan=4, sticky="e")
         ttk.Button(frm_botones, text="Cancelar", command=self.destroy).pack(side="right", padx=(6, 0))
         ttk.Button(frm_botones, text="Guardar", command=self._guardar).pack(side="right")
 
@@ -554,8 +699,13 @@ class DialogoMaterial(tk.Toplevel):
                 self.var_nombre.set(base)
 
     def _al_cambiar_modelo(self, _event=None):
-        activo = gf.clave_de_etiqueta(self.var_modelo_etiqueta.get()) != gf.SIN_MODELO
+        clave = gf.clave_de_etiqueta(self.var_modelo_etiqueta.get())
+        activo = clave != gf.SIN_MODELO
         self.spin_temperatura.configure(state=("normal" if activo else "disabled"))
+        # El cartel de advertencia se actualiza junto con el modelo: si el
+        # modelo elegido no tiene advertencia, se oculta solo.
+        self.cartel_modelo.mostrar_modelo(clave if activo else None)
+        self.update_idletasks()
 
     def _guardar(self):
         nombre = self.var_nombre.get().strip()
@@ -813,6 +963,10 @@ class AppPermitividad(tk.Tk):
             combo = ttk.Combobox(f, textvariable=var_modelo, state="readonly",
                                   values=modelos_calibracion, width=24)
             combo.grid(row=fila, column=5, sticky="w", padx=(4, 0), pady=3)
+            # Al cambiar el liquido de un patron se refresca el cartel de
+            # advertencia de calibracion (ver _refrescar_cartel_calibracion).
+            combo.bind("<<ComboboxSelected>>",
+                       lambda _e: self._refrescar_cartel_calibracion())
 
             lbl_temp = ttk.Label(f, text="  T (°C):")
             lbl_temp.grid(row=fila, column=6, sticky="w")
@@ -881,6 +1035,63 @@ class AppPermitividad(tk.Tk):
                     "completo da una comparacion circular sin sentido.",
             style="Ayuda.TLabel", wraplength=800, justify="left",
         ).grid(row=fila, column=0, columnspan=8, sticky="w", pady=(2, 0))
+        fila += 1
+
+        # Cartel de advertencia de calibracion: aparece si alguno de los
+        # dos patrones usa un modelo sin ecuacion de relajacion
+        # (permitividad estatica constante). Aca importa mas que en un
+        # material suelto, porque la permitividad del patron entra directo
+        # en las formulas de conversion y afecta a TODOS los materiales.
+        self.cartel_calibracion = CartelAdvertencia(f, wraplength=820)
+        self.cartel_calibracion.grid(row=fila, column=0, columnspan=8,
+                                      sticky="ew", pady=(10, 0))
+        self.cartel_calibracion.ocultar()
+
+    def _refrescar_cartel_calibracion(self):
+        """Muestra (o esconde) el cartel de advertencia de la pestaña de
+        Calibracion segun los liquidos elegidos como patron 3 y patron 4.
+
+        Junta en un solo cartel los reparos de los dos patrones: suelen
+        ser cortos, y verlos juntos deja claro de un vistazo si la
+        calibracion vigente tiene alguna limitacion conocida."""
+        if not hasattr(self, 'cartel_calibracion'):
+            return
+
+        claves = [("Patrón 3", gf.clave_de_etiqueta(
+            self.vars_modelo_calibracion['patron3'].get()))]
+        if self.var_usar_metodo_completo.get():
+            claves.append(("Patrón 4", gf.clave_de_etiqueta(
+                self.vars_modelo_calibracion['patron4'].get())))
+
+        partes = []
+        nivel = 'aviso'
+        for rol, clave in claves:
+            if not clave or not P.es_modelo_estatico(clave):
+                continue
+            etiqueta = gf.etiqueta_de_modelo(clave)
+            resumen = P.resumen_corto_patron(clave) or "permitividad constante"
+            partes.append(
+                f"• {rol} ({etiqueta}): {resumen}. Este modelo NO tiene "
+                f"ecuación de Debye ajustada, y su permitividad entra "
+                f"directo en las fórmulas de conversión S11 → er, así que "
+                f"su limitación se propaga al resultado de TODOS los "
+                f"materiales, no solo al de este patrón.")
+            if P.info_patron(clave).get('perdidas_reales_despreciables'):
+                partes.append(
+                    f"   Además, al ser un líquido no polar su permitividad "
+                    f"(~2) está muy cerca de la del aire: aporta poca "
+                    f"información nueva respecto del circuito abierto y deja "
+                    f"mal condicionado el sistema de ecuaciones de "
+                    f"calibración.")
+            if P.nivel_advertencia_patron(clave) == 'critico':
+                nivel = 'critico'
+
+        if not partes:
+            self.cartel_calibracion.ocultar()
+            return
+        self.cartel_calibracion.mostrar(
+            "Patrón de calibración sin modelo de relajación",
+            "\n".join(partes), nivel=nivel)
 
     def _al_cambiar_usar_metodo_completo(self):
         activo = bool(self.var_usar_metodo_completo.get())
@@ -896,6 +1107,9 @@ class AppPermitividad(tk.Tk):
         self.radio_estrategia_minimo.configure(state=estado)
         self.radio_estrategia_max.configure(state=estado)
         self.radio_estrategia_comparar.configure(state=estado)
+        # El patron 4 deja de contar (o vuelve a contar) para el cartel de
+        # advertencia de calibracion segun si el metodo completo esta on/off.
+        self._refrescar_cartel_calibracion()
 
     def _examinar_carpeta_datos(self):
         ruta = filedialog.askdirectory(title="Carpeta base de datos", parent=self)
@@ -959,9 +1173,18 @@ class AppPermitividad(tk.Tk):
         for i, m in enumerate(self._materiales):
             metodos = "+".join(m.get('metodos', []))
             temp = f"{m['temperatura']:.1f}" if m.get('modelo') else "-"
+            # Los modelos SIN ecuacion de relajacion (permitividad
+            # constante: acetona, ciclohexano, silicona) se marcan con un
+            # triangulo de aviso en la tabla, para que se note de un
+            # vistazo cuales materiales se estan comparando contra una
+            # referencia con limitaciones -- el detalle completo esta en
+            # el cartel del dialogo de edicion y en el informe PDF.
+            etiqueta_modelo = gf.etiqueta_de_modelo(m.get('modelo'))
+            if m.get('modelo') and P.es_modelo_estatico(m['modelo']):
+                etiqueta_modelo = f"⚠ {etiqueta_modelo}"
             self.tabla_materiales.insert(
                 "", "end", iid=str(i),
-                values=(m['nombre'], m['archivo'], gf.etiqueta_de_modelo(m.get('modelo')), temp, metodos))
+                values=(m['nombre'], m['archivo'], etiqueta_modelo, temp, metodos))
 
     def _indice_seleccionado(self):
         sel = self.tabla_materiales.selection()
@@ -1808,6 +2031,9 @@ class AppPermitividad(tk.Tk):
         self._curvas_modelos = copy.deepcopy(config.get('curvas_modelos', []) or [])
         self._refrescar_tabla_modelos()
         self._graficar_modelos()
+        # Por si la configuracion cargada trae un patron de calibracion con
+        # un modelo sin ecuacion de relajacion.
+        self._refrescar_cartel_calibracion()
 
     def _hay_cambios_sin_guardar(self):
         if self._snapshot_guardado is None:
@@ -2087,14 +2313,16 @@ class AppPermitividad(tk.Tk):
             d = chequeo['datos_grafico']
             graficos[f"Chequeo de calibracion ({etiqueta_p3})"] = (
                 lambda d=d: ap.graficar_comparacion(
-                    d['frecs'], d['medido'], d['teorico'], d['titulo'], log_x=d['log_x']))
+                    d['frecs'], d['medido'], d['teorico'], d['titulo'], log_x=d['log_x'],
+                    etiqueta_teorico=d.get('etiqueta_teorico', "Teorico (Debye)")))
         chequeo_p4 = chequeo.get('patron4')
         if chequeo_p4 and chequeo_p4.get('datos_grafico'):
             etiqueta_p4 = chequeo.get('etiqueta_patron4') or "patron 4"
             d4 = chequeo_p4['datos_grafico']
             graficos[f"Chequeo de calibracion ({etiqueta_p4})"] = (
                 lambda d4=d4: ap.graficar_comparacion(
-                    d4['frecs'], d4['medido'], d4['teorico'], d4['titulo'], log_x=d4['log_x']))
+                    d4['frecs'], d4['medido'], d4['teorico'], d4['titulo'], log_x=d4['log_x'],
+                    etiqueta_teorico=d4.get('etiqueta_teorico', "Teorico (Debye)")))
         if chequeo.get('datos_grafico_Gn'):
             dg = chequeo['datos_grafico_Gn']
             graficos["Diagnostico: Gn(f) (calibracion)"] = (
@@ -2112,7 +2340,8 @@ class AppPermitividad(tk.Tk):
                 d = r['datos_grafico']
                 graficos[r['nombre']] = (
                     lambda d=d: ap.graficar_comparacion(
-                        d['frecs'], d['medido'], d['teorico'], d['titulo'], log_x=d['log_x']))
+                        d['frecs'], d['medido'], d['teorico'], d['titulo'], log_x=d['log_x'],
+                        etiqueta_teorico=d.get('etiqueta_teorico', "Teorico (Debye)")))
         return graficos
 
     def _mostrar_figuras_disponibles(self, graficos):

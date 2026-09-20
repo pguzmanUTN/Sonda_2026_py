@@ -66,6 +66,84 @@ _COLOR_ENCABEZADO = colors.HexColor('#2c3e50')
 _COLOR_FILA_PAR = colors.HexColor('#f2f2f2')
 _ANCHO_PAGINA_UTIL = 17 * cm  # A4 menos margenes de 2cm a cada lado
 
+# Paleta de las cajas de advertencia (ver `_caja_advertencia`), indexada
+# por el 'nivel' que declara cada modelo teorico en
+# Patrones.INFO_PATRONES: 'info' (neutro), 'aviso' (ambar) y 'critico'
+# (rojo). Cada entrada es (color_del_borde_y_titulo, color_de_fondo).
+_COLORES_ADVERTENCIA = {
+    'info': (colors.HexColor('#2c5d8f'), colors.HexColor('#eaf2fa')),
+    'aviso': (colors.HexColor('#8a6100'), colors.HexColor('#fdf4e0')),
+    'critico': (colors.HexColor('#a32020'), colors.HexColor('#fdeaea')),
+}
+
+_ESTILOS.add(ParagraphStyle(name='TituloAdvertencia', parent=_ESTILOS['Normal'],
+                             fontSize=10, leading=13, fontName='Helvetica-Bold'))
+_ESTILOS.add(ParagraphStyle(name='TextoAdvertencia', parent=_ESTILOS['Normal'],
+                             fontSize=8.8, leading=11.5))
+
+
+def _fmt_error(valor):
+    """Formatea un error relativo en %, o 'n/a' si es NaN.
+
+    Un NaN aca no es un fallo de calculo: significa que el error relativo
+    no esta DEFINIDO en ese caso. Pasa cuando la curva teorica de
+    referencia tiene er'' identicamente 0 -- los modelos de permitividad
+    estatica de Patrones.py (acetona, ciclohexano, fluido de silicona),
+    que no traen un ajuste de relajacion y por lo tanto no modelan
+    perdidas. Ver `funciones.error_relativo_porcentual` y
+    `analisis_permitividad.calcular_error`.
+    """
+    if valor is None:
+        return "n/a"
+    try:
+        if valor != valor:  # NaN != NaN, sin necesidad de importar math
+            return "n/a"
+        return f"{valor:.2f}%"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _caja_advertencia(titulo, texto, nivel='aviso', ancho=_ANCHO_PAGINA_UTIL):
+    """
+    Caja destacada (con borde de color y fondo suave) para las
+    advertencias de los modelos teoricos -- por ejemplo, avisar que la
+    acetona/ciclohexano/silicona NO tienen ecuacion de Debye y se modelan
+    como permitividad constante.
+
+    `texto` puede traer saltos de linea y vinetas: cada parrafo se
+    convierte en su propio Paragraph, para que el salto de linea
+    automatico funcione y las vinetas queden una por renglon.
+    """
+    color_borde, color_fondo = _COLORES_ADVERTENCIA.get(
+        nivel, _COLORES_ADVERTENCIA['aviso'])
+
+    # Nada de simbolos tipo "⚠" aca: las fuentes estandar del PDF
+    # (Helvetica con WinAnsiEncoding) no tienen ese glifo y ReportLab lo
+    # dibuja como un cuadrado negro. Se usa una palabra, que ademas se
+    # entiende igual si el PDF se imprime en blanco y negro.
+    prefijo = {'critico': "ATENCIÓN", 'aviso': "AVISO", 'info': "NOTA"}.get(
+        nivel, "AVISO")
+    contenido = [Paragraph(f"{prefijo} — {titulo}", _ESTILOS['TituloAdvertencia'])]
+    for parrafo in str(texto).split("\n"):
+        parrafo = parrafo.strip()
+        if not parrafo:
+            continue
+        contenido.append(Spacer(1, 0.12 * cm))
+        contenido.append(Paragraph(parrafo, _ESTILOS['TextoAdvertencia']))
+
+    t = Table([[contenido]], colWidths=[ancho], hAlign='LEFT')
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), color_fondo),
+        ('BOX', (0, 0), (-1, -1), 0.9, color_borde),
+        ('LINEBEFORE', (0, 0), (0, -1), 3.2, color_borde),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 7),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
+        ('LEFTPADDING', (0, 0), (-1, -1), 9),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    return t
+
 
 def _pie_de_pagina(canvas, doc):
     canvas.saveState()
@@ -115,10 +193,10 @@ def _tabla_errores(errores):
     for etiqueta, e in errores.items():
         datos.append([
             Paragraph(str(etiqueta), _ESTILOS['CeldaTabla']),
-            Paragraph(f"{e['err_re_medio']:.2f}%", _ESTILOS['CeldaTabla']),
-            Paragraph(f"{e['err_re_max']:.2f}%", _ESTILOS['CeldaTabla']),
-            Paragraph(f"{e['err_im_medio']:.2f}%", _ESTILOS['CeldaTabla']),
-            Paragraph(f"{e['err_im_max']:.2f}%", _ESTILOS['CeldaTabla']),
+            Paragraph(_fmt_error(e['err_re_medio']), _ESTILOS['CeldaTabla']),
+            Paragraph(_fmt_error(e['err_re_max']), _ESTILOS['CeldaTabla']),
+            Paragraph(_fmt_error(e['err_im_medio']), _ESTILOS['CeldaTabla']),
+            Paragraph(_fmt_error(e['err_im_max']), _ESTILOS['CeldaTabla']),
         ])
     ancho_primera = 6.5 * cm
     ancho_resto = (_ANCHO_PAGINA_UTIL - ancho_primera) / 4
@@ -310,6 +388,20 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
             "AVISO \u2014 Informe PARCIAL: el an\u00e1lisis se cancel\u00f3 antes de "
             "procesar todos los materiales configurados.",
             _ESTILOS['AvisoCancelado']))
+
+    # Advertencias de los modelos usados como PATRON DE CALIBRACION (p.ej.
+    # un modelo de permitividad estatica, sin ecuacion de relajacion). Van
+    # en la portada, junto a la metadata de calibracion, porque afectan el
+    # resultado de TODOS los materiales del informe -- no solo el de un
+    # material puntual, que es el caso de las cajas de mas abajo.
+    for adv in metadata.get('advertencias_calibracion', []) or []:
+        rol = adv.get('rol') or "Patr\u00f3n de calibraci\u00f3n"
+        etiqueta_adv = adv.get('etiqueta', '')
+        story.append(Spacer(1, 0.45 * cm))
+        story.append(_caja_advertencia(
+            f"{rol}: {etiqueta_adv}",
+            adv.get('texto', ''),
+            nivel=adv.get('nivel', 'aviso')))
     story.append(PageBreak())
 
     # ---- Chequeo de calibracion ----
@@ -413,14 +505,32 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
         if modelo_etiqueta:
             temp = mat.get('temperatura')
             texto_temp = f" (T = {temp:.1f} \u00b0C)" if temp is not None else ""
+            resumen = mat.get('modelo_resumen')
+            texto_resumen = f" \u2014 {resumen}" if resumen else ""
             encabezado.append(
-                Paragraph(f"Modelo te\u00f3rico: {modelo_etiqueta}{texto_temp}",
+                Paragraph(f"Modelo te\u00f3rico: {modelo_etiqueta}{texto_temp}"
+                          f"{texto_resumen}",
                           _ESTILOS['Nota']))
         encabezado.append(Spacer(1, 0.2 * cm))
         if mat.get('figura') and os.path.isfile(mat['figura']):
             encabezado.append(_imagen_ajustada(mat['figura']))
         story.append(KeepTogether(encabezado))
         story.append(Spacer(1, 0.3 * cm))
+
+        # Caja de advertencia del modelo teorico de ESTE material (p.ej.
+        # acetona/ciclohexano/silicona, que no tienen ecuacion de Debye y
+        # se modelan como permitividad constante). Va inmediatamente
+        # despues del grafico, antes de las tablas de error, para que se
+        # lea ANTES de sacar conclusiones de esos numeros.
+        if mat.get('advertencia_modelo'):
+            story.append(KeepTogether([
+                _caja_advertencia(
+                    f"Modelo te\u00f3rico sin ecuaci\u00f3n de relajaci\u00f3n: "
+                    f"{modelo_etiqueta or mat.get('modelo', '')}",
+                    mat['advertencia_modelo'],
+                    nivel=mat.get('nivel_advertencia', 'aviso')),
+            ]))
+            story.append(Spacer(1, 0.3 * cm))
 
         if mat.get('figura_s11') and os.path.isfile(mat['figura_s11']):
             story.append(KeepTogether([
@@ -439,12 +549,24 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
             story.append(Spacer(1, 0.3 * cm))
 
         if mat.get('tiene_teorico') and mat.get('errores'):
-            story.append(KeepTogether([
+            bloque_err = [
                 Paragraph("Error relativo respecto del modelo te\u00f3rico:",
                           _ESTILOS['Normal']),
                 Spacer(1, 0.15 * cm),
                 _tabla_errores(mat['errores']),
-            ]))
+            ]
+            # Si el modelo de referencia no modela perdidas, la columna de
+            # er'' sale toda en "n/a": conviene aclarar por que, para que
+            # no se lea como un fallo de calculo.
+            if mat.get('modelo_modela_perdidas') is False:
+                bloque_err.append(Spacer(1, 0.15 * cm))
+                bloque_err.append(Paragraph(
+                    "Las columnas de er'' figuran como <b>n/a</b> porque el modelo "
+                    "te\u00f3rico de referencia no modela p\u00e9rdidas (devuelve "
+                    "er'' = 0): el error relativo contra cero no est\u00e1 definido. "
+                    "Ver la advertencia de arriba.",
+                    _ESTILOS['Nota']))
+            story.append(KeepTogether(bloque_err))
             story.append(Spacer(1, 0.3 * cm))
 
         if mat.get('tabla_columnas'):

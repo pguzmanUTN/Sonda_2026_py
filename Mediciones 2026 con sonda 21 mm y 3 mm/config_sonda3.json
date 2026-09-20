@@ -62,5 +62,46 @@
       "columna": "Medido (completo, 4 patrones)"
     }
   ],
-  "curvas_modelos": []
+  "curvas_modelos": [
+    {
+      "etiqueta": "Alcohol etilico (etanol) a 25.0°C",
+      "modelo": "alcohol_etilico",
+      "temperatura": 25.0,
+      "f_min_ghz": 0.01,
+      "f_max_ghz": 6.0,
+      "n_puntos": 10000
+    },
+    {
+      "etiqueta": "Alcohol isopropilico (2-propanol) a 25.0°C",
+      "modelo": "alcohol_isopropilico",
+      "temperatura": 25.0,
+      "f_min_ghz": 0.01,
+      "f_max_ghz": 6.0,
+      "n_puntos": 10000
+    },
+    {
+      "etiqueta": "1-Butanol a 25.0°C",
+      "modelo": "butanol",
+      "temperatura": 25.0,
+      "f_min_ghz": 0.01,
+      "f_max_ghz": 6.0,
+      "n_puntos": 10000
+    },
+    {
+      "etiqueta": "Ciclohexano (no polar, ε constante) a 25.0°C",
+      "modelo": "ciclohexano",
+      "temperatura": 25.0,
+      "f_min_ghz": 0.01,
+      "f_max_ghz": 6.0,
+      "n_puntos": 10000
+    },
+    {
+      "etiqueta": "Acetona (solo ε estatica) a 25.0°C",
+      "modelo": "acetona",
+      "temperatura": 25.0,
+      "f_min_ghz": 0.01,
+      "f_max_ghz": 6.0,
+      "n_puntos": 10000
+    }
+  ]
 }

@@ -31,14 +31,14 @@ hora, para no pisar corridas anteriores), y los .s1p de entrada se copian
 a la carpeta del dia como registro de con que mediciones se genero cada
 informe (ver el docstring de `ejecutar_analisis`).
 
-Como agregar una medicion nueva (por ejemplo, acetona)
--------------------------------------------------------
+Como agregar una medicion nueva
+--------------------------------
 Alcanza con sumar un diccionario a la lista MATERIALES, no hace falta
 tocar nada mas del script:
 
     {
-        'nombre': "Acetona",
-        'archivo': "sonda4-acetona.s1p",
+        'nombre': "ResinaN",
+        'archivo': "ResinaN.s1p",
         'modelo': None,   # no hay modelo teorico cargado en Patrones.py
     }
 
@@ -46,6 +46,32 @@ Si en el futuro se agrega un modelo teorico para ese material en
 `Patrones.py` (agregandolo a PATRONES_TEORICOS), alcanza con poner esa
 clave en 'modelo' en lugar de None y el script automaticamente empieza a
 graficar la comparacion y el error.
+
+Modelos teoricos SIN ecuacion de relajacion
+--------------------------------------------
+Ademas de los liquidos con Debye/Davidson-Cole, `Patrones.py` trae ahora
+tres modelos de permitividad ESTATICA (constante en frecuencia), tomados
+de la tabla de celda de admitancia de la Seccion 6 del reporte NPL
+MAT 23: 'acetona', 'ciclohexano' y 'silicona'. Se usan igual que
+cualquier otro ('modelo': 'acetona', mas su 'temperatura'), pero tienen
+limitaciones importantes que conviene leer antes de sacar conclusiones:
+
+  - 'acetona'     : la relajacion existe pero queda muy por encima de los
+                    5 GHz medidos por NPL, asi que no hay Debye que
+                    ajustar. er' es una aproximacion razonable en la banda
+                    de este proyecto; er'' se devuelve como 0 y NO es
+                    cierto (la acetona si tiene perdidas en GHz).
+  - 'ciclohexano' : molecula no polar, sin relajacion dipolar. Aca la
+                    constante es el comportamiento real, y er'' ~ 0
+                    tambien es correcto.
+  - 'silicona'    : idem ciclohexano (Dow-Corning 200, 1 cSt). Ojo: NPL
+                    solo lo midio entre 5 y 35 °C.
+
+El script imprime la advertencia completa de cada uno en consola al
+procesar el material, y el informe PDF la incluye como caja destacada
+junto al grafico. Donde el modelo de referencia no modela perdidas, la
+columna de error relativo de er'' aparece como "n/a" en vez de un numero
+sin sentido.
 
 Patrones que dependen de la temperatura
 ----------------------------------------
@@ -66,6 +92,7 @@ import os
 import re
 import csv
 import shutil
+import warnings
 import functools
 from datetime import datetime
 import numpy as np
@@ -75,7 +102,9 @@ from matplotlib.ticker import FormatStrFormatter
 from Touchstone import (leer_s1p, mismas_frecuencias, resamplear,
                          graficar_s11_mag_fase, graficar_smith)
 from funciones import get_er_DUTm, get_er_DUT_completo, error_relativo_porcentual, calcular_Gn
-from Patrones import PATRONES_TEORICOS, etiqueta_patron
+from Patrones import (PATRONES_TEORICOS, etiqueta_patron, advertencia_patron,
+                       nivel_advertencia_patron, es_modelo_estatico,
+                       modela_perdidas, resumen_corto_patron)
 from reporte_pdf import generar_reporte_pdf
 
 # ---------------------------------------------------------------------------
@@ -139,6 +168,14 @@ TEMPERATURA_DMSO_C = 25.0
 TEMPERATURA_ETILENGLICOL_C = 25.0
 TEMPERATURA_BUTANOL_C = 25.0
 TEMPERATURA_PROPANOL_C = 25.0
+# Liquidos con modelo de permitividad ESTATICA (sin ecuacion de Debye):
+# ver la seccion "Modelos teoricos SIN ecuacion de relajacion" del
+# docstring de arriba. Los rangos de temperatura medidos por NPL NO son
+# los mismos que los de los liquidos con Debye: acetona 5-50 °C,
+# ciclohexano 10-50 °C y silicona 5-35 °C solamente.
+TEMPERATURA_ACETONA_C = 25.0
+TEMPERATURA_CICLOHEXANO_C = 25.0
+TEMPERATURA_SILICONA_C = 25.0
 
 # Lista de materiales a analizar. PARA AGREGAR UNA MEDICION NUEVA, sumar un
 # diccionario aca -- no hace falta tocar el resto del script.
@@ -192,8 +229,21 @@ MATERIALES = [
     },
     # {
     #     'nombre': "Acetona",
-    #     'archivo': "Alcohol.s1p",
-    #     'modelo': None,
+    #     'archivo': "sonda4-acetona.s1p",
+    #     'modelo': "acetona",
+    #     'temperatura': TEMPERATURA_ACETONA_C,
+    # },
+    # {
+    #     'nombre': "Ciclohexano",
+    #     'archivo': "sonda4-ciclohexano.s1p",
+    #     'modelo': "ciclohexano",
+    #     'temperatura': TEMPERATURA_CICLOHEXANO_C,
+    # },
+    # {
+    #     'nombre': "Fluido de silicona 1 cSt",
+    #     'archivo': "sonda4-silicona.s1p",
+    #     'modelo': "silicona",
+    #     'temperatura': TEMPERATURA_SILICONA_C,
     # },
     # {
     #     'nombre': "ResinaN",
@@ -338,7 +388,7 @@ def _copiar_insumos(carpeta_datos, archivos_calibracion, materiales, carpeta_des
 
 
 def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_salida=None,
-                          log_x=True):
+                          log_x=True, etiqueta_teorico="Teorico (Debye)"):
     """
     Grafica parte real e imaginaria: curva medida (una o varias) y, si se
     conoce, la curva teorica de referencia.
@@ -363,13 +413,19 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
         HF/VHF apretado en un puñado de pixeles). En log, cada decada
         ocupa el mismo ancho visual. Se ignora (cae a lineal) si `frecs`
         tiene algun valor <= 0, porque el logaritmo no esta definido ahi.
+    etiqueta_teorico : str
+        Texto de la leyenda de la curva teorica. NO siempre es un Debye:
+        los modelos de permitividad estatica de `Patrones.py` (acetona,
+        ciclohexano, silicona) no tienen ecuacion de relajacion, asi que
+        etiquetarlos como "Debye" seria engañoso. `procesar_material`
+        pasa la etiqueta que corresponde a cada modelo.
     """
     from matplotlib.figure import Figure
     fig = Figure(figsize=(9, 7))
     ax_re, ax_im = fig.subplots(2, 1, sharex=True)
 
     if er_teorico is not None:
-        ax_re.plot(frecs / 1e9, er_teorico.real, 'k--', linewidth=2, label="Teorico (Debye)")
+        ax_re.plot(frecs / 1e9, er_teorico.real, 'k--', linewidth=2, label=etiqueta_teorico)
     for etiqueta, er in er_medido_dict.items():
         ax_re.plot(frecs / 1e9, er.real, linewidth=1.6, label=etiqueta)
     ax_re.set_ylabel("er'  (parte real)")
@@ -380,7 +436,7 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
     ax_re.legend()
 
     if er_teorico is not None:
-        ax_im.plot(frecs / 1e9, er_teorico.imag, 'k--', linewidth=2, label="Teorico (Debye)")
+        ax_im.plot(frecs / 1e9, er_teorico.imag, 'k--', linewidth=2, label=etiqueta_teorico)
     for etiqueta, er in er_medido_dict.items():
         ax_im.plot(frecs / 1e9, er.imag, linewidth=1.6, label=etiqueta)
     ax_im.set_xlabel("Frecuencia (GHz)")
@@ -494,24 +550,54 @@ def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True, marcas_inicio=None):
 
 def calcular_error(er_medido, er_teorico):
     """Devuelve un dict con el error relativo (%) promedio y maximo de
-    parte real e imaginaria, listo para tablas (consola o PDF)."""
+    parte real e imaginaria, listo para tablas (consola o PDF).
+
+    Usa nanmean/nanmax porque `error_relativo_porcentual` devuelve NaN
+    donde el error no esta DEFINIDO -- tipicamente cuando la curva
+    teorica tiene er'' identicamente 0, que es lo que pasa con los
+    modelos de permitividad estatica de `Patrones.py` (acetona,
+    ciclohexano, silicona). Si TODOS los puntos de una parte son NaN, el
+    promedio queda en NaN y quien lo muestre debe imprimir "n/a" en vez
+    de un numero (ver `reportar_error` y `reporte_pdf._fmt_error`), en
+    lugar de inventar un 0 o un inf.
+    """
     err_re, err_im = error_relativo_porcentual(er_medido, er_teorico)
+
+    def _resumen(arr):
+        arr = np.abs(np.asarray(arr, dtype=float))
+        if arr.size == 0 or np.all(np.isnan(arr)):
+            return float('nan'), float('nan')
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            return float(np.nanmean(arr)), float(np.nanmax(arr))
+
+    re_medio, re_max = _resumen(err_re)
+    im_medio, im_max = _resumen(err_im)
     return {
-        'err_re_medio': float(np.mean(np.abs(err_re))),
-        'err_re_max': float(np.max(np.abs(err_re))),
-        'err_im_medio': float(np.mean(np.abs(err_im))),
-        'err_im_max': float(np.max(np.abs(err_im))),
+        'err_re_medio': re_medio,
+        'err_re_max': re_max,
+        'err_im_medio': im_medio,
+        'err_im_max': im_max,
     }
+
+
+def _fmt_pct(valor):
+    """Formatea un porcentaje de error, o 'n/a' si es NaN (error no
+    definido -- ver `calcular_error`)."""
+    return "    n/a" if valor is None or np.isnan(valor) else f"{valor:6.2f}%"
 
 
 def reportar_error(nombre, er_medido, er_teorico):
     """Imprime el error relativo en consola y lo devuelve (ver `calcular_error`)."""
     e = calcular_error(er_medido, er_teorico)
     print(f"  {nombre}:")
-    print(f"    error medio  er' = {e['err_re_medio']:6.2f}%   "
-          f"error medio  er'' = {e['err_im_medio']:6.2f}%")
-    print(f"    error maximo er' = {e['err_re_max']:6.2f}%   "
-          f"error maximo er'' = {e['err_im_max']:6.2f}%")
+    print(f"    error medio  er' = {_fmt_pct(e['err_re_medio'])}   "
+          f"error medio  er'' = {_fmt_pct(e['err_im_medio'])}")
+    print(f"    error maximo er' = {_fmt_pct(e['err_re_max'])}   "
+          f"error maximo er'' = {_fmt_pct(e['err_im_max'])}")
+    if np.isnan(e['err_im_medio']):
+        print("    (er'' = n/a: el modelo teorico de referencia no modela "
+              "perdidas, ver la advertencia de ese modelo)")
     return e
 
 
@@ -813,6 +899,19 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     teorico_fn = resolver_modelo_teorico(modelo, temperatura_material)
     er_teo = teorico_fn(frecs) if teorico_fn is not None else None
 
+    # Advertencia del modelo teorico elegido (p.ej. los modelos de
+    # permitividad ESTATICA -- acetona, ciclohexano, silicona -- que no
+    # tienen ecuacion de relajacion ajustada). Se imprime en consola y
+    # viaja en el resultado para que el informe PDF la muestre como caja
+    # destacada junto al grafico de ese material.
+    advertencia_modelo = advertencia_patron(modelo) if modelo else None
+    if advertencia_modelo:
+        etiqueta_mod = etiqueta_patron(modelo) or modelo
+        print(f"  [ADVERTENCIA - modelo teorico '{etiqueta_mod}']")
+        for linea in advertencia_modelo.splitlines():
+            if linea.strip():
+                print(f"    {linea.strip()}")
+
     mascara = (frecs >= f_min_ghz * 1e9) & (frecs <= f_max_ghz * 1e9)
     f_r = frecs[mascara]
     resultados_r = {k: v[mascara] for k, v in resultados.items()}
@@ -822,8 +921,10 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     titulo = f"{nombre}: medido vs. teorico" if er_teo_r is not None else \
              f"{nombre}: medido (sin modelo teorico de referencia)"
     ruta_figura = os.path.join(carpeta_salida, f"er_{slug}.png")
+    etiq_teorico = etiqueta_curva_teorica(modelo)
 
-    graficar_comparacion(f_r, resultados_r, er_teo_r, titulo, ruta_figura, log_x=log_x)
+    graficar_comparacion(f_r, resultados_r, er_teo_r, titulo, ruta_figura,
+                          log_x=log_x, etiqueta_teorico=etiq_teorico)
 
     # S11 medido (crudo, previo a la conversion a permitividad): modulo+fase
     # y diagrama de Smith, en el mismo recorte de frecuencias y la misma
@@ -881,6 +982,15 @@ def procesar_material(material, carpeta_datos, cache, frecs,
         'tabla_frecs_ghz': tabla_frecs_ghz,
         'tabla_columnas': tabla_columnas,
         'nota': nota,
+        # Advertencia del modelo teorico (ver Patrones.INFO_PATRONES): la
+        # muestra el informe PDF como caja destacada y la GUI como cartel.
+        # `modelo_estatico`/`modelo_modela_perdidas` permiten que el PDF
+        # aclare por que la columna de error de er'' puede decir "n/a".
+        'advertencia_modelo': advertencia_modelo,
+        'nivel_advertencia': nivel_advertencia_patron(modelo) if modelo else 'info',
+        'modelo_estatico': es_modelo_estatico(modelo) if modelo else False,
+        'modelo_modela_perdidas': modela_perdidas(modelo) if modelo else True,
+        'modelo_resumen': resumen_corto_patron(modelo) if modelo else None,
         # Datos crudos para reconstruir la figura en vivo (interactiva,
         # con zoom/pan) en la GUI sin tener que releer el .png -- ver
         # gui_permitividad.VisorFigura y _figuras_desde_resultado. El PNG
@@ -888,8 +998,68 @@ def procesar_material(material, carpeta_datos, cache, frecs,
         'datos_grafico': {
             'frecs': f_r, 'medido': resultados_r, 'teorico': er_teo_r,
             'titulo': titulo, 'log_x': log_x,
+            'etiqueta_teorico': etiq_teorico,
         },
     }
+
+
+def etiqueta_curva_teorica(modelo):
+    """Texto de leyenda para la curva teorica de `modelo`.
+
+    No todos los patrones de `Patrones.py` son un Debye: los de
+    permitividad estatica (acetona, ciclohexano, silicona) no tienen
+    ecuacion de relajacion ajustada, asi que rotular su curva como
+    "Teorico (Debye)" -- como hacia esta funcion antes, fijo para todos --
+    seria directamente engañoso en el grafico que despues va al informe.
+    """
+    if not modelo:
+        return "Teorico"
+    if es_modelo_estatico(modelo):
+        return "Teorico (ε estatica NPL, sin relajacion)"
+    return "Teorico (Debye)"
+
+
+def _advertencias_calibracion(modelo_patron3, modelo_patron4):
+    """
+    Junta las advertencias de los modelos teoricos usados como patron 3 y
+    patron 4 de la calibracion, en una lista de dicts listos para mostrar
+    (consola, GUI o caja destacada del informe PDF).
+
+    Cada entrada: {'rol', 'modelo', 'etiqueta', 'nivel', 'texto'}.
+
+    Ademas de repetir la advertencia propia del modelo, agrega un reparo
+    EXTRA que solo aplica cuando el modelo se usa como patron: si el
+    liquido es no polar (permitividad ~2, muy cerca de la del aire), el
+    sistema de ecuaciones de calibracion queda mal condicionado -- el
+    patron aporta muy poca informacion nueva respecto del circuito
+    abierto, y el ruido de medicion se amplifica sobre TODOS los
+    materiales analizados con esa calibracion.
+    """
+    advertencias = []
+    for rol, modelo in (("Patron 3", modelo_patron3), ("Patron 4", modelo_patron4)):
+        if not modelo:
+            continue
+        texto = advertencia_patron(modelo)
+        info_extra = ""
+        if es_modelo_estatico(modelo):
+            info_extra = (
+                f"\n\nUSADO COMO {rol.upper()} DE CALIBRACION: ademas de lo "
+                f"anterior, tener en cuenta que la permitividad de este "
+                f"patron entra DIRECTAMENTE en las formulas de conversion "
+                f"S11 -> er, asi que cualquier limitacion del modelo se "
+                f"propaga al resultado de TODOS los materiales, no solo al "
+                f"de este patron."
+            )
+        if not texto and not info_extra:
+            continue
+        advertencias.append({
+            'rol': rol,
+            'modelo': modelo,
+            'etiqueta': etiqueta_patron(modelo) or modelo,
+            'nivel': nivel_advertencia_patron(modelo),
+            'texto': (texto or "") + info_extra,
+        })
+    return advertencias
 
 
 def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
@@ -1066,6 +1236,17 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
 
     _copiar_insumos(carpeta_datos, archivos_cal, materiales, carpeta_dia, log)
 
+    # Advertencias de los modelos usados como patron de calibracion (p.ej.
+    # un modelo de permitividad ESTATICA como ciclohexano o silicona). Se
+    # loguean aca, apenas se resuelve la calibracion y ANTES de procesar
+    # ningun material, porque afectan el resultado de todos ellos.
+    for adv in _advertencias_calibracion(
+            modelo_patron3, modelo_patron4 if usar_metodo_completo else None):
+        log(f"\n  [ADVERTENCIA - {adv['rol']}: {adv['etiqueta']}]")
+        for linea in adv['texto'].splitlines():
+            if linea.strip():
+                log(f"    {linea.strip()}")
+
     # -----------------------------------------------------------------
     # Chequeo de calibracion: el patron 3 ES uno de los patrones, asi que
     # si se lo "mide" como si fuera un DUT mas, el resultado tiene que
@@ -1093,6 +1274,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             errores_p3[etiqueta] = reportar_error(etiqueta, arr[mascara], er_p3_teo[mascara])
 
     ruta_figura_p3 = os.path.join(carpeta_salida, "chequeo_calibracion_patron3.png")
+    etiq_teorico_p3 = etiqueta_curva_teorica(modelo_patron3)
     graficar_comparacion(
         frecs[mascara],
         medido_p3,
@@ -1100,6 +1282,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         f"{etiqueta_p3}: chequeo de calibracion (medido vs. teorico)",
         ruta_figura_p3,
         log_x=log_x,
+        etiqueta_teorico=etiq_teorico_p3,
     )
     chequeo_calibracion = {
         'figura': ruta_figura_p3,
@@ -1114,6 +1297,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             'teorico': er_p3_teo[mascara],
             'titulo': f"{etiqueta_p3}: chequeo de calibracion (medido vs. teorico)",
             'log_x': log_x,
+            'etiqueta_teorico': etiq_teorico_p3,
         },
     }
 
@@ -1145,6 +1329,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             errores_p4[etiqueta] = reportar_error(etiqueta, arr[mascara], er_p4_teo[mascara])
 
         ruta_figura_p4 = os.path.join(carpeta_salida, "chequeo_calibracion_patron4.png")
+        etiq_teorico_p4 = etiqueta_curva_teorica(modelo_patron4)
         graficar_comparacion(
             frecs[mascara],
             medido_p4,
@@ -1152,6 +1337,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             f"{etiqueta_p4}: chequeo de calibracion (medido vs. teorico)",
             ruta_figura_p4,
             log_x=log_x,
+            etiqueta_teorico=etiq_teorico_p4,
         )
         chequeo_calibracion['patron4'] = {
             'figura': ruta_figura_p4,
@@ -1162,6 +1348,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
                 'teorico': er_p4_teo[mascara],
                 'titulo': f"{etiqueta_p4}: chequeo de calibracion (medido vs. teorico)",
                 'log_x': log_x,
+                'etiqueta_teorico': etiq_teorico_p4,
             },
         }
 
@@ -1250,6 +1437,15 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         'f_max_ghz': f_max_ghz,
         'archivos_calibracion': archivos_cal,
         'cancelado': interrumpido,
+        # Advertencias de los modelos usados como PATRON DE CALIBRACION.
+        # Aca importan aun mas que en un material cualquiera: la
+        # permitividad del patron entra directo en las formulas de
+        # conversion de funciones.py, asi que un modelo que no modela
+        # perdidas (o cuya permitividad esta demasiado cerca de la del
+        # aire, como el ciclohexano o la silicona) degrada el resultado de
+        # TODOS los materiales, no solo el suyo.
+        'advertencias_calibracion': _advertencias_calibracion(
+            modelo_patron3, modelo_patron4 if usar_metodo_completo else None),
     }
     progreso(1 + len(resultados_materiales), total_pasos, "Generando informe PDF")
     ruta_pdf = os.path.join(carpeta_salida, config['nombre_informe_pdf'])
