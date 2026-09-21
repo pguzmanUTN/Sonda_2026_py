@@ -101,8 +101,11 @@ from matplotlib.ticker import FormatStrFormatter
 
 from Touchstone import (leer_s1p, mismas_frecuencias, resamplear,
                          graficar_s11_mag_fase, graficar_smith)
-from funciones import get_er_DUTm, get_er_DUT_completo, error_relativo_porcentual, calcular_Gn
-from Patrones import (PATRONES_TEORICOS, etiqueta_patron, advertencia_patron,
+from funciones import (get_er_DUTm, get_er_DUT_completo, error_relativo_porcentual,
+                        calcular_Gn, calibrar_minimos_cuadrados,
+                        get_er_DUT_minimos_cuadrados,
+                        validacion_cruzada_minimos_cuadrados)
+from Patrones import (PATRONES_TEORICOS, ER_AIRE, etiqueta_patron, advertencia_patron,
                        nivel_advertencia_patron, es_modelo_estatico,
                        modela_perdidas, perdidas_comparables,
                        resumen_corto_patron, etiqueta_curva_teorica)
@@ -161,6 +164,22 @@ PATRON3_TEMPERATURA_CAL_C = 25.0
 # analizados con el metodo completo, no solo el del propio patron 4.
 PATRON4_MODELO_CAL = 'alcohol_isopropilico'
 PATRON4_TEMPERATURA_CAL_C = 25.0
+# (Estos dos valores describen los archivos .s1p que se usan en modo
+# script, que son de isopropilico: NO cambiarlos por el metanol
+# recomendado sin cambiar tambien el archivo 'patron4' de arriba. La
+# recomendacion por defecto para calibraciones nuevas vive en
+# gui_funciones.config_default.)
+
+# Calibracion REDUNDANTE por cuadrados minimos (opcional). Suma patrones
+# liquidos ademas de corto + aire + patron 3 + patron 4, y ajusta la
+# calibracion por cuadrados minimos (ver funciones.calibrar_minimos_
+# cuadrados). Cada entrada: {'archivo', 'modelo', 'temperatura_c'}.
+# Kaatze (2007) recomienda aire, agua, ciclohexano y metanol; ver
+# gui_funciones.config_default para el juego recomendado.
+USAR_MINIMOS_CUADRADOS = False
+PATRONES_ADICIONALES = [
+    # {'archivo': "sonda4-ciclohexano.s1p", 'modelo': 'ciclohexano', 'temperatura_c': 25.0},
+]
 
 TEMPERATURA_ALC_ETILICO_C = 20.0
 TEMPERATURA_ALC_ISOPROP_C = 25.0
@@ -808,6 +827,40 @@ ETIQUETA_ESTRATEGIA_GN = {
 }
 
 
+def graficar_residuos_minimos_cuadrados(frecs, residuos, archivo_salida=None, log_x=True):
+    """
+    Residuo |S11 medido - S11 del modelo ajustado| de cada patron de una
+    calibracion por cuadrados minimos, en funcion de la frecuencia.
+
+    Todos los patrones tienen que quedar en el mismo orden de magnitud,
+    parecido al ruido del VNA. Si el residuo global sube mucho respecto
+    de una calibracion anterior, hay una inconsistencia entre patrones (un
+    liquido contaminado, una temperatura mal cargada, burbujas...). Ver la
+    tabla de validacion cruzada del informe para acotar cual.
+
+    Devuelve la ruta si se guardo, o la Figure si `archivo_salida` es None.
+    """
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(9, 4.6))
+    ax = fig.add_subplot(111)
+    for nombre, res in residuos.items():
+        ax.plot(frecs / 1e9, res, linewidth=1.4, label=nombre)
+    ax.set_yscale('log')
+    if log_x and np.all(frecs > 0):
+        ax.set_xscale('log')
+    ax.set_xlabel("Frecuencia (GHz)")
+    ax.set_ylabel("|S11 medido - S11 modelo|")
+    ax.set_title("Calibracion por cuadrados minimos: residuo de cada patron")
+    ax.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    if archivo_salida is not None:
+        fig.savefig(archivo_salida, dpi=150)
+        return archivo_salida
+    return fig
+
+
 def _calcular_metodo_completo(frecs, s11_dut, s11_patron3, s11_aire, s11_patron4,
                                s11_corto, Er_patron3, Er_patron4, estrategia_gn,
                                prefijo="Medido (completo", verbose=False):
@@ -849,7 +902,7 @@ def procesar_material(material, carpeta_datos, cache, frecs,
                        s11_corto, s11_aire, s11_patron3, s11_patron4,
                        Er_patron3, Er_patron4, carpeta_salida=None,
                        f_min_ghz=None, f_max_ghz=None, log_x=None,
-                       estrategia_gn='minimo_gn'):
+                       estrategia_gn='minimo_gn', calibracion_mc=None):
     """Procesa una entrada de MATERIALES: lee su .s1p, calcula la
     permitividad con los metodos indicados, grafica (contra la curva
     teorica si se conoce, o solo lo medido si no), exporta CSV y devuelve
@@ -869,7 +922,11 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     explicitamente para poder usar valores distintos (p.ej. los que cargo
     la GUI) sin tocar esas constantes.
     `estrategia_gn`: se pasa tal cual a `funciones.get_er_DUT_completo`
-    (parametro `estrategia_semilla`) -- ver su docstring."""
+    (parametro `estrategia_semilla`) -- ver su docstring.
+    `calibracion_mc`: resultado de `funciones.calibrar_minimos_cuadrados`
+    (o None si esa calibracion no esta habilitada). Si el material pide
+    'minimos_cuadrados' en sus metodos y no hay calibracion, se avisa y se
+    omite ese metodo."""
     carpeta_salida = CARPETA_SALIDA if carpeta_salida is None else carpeta_salida
     f_min_ghz = F_MIN_GHZ if f_min_ghz is None else f_min_ghz
     f_max_ghz = F_MAX_GHZ if f_max_ghz is None else f_max_ghz
@@ -912,6 +969,20 @@ def procesar_material(material, carpeta_datos, cache, frecs,
                 frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
                 Er_patron3, Er_patron4, estrategia_gn,
                 prefijo="Medido (completo, 4 patrones", verbose=True))
+
+    if 'minimos_cuadrados' in metodos:
+        if calibracion_mc is None:
+            print(f"  [aviso] '{nombre}' tenia tildado cuadrados minimos, pero esa "
+                  f"calibracion no esta habilitada (o no hay patrones adicionales "
+                  f"suficientes): se omite ese metodo.")
+        else:
+            n_pat = len(calibracion_mc['nombres'])
+            # 'comparar_ambas' no aplica aca: con la calibracion ya ajustada,
+            # la marcha arranca en el minimo de |Gn|.
+            estr = 'frecuencia_maxima' if estrategia_gn == 'frecuencia_maxima' else 'minimo_gn'
+            resultados[f'Medido (cuadrados m\u00ednimos, {n_pat} patrones)'] = \
+                get_er_DUT_minimos_cuadrados(frecs, s11_dut, calibracion_mc,
+                                             estrategia_semilla=estr)
 
     modelo = material.get('modelo') or None
     temperatura_material = float(material.get('temperatura', 25.0)) if modelo else None
@@ -1025,7 +1096,7 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     }
 
 
-def _advertencias_calibracion(modelo_patron3, modelo_patron4):
+def _advertencias_calibracion(modelo_patron3, modelo_patron4, adicionales=()):
     """
     Junta las advertencias de los modelos teoricos usados como patron 3 y
     patron 4 de la calibracion, en una lista de dicts listos para mostrar
@@ -1042,7 +1113,13 @@ def _advertencias_calibracion(modelo_patron3, modelo_patron4):
     materiales analizados con esa calibracion.
     """
     advertencias = []
-    for rol, modelo in (("Patron 3", modelo_patron3), ("Patron 4", modelo_patron4)):
+    roles = [("Patron 3", modelo_patron3), ("Patron 4", modelo_patron4)]
+    roles += [("Patron adicional", m) for m in adicionales]
+    ya_vistos = set()
+    for rol, modelo in roles:
+        if rol == "Patron adicional" and modelo in ya_vistos:
+            continue
+        ya_vistos.add(modelo)
         if not modelo:
             continue
         texto = advertencia_patron(modelo)
@@ -1198,6 +1275,12 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     # el parametro homonimo de `funciones.get_er_DUT_completo`. Sin efecto
     # si usar_metodo_completo es False.
     estrategia_gn = config.get('estrategia_gn', 'minimo_gn')
+    # Calibracion redundante por cuadrados minimos (opcional): patrones
+    # liquidos ademas de corto/aire/patron 3/patron 4. Solo se usan las
+    # filas con archivo asignado.
+    usar_mc = bool(config.get('usar_minimos_cuadrados', False))
+    adicionales = [a for a in (config.get('patrones_adicionales') or [])
+                   if (a.get('archivo') or '').strip() and a.get('modelo')] if usar_mc else []
     f_min_ghz = config['f_min_ghz']
     f_max_ghz = config['f_max_ghz']
     log_x = config.get('escala_log_frecuencia', ESCALA_LOG_FRECUENCIA)
@@ -1248,18 +1331,107 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         log("  Metodo completo deshabilitado: no se usa Patron 4 ni se calcula Gn "
             "(todos los materiales se procesan solo con el metodo simplificado).")
 
-    _copiar_insumos(carpeta_datos, archivos_cal, materiales, carpeta_dia, log)
+    archivos_a_copiar = dict(archivos_cal)
+    for i, ad in enumerate(adicionales, start=1):
+        archivos_a_copiar[f'adicional_{i}'] = ad['archivo']
+    _copiar_insumos(carpeta_datos, archivos_a_copiar, materiales, carpeta_dia, log)
 
     # Advertencias de los modelos usados como patron de calibracion (p.ej.
     # un modelo de permitividad ESTATICA como ciclohexano o silicona). Se
     # loguean aca, apenas se resuelve la calibracion y ANTES de procesar
     # ningun material, porque afectan el resultado de todos ellos.
     for adv in _advertencias_calibracion(
-            modelo_patron3, modelo_patron4 if usar_metodo_completo else None):
+            modelo_patron3, modelo_patron4 if usar_metodo_completo else None,
+            [a['modelo'] for a in adicionales]):
         log(f"\n  [ADVERTENCIA - {adv['rol']}: {adv['etiqueta']}]")
         for linea in adv['texto'].splitlines():
             if linea.strip():
                 log(f"    {linea.strip()}")
+
+    # -----------------------------------------------------------------
+    # Calibracion REDUNDANTE por cuadrados minimos (si esta habilitada).
+    # Usa TODOS los patrones: corto, aire, patron 3, patron 4 (si el
+    # metodo completo esta activo) y los adicionales. Con exactamente 4
+    # reproduce el metodo completo; con 5 o mas ajusta y ademas permite
+    # un chequeo de consistencia entre patrones.
+    # -----------------------------------------------------------------
+    calibracion_mc = None
+    chequeo_mc = None
+    if usar_mc:
+        log("\nCalibracion por cuadrados minimos...")
+        patrones_mc = [
+            {'nombre': "Cortocircuito", 'S11': s11_corto, 'er': None},
+            {'nombre': "Aire", 'S11': s11_aire,
+             'er': np.full(frecs.shape, complex(ER_AIRE)), 'es_aire': True},
+            {'nombre': f"Patron 3: {etiqueta_p3}", 'S11': s11_patron3, 'er': Er_patron3,
+             'modelo': modelo_patron3, 'temperatura': T_patron3},
+        ]
+        if usar_metodo_completo:
+            patrones_mc.append({'nombre': f"Patron 4: {etiqueta_p4}", 'S11': s11_patron4,
+                                'er': Er_patron4, 'modelo': modelo_patron4,
+                                'temperatura': T_patron4})
+        for ad in adicionales:
+            modelo_ad = ad['modelo']
+            T_ad = float(ad.get('temperatura_c', 25.0))
+            datos_ad = _cargar_cache(os.path.join(carpeta_datos, ad['archivo']), cache)
+            f_ad = np.asarray(datos_ad['Frec'], dtype=float)
+            if not ((len(f_ad) == len(frecs)) and np.allclose(f_ad, frecs, atol=1.0)):
+                log(f"  [info] '{ad['archivo']}' no comparte la grilla de calibracion: remuestreando.")
+                datos_ad = resamplear(frecs, datos_ad)
+            etiqueta_ad = etiqueta_patron(modelo_ad) or modelo_ad
+            log(f"  Patron adicional = {etiqueta_ad} a {T_ad:.1f}\u00b0C  <- {ad['archivo']}")
+            patrones_mc.append({'nombre': f"Adicional: {etiqueta_ad}",
+                                'S11': datos_ad['Complex'],
+                                'er': PATRONES_TEORICOS[modelo_ad](frecs, T=T_ad),
+                                'modelo': modelo_ad, 'temperatura': T_ad,
+                                'archivo': ad['archivo']})
+        if len(patrones_mc) < 4:
+            log(f"  [aviso] Cuadrados minimos necesita al menos 4 patrones y hay "
+                f"{len(patrones_mc)}: se omite (agrega patrones adicionales o "
+                f"habilita el metodo completo).")
+        else:
+            calibracion_mc = calibrar_minimos_cuadrados(frecs, patrones_mc, verbose=True)
+            gl = calibracion_mc['grados_libertad']
+            if gl == 0:
+                log("  Con 4 patrones no hay redundancia: el resultado es identico al "
+                    "metodo completo y los residuos son nulos.")
+            validacion = validacion_cruzada_minimos_cuadrados(frecs, patrones_mc)
+            # Los numeros del informe se calculan en la banda analizada.
+            mascara_mc = (frecs >= f_min_ghz * 1e9) & (frecs <= f_max_ghz * 1e9)
+            if not mascara_mc.any():
+                mascara_mc = np.ones(frecs.shape, dtype=bool)
+            residuo_global = float(np.sqrt(np.mean(calibracion_mc['residuo_rms'][mascara_mc] ** 2)))
+            for v in validacion.values():
+                rel = (np.abs(v['er_predicho'] - v['er_teorico']) / np.abs(v['er_teorico']))[mascara_mc]
+                v['err_medio_pct'] = float(100 * np.mean(rel))
+                v['err_max_pct'] = float(100 * np.max(rel))
+            if validacion:
+                log("  Validacion cruzada (se calibra SIN cada patron y se lo mide):")
+                for nom, v in validacion.items():
+                    log(f"    sin '{nom}': error {v['err_medio_pct']:.2f}% medio "
+                        f"({v['err_max_pct']:.2f}% max); residuo de los demas "
+                        f"{v['residuo_resto']:.2e}")
+                log(f"    residuo global con todos: {residuo_global:.2e}")
+            ruta_fig_mc = os.path.join(carpeta_salida, "calibracion_minimos_cuadrados_residuos.png")
+            residuos_banda = {k: v[mascara_mc] for k, v in calibracion_mc['residuos'].items()}
+            graficar_residuos_minimos_cuadrados(frecs[mascara_mc], residuos_banda,
+                                                ruta_fig_mc, log_x=log_x)
+            chequeo_mc = {
+                'figura': ruta_fig_mc,
+                'patrones': [{'nombre': pt['nombre'],
+                              'residuo_rms': float(np.sqrt(np.mean(
+                                  calibracion_mc['residuos'][pt['nombre']][mascara_mc] ** 2))),
+                              'temperatura': pt.get('temperatura'),
+                              'archivo': pt.get('archivo')}
+                             for pt in patrones_mc],
+                'validacion_cruzada': {k: {kk: vv for kk, vv in v.items()
+                                           if kk in ('err_medio_pct', 'err_max_pct', 'residuo_resto')}
+                                       for k, v in validacion.items()},
+                'residuo_global': residuo_global,
+                'grados_libertad': gl,
+                'datos_grafico': {'frecs': frecs[mascara_mc], 'residuos': residuos_banda,
+                                  'log_x': log_x},
+            }
 
     # -----------------------------------------------------------------
     # Chequeo de calibracion: el patron 3 ES uno de los patrones, asi que
@@ -1409,6 +1581,9 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             'marcas_inicio': marcas_inicio_gn,
         }
 
+    if chequeo_mc is not None:
+        chequeo_calibracion['minimos_cuadrados'] = chequeo_mc
+
     progreso(1, total_pasos, "Calibraci\u00f3n completa")
 
     # -----------------------------------------------------------------
@@ -1432,7 +1607,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             s11_corto, s11_aire, s11_patron3, s11_patron4,
             Er_patron3, Er_patron4, carpeta_salida=carpeta_salida,
             f_min_ghz=f_min_ghz, f_max_ghz=f_max_ghz, log_x=log_x,
-            estrategia_gn=estrategia_gn,
+            estrategia_gn=estrategia_gn, calibracion_mc=calibracion_mc,
         )
         if resultado is not None:
             resultados_materiales.append(resultado)
@@ -1465,7 +1640,11 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         # aire, como el ciclohexano o la silicona) degrada el resultado de
         # TODOS los materiales, no solo el suyo.
         'advertencias_calibracion': _advertencias_calibracion(
-            modelo_patron3, modelo_patron4 if usar_metodo_completo else None),
+            modelo_patron3, modelo_patron4 if usar_metodo_completo else None,
+            [a['modelo'] for a in adicionales]),
+        'minimos_cuadrados': ({'n_patrones': len(calibracion_mc['nombres']),
+                               'nombres': list(calibracion_mc['nombres'])}
+                              if calibracion_mc is not None else None),
     }
     progreso(1 + len(resultados_materiales), total_pasos, "Generando informe PDF")
     ruta_pdf = os.path.join(carpeta_salida, config['nombre_informe_pdf'])
@@ -1500,6 +1679,8 @@ def config_desde_constantes():
         'patron3_temperatura_c': PATRON3_TEMPERATURA_CAL_C,
         'patron4_modelo': PATRON4_MODELO_CAL,
         'patron4_temperatura_c': PATRON4_TEMPERATURA_CAL_C,
+        'usar_minimos_cuadrados': USAR_MINIMOS_CUADRADOS,
+        'patrones_adicionales': list(PATRONES_ADICIONALES),
         'materiales': MATERIALES,
         'carpeta_salida': CARPETA_SALIDA,
         'nombre_informe_pdf': NOMBRE_INFORME_PDF,

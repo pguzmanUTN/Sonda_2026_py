@@ -281,6 +281,10 @@ def _tabla_metadata(metadata):
         filas.append(["Arranque de Gn (m\u00e9todo completo)", etiqueta_estrategia])
     else:
         filas.append(["M\u00e9todo completo", "No usado (solo m\u00e9todo simplificado)"])
+    mc = metadata.get('minimos_cuadrados')
+    if mc:
+        filas.append(["Calibraci\u00f3n por cuadrados m\u00ednimos",
+                      f"{mc['n_patrones']} patrones: " + ", ".join(mc['nombres'])])
     filas.append(["Banda analizada", f"{metadata['f_min_ghz']} - {metadata['f_max_ghz']} GHz"])
     for clave, archivo in metadata.get('archivos_calibracion', {}).items():
         # Solo el nombre de archivo, no la ruta completa: una ruta larga
@@ -318,6 +322,76 @@ def _tabla_metadata(metadata):
         ('RIGHTPADDING', (0, 0), (-1, -1), 6),
     ]))
     return t
+
+
+def _seccion_minimos_cuadrados(chequeo_mc):
+    """Bloque del informe para la calibracion redundante por cuadrados
+    minimos: explicacion corta, figura de residuos y tabla por patron con
+    el residuo y la validacion cruzada ("dejando uno afuera")."""
+    gl = chequeo_mc.get('grados_libertad', 0)
+    bloque = [
+        Paragraph("Calibraci\u00f3n redundante por cuadrados m\u00ednimos",
+                  _ESTILOS['NombreMaterial']),
+        Paragraph(
+            "La calibraci\u00f3n se ajusta con todos los patrones a la vez, "
+            "minimizando la diferencia entre el S11 medido y el que predice el "
+            "modelo de la sonda. Kaatze (2007) recomienda calibraciones "
+            "redundantes, con m\u00e1s patrones que los estrictamente necesarios; "
+            "resolverlas por cuadrados m\u00ednimos es la elecci\u00f3n de esta "
+            f"implementaci\u00f3n. Grados de libertad sobrantes: {gl}.",
+            _ESTILOS['Normal']),
+        Spacer(1, 0.25 * cm),
+    ]
+    if chequeo_mc.get('figura') and os.path.isfile(chequeo_mc['figura']):
+        bloque.append(_imagen_ajustada(chequeo_mc['figura']))
+    story = [KeepTogether(bloque)]
+
+    vc = chequeo_mc.get('validacion_cruzada') or {}
+    encabezado = ["Patr\u00f3n", "Residuo rms (S11)",
+                  "Error al medirlo sin \u00e9l", "Residuo de los dem\u00e1s sin \u00e9l"]
+    datos = [[Paragraph(h, _ESTILOS['CeldaTablaEncabezado']) for h in encabezado]]
+    for pt in chequeo_mc.get('patrones', []):
+        v = vc.get(pt['nombre'])
+        datos.append([
+            Paragraph(str(pt['nombre']), _ESTILOS['CeldaTabla']),
+            Paragraph(f"{pt['residuo_rms']:.2e}", _ESTILOS['CeldaTabla']),
+            Paragraph(f"{v['err_medio_pct']:.2f}% (m\u00e1x {v['err_max_pct']:.1f}%)" if v else "\u2014",
+                      _ESTILOS['CeldaTabla']),
+            Paragraph(f"{v['residuo_resto']:.2e}" if v else "\u2014", _ESTILOS['CeldaTabla']),
+        ])
+    datos.append([
+        Paragraph("<b>Todos</b>", _ESTILOS['CeldaTabla']),
+        Paragraph(f"<b>{chequeo_mc.get('residuo_global', float('nan')):.2e}</b>",
+                  _ESTILOS['CeldaTabla']),
+        Paragraph("", _ESTILOS['CeldaTabla']), Paragraph("", _ESTILOS['CeldaTabla']),
+    ])
+    t = Table(datos, hAlign='LEFT', colWidths=[6.2 * cm, 3.2 * cm, 4.0 * cm, 3.6 * cm])
+    t.setStyle(_estilo_tabla())
+
+    nota = (
+        "C\u00f3mo leer esta tabla. El <b>residuo global</b> detecta inconsistencias "
+        "entre patrones: si sube mucho respecto de una calibraci\u00f3n anterior "
+        "(un l\u00edquido que tom\u00f3 humedad, una temperatura mal cargada, "
+        "burbujas), algo anda mal. <b>Sin \u00e9l</b>: se calibra sin ese patr\u00f3n "
+        "y se lo mide como una muestra desconocida; si al sacarlo el residuo de "
+        "los dem\u00e1s baja al nivel de ruido, es sospechoso. Con pocos patrones "
+        "de sobra este diagn\u00f3stico acota los sospechosos pero no siempre los "
+        "identifica. El error \"sin el agua\" es naturalmente alto aun con todo "
+        "correcto: sin ella no queda ning\u00fan patr\u00f3n de alta permitividad y "
+        "medirla pasa a ser una extrapolaci\u00f3n."
+    )
+    if not vc:
+        nota = ("Con exactamente 4 patrones no hay redundancia: el ajuste es "
+                "exacto, los residuos son nulos y el resultado coincide con el "
+                "m\u00e9todo completo. Agreg\u00e1 patrones adicionales para obtener el "
+                "chequeo de consistencia.")
+    story.append(Spacer(1, 0.3 * cm))
+    story.append(KeepTogether([
+        Paragraph("Consistencia entre patrones:", _ESTILOS['Normal']),
+        Spacer(1, 0.15 * cm), t, Spacer(1, 0.15 * cm),
+        Paragraph(nota, _ESTILOS['Nota']),
+    ]))
+    return story
 
 
 def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
@@ -477,6 +551,11 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
                 Spacer(1, 0.2 * cm),
                 _imagen_ajustada(chequeo_calibracion['figura_Gn']),
             ]))
+
+        chequeo_mc = chequeo_calibracion.get('minimos_cuadrados')
+        if chequeo_mc is not None:
+            story.append(Spacer(1, 0.3 * cm))
+            story.extend(_seccion_minimos_cuadrados(chequeo_mc))
 
         if materiales:
             story.append(_separador())

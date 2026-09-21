@@ -26,6 +26,18 @@ Se implementan los dos metodos descriptos en la bibliografia de la catedra
                                de admitancia completo. Es mas preciso en un
                                rango de frecuencias mas amplio.
 
+  * `calibrar_minimos_cuadrados` + `get_er_DUT_minimos_cuadrados`
+                            -> Calibracion REDUNDANTE (N >= 4 patrones: corto,
+                               aire y cualquier cantidad de liquidos), como
+                               recomienda Kaatze (2007). Mismo modelo que el
+                               metodo completo, pero los 4 parametros de la
+                               sonda por frecuencia se AJUSTAN por cuadrados
+                               minimos en el espacio de S11 en vez de
+                               despejarse de exactamente 4 patrones. Con 4
+                               patrones reproduce el metodo completo. Ademas,
+                               `validacion_cruzada_minimos_cuadrados` da un
+                               chequeo de consistencia entre patrones.
+
 Este modulo es AGNOSTICO de que liquidos especificos se usan como patron 3
 y patron 4 (tradicionalmente agua destilada y alcohol isopropilico, pero
 puede ser cualquier par de liquidos con un modelo teorico conocido): en vez
@@ -211,7 +223,22 @@ def _resolver_raiz_fisica(coeficientes, semilla):
     semilla confiable en cada punto.
     """
     raices_u = np.roots(coeficientes)
-    raices_er = raices_u ** 2
+
+    # FILTRO DE RAMA (corregido): antes se elevaban al cuadrado las 5 raices
+    # y se elegia la mas cercana a la semilla. El problema es que el
+    # polinomio tiene DOS raices casi iguales cerca de la fisica: u1 ~
+    # +sqrt(er) y u2 ~ -sqrt(er). Con Gn = 0 darian exactamente el mismo er,
+    # pero el termino Gn*u^5 cambia de signo entre las dos, asi que sus
+    # cuadrados quedan separados en ~2*Gn*er^2.5 -- justo alrededor del
+    # valor que da el metodo simplificado, que es la semilla. La eleccion
+    # por cercania quedaba librada al azar, con errores sistematicos de
+    # hasta ~0.1-0.5% (mas grandes cuanto mas irradia la sonda). Solo u1
+    # es fisica: el modelo Y = jwC0*er + G0*er^(5/2) define er^(5/2) con la
+    # raiz PRINCIPAL, que para un medio pasivo (Re(er) > 0) tiene Re(u) > 0.
+    principales = raices_u[np.real(raices_u) > 0]
+    if principales.size == 0:
+        principales = raices_u
+    raices_er = principales ** 2
 
     candidatas = raices_er[np.real(raices_er) > 0]
     if candidatas.size == 0:
@@ -352,6 +379,35 @@ def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
     # punto), y se marcha hacia AMBOS lados en frecuencia -- hacia arriba y
     # hacia abajo -- usando siempre la solucion del vecino inmediato ya
     # resuelto como semilla del siguiente.
+    # Termino independiente del polinomio Gn*u^5 + u^2 + c0 = 0, en todo el
+    # barrido de una vez. Corregido: antes el aire entraba como `1.0 + Gn`,
+    # o sea con er = 1 exacto, mientras que calcular_Gn y get_er_DUTm usan
+    # Er_aire = 1.0006. Esa inconsistencia dejaba un error sistematico de
+    # hasta ~0.03% aun con datos perfectos.
+    coef_X = Er_patron3 + Gn * (Er_patron3 ** 2.5)
+    coef_1 = Er_aire + Gn * (Er_aire ** 2.5)
+    c0 = X * coef_X + Z * coef_1
+
+    return _marchar_en_frecuencia(frecs, Gn, c0, semillas, estrategia_semilla,
+                                  verbose=verbose, etiqueta="get_er_DUT_completo")
+
+
+def _marchar_en_frecuencia(frecs, Gn, c0, semillas, estrategia_semilla='minimo_gn',
+                           verbose=False, etiqueta="marcha"):
+    """
+    Resuelve, frecuencia por frecuencia, el polinomio Gn*u^5 + u^2 + c0 = 0
+    (u = sqrt(er)) eligiendo la raiz fisica por "marcha en frecuencia":
+    arranca donde |Gn| es minimo (ahi la semilla del modelo con Gn = 0 es
+    la mejor posible) y avanza hacia ambos lados usando como semilla la
+    solucion ya aceptada en el punto vecino. Ver el docstring de
+    `get_er_DUT_completo` para la justificacion completa.
+
+    Lo comparten `get_er_DUT_completo` (4 patrones, solucion exacta) y
+    `get_er_DUT_minimos_cuadrados` (N patrones, calibracion ajustada): la
+    unica diferencia entre los dos metodos esta en como se obtienen Gn y
+    c0, no en como se resuelve el polinomio.
+    """
+    frecs = np.asarray(frecs, dtype=float)
     idx_gn_minimo = int(np.argmin(np.abs(Gn)))
     orden = np.argsort(frecs)  # indices en orden ASCENDENTE de frecuencia
 
@@ -370,19 +426,15 @@ def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
             f"(opciones validas: 'minimo_gn', 'frecuencia_maxima')")
 
     if verbose:
-        print(f"  [get_er_DUT_completo] estrategia='{estrategia_semilla}': "
+        print(f"  [{etiqueta}] estrategia='{estrategia_semilla}': "
               f"la marcha arranca en f={frecs[orden[pos_inicio]] / 1e9:.4f} GHz "
               f"(|Gn| ahi = {abs(Gn[orden[pos_inicio]]):.4g}; el minimo real de "
               f"|Gn| en todo el barrido es {abs(Gn[idx_gn_minimo]):.4g}, en "
               f"f={frecs[idx_gn_minimo] / 1e9:.4f} GHz).")
 
     def _resolver_en(n, semilla):
-        coef_X = Er_patron3[n] + Gn[n] * (Er_patron3[n] ** 2.5)
-        coef_1 = 1.0 + Gn[n]
-        c0 = X[n] * coef_X + Z[n] * coef_1
         # Gn*u^5 + 0*u^4 + 0*u^3 + 1*u^2 + 0*u + c0 = 0
-        coeficientes = [Gn[n], 0, 0, 1, 0, c0]
-        return _resolver_raiz_fisica(coeficientes, semilla)
+        return _resolver_raiz_fisica([Gn[n], 0, 0, 1, 0, c0[n]], semilla)
 
     Er_out = np.zeros_like(frecs, dtype=complex)
 
@@ -405,6 +457,308 @@ def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
         _diagnosticar_saltos(frecs, Er_out)
 
     return Er_out
+
+
+# ---------------------------------------------------------------------------
+# Metodo por CUADRADOS MINIMOS (N >= 4 patrones: calibracion redundante)
+# ---------------------------------------------------------------------------
+# Motivacion: Kaatze (2007), "Reference liquids for the calibration of
+# dielectric sensors and measurement instruments", Meas. Sci. Technol. 18
+# 967, recomienda calibraciones REDUNDANTES, con mas patrones que los
+# estrictamente necesarios:
+#   - pag. 968: "Redundant calibrations with more than two reference
+#     liquids are therefore being recommended."
+#   - pag. 969: "...in order to improve the accuracy of the measurements
+#     by redundant reference routines..."
+#   - pag. 974 (conclusiones): cuatro liquidos de referencia -- aire,
+#     agua, ciclohexano y metanol a 25 °C -- mas DMSO "for redundancy and
+#     consistency checks".
+# OJO: Kaatze NO dice como resolver el sistema redundante (no aparecen
+# "least squares" ni "fit" en todo el paper; remite a sus referencias
+# [15] Evans & Michelson 1995 y [33] Folgero 1996). Resolverlo por
+# cuadrados minimos es la eleccion de ESTA implementacion: es la forma
+# estandar de resolver un sistema sobredeterminado, y minimizando en el
+# espacio de S11 es ademas el estimador de maxima verosimilitud si el
+# ruido del VNA es gaussiano y parejo entre mediciones.
+#
+# Modelo (el mismo que el metodo completo, sin simplificar nada):
+#
+#     F(er) = er + Gn*er^(5/2) = (a*rho + b) / (c*rho + 1)
+#
+# donde rho es el S11 medido. (a, b, c) es la transformacion bilineal que
+# absorbe la caja de error del VNA/cable y la capacidad C0 de la sonda --
+# es la ecuacion (3) de Kaatze -- y Gn es la conductancia de radiacion
+# normalizada. Son 4 incognitas complejas por frecuencia: con 4 patrones
+# el sistema tiene solucion exacta (y reproduce get_er_DUT_completo); con
+# 5 o mas queda sobredeterminado y se ajusta.
+#
+# El cortocircuito es el caso limite F -> inf, que en la bilineal implica
+# c*rho_corto + 1 = 0, o sea rho_corto = -1/c.
+# ---------------------------------------------------------------------------
+
+def _rho_modelo(p, er):
+    """S11 que predice el modelo para un patron de permitividad `er`
+    (None = cortocircuito), dados p = (a, b, c, Gn) complejos. Devuelve
+    (rho, derivadas respecto de a, b, c, Gn). El modelo es holomorfo en los
+    4 parametros, asi que la derivada compleja alcanza para Gauss-Newton."""
+    a, b, c, Gn = p
+    if er is None:  # cortocircuito
+        rho = -1.0 / c
+        cero = np.zeros_like(rho)
+        return rho, (cero, cero, 1.0 / c ** 2, cero)
+    e25 = er ** 2.5
+    F = er + Gn * e25
+    D = c * F - a
+    rho = (b - F) / D
+    d_a = (b - F) / D ** 2
+    d_b = 1.0 / D
+    d_c = -(b - F) * F / D ** 2
+    d_Gn = (a - b * c) / D ** 2 * e25
+    return rho, (d_a, d_b, d_c, d_Gn)
+
+
+def calibrar_minimos_cuadrados(frecs, patrones, max_iter=60, tol=1e-12, verbose=False):
+    """
+    Calibracion redundante de la sonda por cuadrados minimos.
+
+    Parametros
+    ----------
+    frecs : array_like
+        Frecuencias en Hz.
+    patrones : list[dict]
+        Uno por patron medido, con las claves:
+          'nombre' : str (para diagnosticos)
+          'S11'    : array complejo medido, en las mismas `frecs`
+          'er'     : array complejo con la permitividad teorica del patron
+                     YA evaluada en `frecs` y a su temperatura, o None si
+                     el patron es el CORTOCIRCUITO
+          'peso'   : float opcional (default 1). Peso relativo de ese
+                     patron en el ajuste.
+        Hacen falta al menos 4 patrones (4 incognitas complejas). Tipico:
+        corto, aire, agua, metanol, ciclohexano, ...
+    max_iter, tol :
+        Control del Levenberg-Marquardt (se hace una corrida por
+        frecuencia, todas en paralelo).
+    verbose : bool
+        Imprime un resumen de la convergencia y de los residuos.
+
+    Metodo
+    ------
+    Para cada frecuencia se buscan (a, b, c, Gn) que minimizan
+
+        sum_k  peso_k * |rho_medido_k - rho_modelo_k(a, b, c, Gn)|^2
+
+    es decir, el error se mide en el ESPACIO DE S11, que es donde esta el
+    ruido del VNA (y no en el espacio de permitividad, donde un residuo
+    algebraico pesaria al agua ~50000 veces mas que al aire por el
+    termino er^(5/2)).
+
+    Arranque: primero se ajusta la bilineal con Gn = 0, que es un problema
+    LINEAL en (a, b, c) y se resuelve exacto; despues Levenberg-Marquardt
+    sobre los 4 parametros. Con Gn chico -- lo habitual -- converge en
+    pocas iteraciones.
+
+    Retorna
+    -------
+    dict con:
+      'a', 'b', 'c', 'Gn' : arrays complejos, uno por frecuencia
+      'nombres'           : lista de nombres de los patrones
+      'residuos'          : dict {nombre: array |rho_med - rho_modelo|}
+      'residuo_rms'       : array, rms sobre patrones, por frecuencia
+      'grados_libertad'   : 2*N - 8 (reales). 0 = solucion exacta, sin
+                            redundancia (y residuos nulos)
+      'iteraciones'       : array de iteraciones usadas por frecuencia
+      'convergio'         : array bool por frecuencia
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    nf = frecs.size
+    npat = len(patrones)
+    if npat < 4:
+        raise ValueError(
+            f"La calibracion por cuadrados minimos necesita al menos 4 patrones "
+            f"(hay {npat}): son 4 incognitas complejas por frecuencia.")
+
+    nombres = [pt.get('nombre', f"patron {k + 1}") for k, pt in enumerate(patrones)]
+    rho = np.array([np.asarray(pt['S11'], dtype=complex) for pt in patrones])      # (npat, nf)
+    ers = [None if pt.get('er') is None else np.asarray(pt['er'], dtype=complex)
+           for pt in patrones]
+    w = np.sqrt(np.array([float(pt.get('peso', 1.0)) for pt in patrones]))          # (npat,)
+
+    # --- 1) Arranque con Gn = 0: bilineal lineal en (a, b, c) -------------
+    #   dielectrico: a*rho + b - er*rho*c = er      corto: rho*c = -1
+    A = np.zeros((nf, npat, 3), dtype=complex)
+    y = np.zeros((nf, npat), dtype=complex)
+    for k in range(npat):
+        if ers[k] is None:
+            A[:, k, 2] = rho[k]
+            y[:, k] = -1.0
+        else:
+            A[:, k, 0] = rho[k]
+            A[:, k, 1] = 1.0
+            A[:, k, 2] = -ers[k] * rho[k]
+            y[:, k] = ers[k]
+    A *= w[None, :, None]
+    y *= w[None, :]
+    p = np.zeros((nf, 4), dtype=complex)
+    for n in range(nf):
+        sol, *_ = np.linalg.lstsq(A[n], y[n], rcond=None)
+        p[n, :3] = sol
+    # p[:, 3] (Gn) arranca en 0
+
+    # --- 2) Levenberg-Marquardt en paralelo sobre todas las frecuencias ---
+    def _residuos_y_jac(pp):
+        r = np.zeros((nf, npat), dtype=complex)
+        J = np.zeros((nf, npat, 4), dtype=complex)
+        for k in range(npat):
+            rm, dm = _rho_modelo((pp[:, 0], pp[:, 1], pp[:, 2], pp[:, 3]), ers[k])
+            r[:, k] = w[k] * (rho[k] - rm)
+            J[:, k, :] = w[k] * np.stack(np.broadcast_arrays(*dm), axis=-1)
+        return r, J
+
+    lam = np.full(nf, 1e-3)
+    iteraciones = np.zeros(nf, dtype=int)
+    convergio = np.zeros(nf, dtype=bool)
+    r, J = _residuos_y_jac(p)
+    costo = np.sum(np.abs(r) ** 2, axis=1)
+    for it in range(max_iter):
+        activos = ~convergio
+        if not np.any(activos):
+            break
+        # escalado de columnas (Marquardt): hace comparables a (a, b, c)
+        # con Gn, que tienen escalas MUY distintas.
+        esc = np.sqrt(np.sum(np.abs(J) ** 2, axis=1))            # (nf, 4)
+        esc[esc == 0] = 1.0
+        Js = J / esc[:, None, :]
+        JhJ = np.einsum('nki,nkj->nij', Js.conj(), Js)
+        Jhr = np.einsum('nki,nk->ni', Js.conj(), r)
+        M = JhJ + lam[:, None, None] * np.eye(4)[None]
+        try:
+            # el [..., None] hace falta en numpy >= 2: sin eso, solve()
+            # interpreta el vector apilado (nf, 4) como una matriz
+            paso_s = np.linalg.solve(M, Jhr[..., None])[..., 0]
+        except np.linalg.LinAlgError:
+            paso_s = np.array([np.linalg.lstsq(M[n], Jhr[n], rcond=None)[0] for n in range(nf)])
+        paso = paso_s / esc
+        p_nuevo = p + np.where(activos[:, None], paso, 0)
+        r_n, J_n = _residuos_y_jac(p_nuevo)
+        costo_n = np.sum(np.abs(r_n) ** 2, axis=1)
+        mejora = (costo_n <= costo) & activos
+        p[mejora] = p_nuevo[mejora]
+        r[mejora] = r_n[mejora]; J[mejora] = J_n[mejora]
+        rel = np.abs(costo[mejora] - costo_n[mejora]) / np.maximum(costo[mejora], 1e-300)
+        tam = np.linalg.norm(paso_s[mejora], axis=1)
+        costo[mejora] = costo_n[mejora]
+        lam[mejora] = np.maximum(lam[mejora] / 3.0, 1e-12)
+        lam[activos & ~mejora] *= 4.0
+        iteraciones[activos] += 1
+        idx = np.where(mejora)[0]
+        listo = (rel < tol) | (tam < 1e-10) | (costo[idx] < 1e-28)
+        convergio[idx[listo]] = True
+        convergio |= lam > 1e10   # estancado: ya no puede mejorar
+
+    # --- 3) Diagnostico: residuo de cada patron --------------------------
+    residuos = {}
+    for k in range(npat):
+        rm, _ = _rho_modelo((p[:, 0], p[:, 1], p[:, 2], p[:, 3]), ers[k])
+        residuos[nombres[k]] = np.abs(rho[k] - rm)
+    residuo_rms = np.sqrt(np.mean(np.array(list(residuos.values())) ** 2, axis=0))
+
+    if verbose:
+        print(f"  [cuadrados minimos] {npat} patrones, {2 * npat - 8} grados de libertad; "
+              f"convergio en {int(np.sum(convergio))}/{nf} frecuencias "
+              f"(max {int(iteraciones.max())} iteraciones).")
+        for nom, res in residuos.items():
+            print(f"      residuo rms de '{nom}': {np.sqrt(np.mean(res ** 2)):.2e} (en S11)")
+
+    return {
+        'a': p[:, 0], 'b': p[:, 1], 'c': p[:, 2], 'Gn': p[:, 3],
+        'nombres': nombres, 'residuos': residuos, 'residuo_rms': residuo_rms,
+        'grados_libertad': 2 * npat - 8,
+        'iteraciones': iteraciones, 'convergio': convergio,
+    }
+
+
+def get_er_DUT_minimos_cuadrados(frecs, S11_medido, calibracion, verbose=False,
+                                 estrategia_semilla='minimo_gn'):
+    """
+    Permitividad del DUT a partir de una calibracion hecha con
+    `calibrar_minimos_cuadrados`.
+
+    Con (a, b, c, Gn) ya ajustados, el S11 medido da directamente
+    F = (a*rho + b)/(c*rho + 1), y er sale de resolver er + Gn*er^(5/2) = F,
+    o sea el mismo polinomio en u = sqrt(er) que el metodo completo:
+    Gn*u^5 + u^2 - F = 0, con la misma marcha en frecuencia para elegir la
+    raiz fisica. La semilla de arranque es F misma (la solucion con Gn = 0).
+
+    Con exactamente 4 patrones (corto, aire, patron 3, patron 4) el
+    resultado coincide con `get_er_DUT_completo`.
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    rho = np.asarray(S11_medido, dtype=complex)
+    a, b, c, Gn = (calibracion[k] for k in ('a', 'b', 'c', 'Gn'))
+    F = (a * rho + b) / (c * rho + 1.0)
+    return _marchar_en_frecuencia(frecs, Gn, -F, F, estrategia_semilla,
+                                  verbose=verbose, etiqueta="minimos_cuadrados")
+
+
+def validacion_cruzada_minimos_cuadrados(frecs, patrones):
+    """
+    Chequeo de CONSISTENCIA de una calibracion redundante, "dejando uno
+    afuera": para cada patron liquido se calibra con TODOS LOS DEMAS y se
+    calculan dos cosas.
+
+      'err_medio_pct' / 'err_max_pct' : cuanto se equivoca esa calibracion
+          al medir el patron que quedo afuera, como si fuera una muestra
+          desconocida (en % de |er|). Es la version interpretable de los
+          residuos: en vez de un numero en unidades de S11, un error en
+          permitividad.
+      'residuo_resto' : residuo rms (en S11) del ajuste SIN ese patron.
+          Si el residuo global de la calibracion completa es alto pero al
+          sacar un patron el de los demas baja al nivel de ruido, ese
+          patron es sospechoso.
+
+    Es el tipo de "consistency check" que sugiere Kaatze (2007, pag. 974)
+    para el DMSO. Lo que PUEDE y lo que NO PUEDE hacer, verificado por
+    simulacion (metanol contaminado con 2% de agua, 6 patrones):
+      - DETECTAR una inconsistencia funciona bien: el residuo global sube
+        ~2.5 veces respecto de una calibracion limpia.
+      - SENALAR AL CULPABLE funciona solo a medias: sacar el metanol
+        normaliza a los demas, pero sacar el agua tambien, porque sin el
+        unico patron de alta permitividad el modelo tiene libertad para
+        absorber la inconsistencia. Con pocos patrones de sobra el
+        diagnostico acota los sospechosos, no los identifica. Mas
+        redundancia (mas patrones) lo mejora.
+      - El error "dejando afuera" el AGUA es naturalmente alto aun con
+        todo limpio: sin ella no queda ningun patron de alta
+        permitividad, y medir agua pasa a ser una extrapolacion. No es
+        una senal de problema.
+
+    Solo se evalua cada patron liquido (no el corto ni el aire, marcado
+    con 'es_aire'), y solo si al sacarlo quedan al menos 4 patrones.
+
+    Retorna
+    -------
+    dict {nombre: {'er_predicho', 'er_teorico', 'err_medio_pct',
+                   'err_max_pct', 'residuo_resto'}}
+    """
+    resultado = {}
+    if len(patrones) < 5:
+        return resultado
+    for k, pt in enumerate(patrones):
+        if pt.get('er') is None or pt.get('es_aire'):
+            continue
+        resto = [q for j, q in enumerate(patrones) if j != k]
+        cal = calibrar_minimos_cuadrados(frecs, resto)
+        er_pred = get_er_DUT_minimos_cuadrados(frecs, pt['S11'], cal)
+        er_teo = np.asarray(pt['er'], dtype=complex)
+        rel = np.abs(er_pred - er_teo) / np.abs(er_teo)
+        resultado[pt.get('nombre', f"patron {k + 1}")] = {
+            'er_predicho': er_pred, 'er_teorico': er_teo,
+            'err_medio_pct': float(100 * np.mean(rel)),
+            'err_max_pct': float(100 * np.max(rel)),
+            'residuo_resto': float(np.sqrt(np.mean(cal['residuo_rms'] ** 2))),
+        }
+    return resultado
 
 
 def _diagnosticar_saltos(frecs, Er_out, salto_relativo_max=0.5):

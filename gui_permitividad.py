@@ -590,6 +590,95 @@ class DialogoModeloTeorico(tk.Toplevel):
         self.destroy()
 
 
+class DialogoPatronAdicional(tk.Toplevel):
+    """Ventana modal para agregar o editar un patron liquido ADICIONAL de
+    la calibracion por cuadrados minimos (archivo .s1p + liquido +
+    temperatura). El resultado queda en `self.resultado` (dict con
+    'archivo', 'modelo', 'temperatura_c') o en None si se cancela."""
+
+    def __init__(self, master, patron=None):
+        super().__init__(master)
+        self.resultado = None
+        patron = patron or {'archivo': "", 'modelo': 'ciclohexano', 'temperatura_c': 25.0}
+        self.title("Patr\u00f3n adicional (cuadrados m\u00ednimos)")
+        self.resizable(False, False)
+        self.transient(master)
+
+        frm = ttk.Frame(self, padding=14)
+        frm.grid(sticky="nsew")
+        frm.columnconfigure(1, weight=1)
+
+        ttk.Label(frm, text="Archivo .s1p:").grid(row=0, column=0, sticky="w", pady=4)
+        self.var_archivo = tk.StringVar(value=patron.get('archivo') or "")
+        ttk.Entry(frm, textvariable=self.var_archivo, width=38).grid(row=0, column=1, sticky="ew", pady=4)
+        _crear_indicador_archivo(
+            frm, self.var_archivo, getattr(master, 'var_carpeta_datos', None)).grid(
+            row=0, column=2, padx=(4, 0))
+        ttk.Button(frm, text="Examinar...", command=self._examinar).grid(row=0, column=3, padx=(6, 0))
+
+        ttk.Label(frm, text="L\u00edquido:").grid(row=1, column=0, sticky="w", pady=4)
+        self.var_modelo_etiqueta = tk.StringVar(value=gf.etiqueta_de_modelo(patron.get('modelo')))
+        combo = ttk.Combobox(frm, textvariable=self.var_modelo_etiqueta, state="readonly",
+                             values=[et for _, et in gf.listar_modelos_teoricos_calibracion()],
+                             width=36)
+        combo.grid(row=1, column=1, columnspan=3, sticky="ew", pady=4)
+        combo.bind("<<ComboboxSelected>>", lambda _e: self._al_cambiar_modelo())
+
+        ttk.Label(frm, text="Temperatura (\u00b0C):").grid(row=2, column=0, sticky="w", pady=4)
+        self.var_temperatura = tk.DoubleVar(value=float(patron.get('temperatura_c') or 25.0))
+        ttk.Spinbox(frm, from_=-20, to=150, increment=0.5, textvariable=self.var_temperatura,
+                    width=10).grid(row=2, column=1, sticky="w", pady=4)
+
+        ttk.Separator(frm).grid(row=3, column=0, columnspan=4, sticky="ew", pady=10)
+        self.cartel_modelo = CartelAdvertencia(frm, wraplength=460)
+        self.cartel_modelo.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+        self.cartel_modelo.ocultar()
+
+        frm_botones = ttk.Frame(frm)
+        frm_botones.grid(row=5, column=0, columnspan=4, sticky="e")
+        ttk.Button(frm_botones, text="Cancelar", command=self.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(frm_botones, text="Guardar", command=self._guardar).pack(side="right")
+
+        self._al_cambiar_modelo()
+        self.bind("<Return>", lambda _e: self._guardar())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.update_idletasks()
+        self.grab_set()
+        self.focus_set()
+
+    def _examinar(self):
+        ruta = filedialog.askopenfilename(
+            title="Seleccionar archivo .s1p", parent=self,
+            filetypes=[("Touchstone .s1p", "*.s1p"), ("Todos los archivos", "*.*")])
+        if ruta:
+            self.var_archivo.set(ruta)
+            # Si el nombre del archivo sugiere un liquido, se preselecciona.
+            sugerido = gf.liquido_sugerido_por_nombre(ruta)
+            if sugerido:
+                self.var_modelo_etiqueta.set(gf.etiqueta_de_modelo(sugerido))
+                self._al_cambiar_modelo()
+
+    def _al_cambiar_modelo(self):
+        self.cartel_modelo.mostrar_modelo(gf.clave_de_etiqueta(self.var_modelo_etiqueta.get()))
+        self.update_idletasks()
+
+    def _guardar(self):
+        if not self.var_archivo.get().strip():
+            messagebox.showwarning("Falta el archivo",
+                                   "Eleg\u00ed el archivo .s1p de este patr\u00f3n.", parent=self)
+            return
+        try:
+            temperatura = float(self.var_temperatura.get())
+        except (tk.TclError, ValueError):
+            temperatura = 25.0
+        self.resultado = {
+            'archivo': self.var_archivo.get().strip(),
+            'modelo': gf.clave_de_etiqueta(self.var_modelo_etiqueta.get()),
+            'temperatura_c': temperatura,
+        }
+        self.destroy()
+
+
 class DialogoMaterial(tk.Toplevel):
     """Ventana modal para agregar o editar una fila de la lista de
     materiales. El resultado queda en `self.resultado` (dict) si se
@@ -598,9 +687,12 @@ class DialogoMaterial(tk.Toplevel):
     def __init__(self, master, material=None):
         super().__init__(master)
         self.resultado = None
+        var_usar_mc_global = getattr(master, 'var_usar_mc', None)
+        mc_activo = var_usar_mc_global is not None and bool(var_usar_mc_global.get())
         material = material or {
             'nombre': '', 'archivo': '', 'modelo': gf.SIN_MODELO,
-            'temperatura': 25.0, 'metodos': ['simplificado', 'completo'],
+            'temperatura': 25.0,
+            'metodos': ['simplificado', 'completo'] + (['minimos_cuadrados'] if mc_activo else []),
         }
 
         self.title("Agregar material" if material.get('archivo') == '' and
@@ -670,6 +762,18 @@ class DialogoMaterial(tk.Toplevel):
                       text="(deshabilitado: el metodo completo est\u00e1 apagado en "
                            "la pesta\u00f1a de Calibracion)",
                       style="Ayuda.TLabel").pack(anchor="w")
+        self.var_minimos_cuadrados = tk.BooleanVar(
+            value=('minimos_cuadrados' in metodos) and mc_activo)
+        chk_mc = ttk.Checkbutton(frm_metodos,
+                                 text="Cuadrados m\u00ednimos (todos los patrones)",
+                                 variable=self.var_minimos_cuadrados)
+        chk_mc.pack(anchor="w")
+        if not mc_activo:
+            chk_mc.configure(state="disabled")
+            ttk.Label(frm_metodos,
+                      text="(deshabilitado: la calibraci\u00f3n por cuadrados m\u00ednimos "
+                           "est\u00e1 apagada en la pesta\u00f1a de Calibracion)",
+                      style="Ayuda.TLabel").pack(anchor="w")
 
         ttk.Separator(frm).grid(row=5, column=0, columnspan=4, sticky="ew", pady=10)
 
@@ -727,8 +831,10 @@ class DialogoMaterial(tk.Toplevel):
             metodos.append('simplificado')
         if self.var_completo.get():
             metodos.append('completo')
+        if self.var_minimos_cuadrados.get():
+            metodos.append('minimos_cuadrados')
         if not metodos:
-            messagebox.showwarning("Sin metodo", "Marca al menos un metodo (simplificado y/o completo).", parent=self)
+            messagebox.showwarning("Sin metodo", "Marca al menos un metodo.", parent=self)
             return
         try:
             temperatura = float(self.var_temperatura.get())
@@ -894,8 +1000,7 @@ class AppPermitividad(tk.Tk):
                     "completo ademas usa patron 4 (se puede deshabilitar si no interesa "
                     "el metodo completo). Patron 3 y patron 4 pueden ser cualquier par "
                     "de liquidos con modelo teorico conocido (por defecto agua y "
-                    "alcohol isopropilico, pero no hace falta calibrar si o si con "
-                    "esos dos).",
+                    "metanol, el juego recomendado; ver abajo).",
             style="Ayuda.TLabel", wraplength=800, justify="left",
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
@@ -1030,6 +1135,10 @@ class AppPermitividad(tk.Tk):
                  "  veces a mano.")
         fila += 1
 
+        # --- Calibracion redundante por cuadrados minimos -------------
+        self._construir_seccion_minimos_cuadrados(f, fila)
+        fila += 1
+
         ttk.Separator(f).grid(row=fila, column=0, columnspan=8, sticky="ew", pady=12)
         fila += 1
 
@@ -1053,6 +1162,90 @@ class AppPermitividad(tk.Tk):
         self.cartel_calibracion.grid(row=fila, column=0, columnspan=8,
                                       sticky="ew", pady=(10, 0))
         self.cartel_calibracion.ocultar()
+
+    def _construir_seccion_minimos_cuadrados(self, f, fila):
+        """Recuadro de la pestaña de Calibracion para los patrones
+        ADICIONALES de la calibracion redundante por cuadrados minimos."""
+        caja = ttk.LabelFrame(f, text=" Calibraci\u00f3n redundante por cuadrados m\u00ednimos (opcional) ",
+                              padding=8)
+        caja.grid(row=fila, column=0, columnspan=8, sticky="ew", pady=(12, 0))
+        caja.columnconfigure(0, weight=1)
+
+        self.var_usar_mc = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            caja, text="Habilitar (ajusta la calibraci\u00f3n con TODOS los patrones: corto, "
+                       "aire, patr\u00f3n 3, patr\u00f3n 4 y los de esta lista)",
+            variable=self.var_usar_mc, command=self._al_cambiar_usar_mc,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        self.tabla_adicionales = ttk.Treeview(
+            caja, columns=("archivo", "liquido", "temp"), show="headings", height=3)
+        for col, titulo, ancho in (("archivo", "Archivo", 330), ("liquido", "L\u00edquido", 290),
+                                   ("temp", "T (\u00b0C)", 70)):
+            self.tabla_adicionales.heading(col, text=titulo)
+            self.tabla_adicionales.column(col, width=ancho, anchor="w" if col != "temp" else "center")
+        self.tabla_adicionales.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.tabla_adicionales.bind("<Double-1>", lambda _e: self._editar_adicional())
+
+        frm_botones = ttk.Frame(caja)
+        frm_botones.grid(row=1, column=1, sticky="n", padx=(8, 0), pady=(6, 0))
+        self._botones_mc = [
+            ttk.Button(frm_botones, text="Agregar...", command=self._agregar_adicional),
+            ttk.Button(frm_botones, text="Editar...", command=self._editar_adicional),
+            ttk.Button(frm_botones, text="Quitar", command=self._quitar_adicional),
+        ]
+        for b in self._botones_mc:
+            b.pack(fill="x", pady=1)
+
+        ttk.Label(caja, text=gf.RECOMENDACION_PATRONES, style="Ayuda.TLabel",
+                  wraplength=780, justify="left").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        self._patrones_adicionales = []
+        self._refrescar_tabla_adicionales()
+        self._al_cambiar_usar_mc()
+
+    def _refrescar_tabla_adicionales(self):
+        self.tabla_adicionales.delete(*self.tabla_adicionales.get_children())
+        for i, ad in enumerate(self._patrones_adicionales):
+            archivo = ad.get('archivo') or "(falta asignar el archivo)"
+            self.tabla_adicionales.insert(
+                "", "end", iid=str(i),
+                values=(archivo, gf.etiqueta_de_modelo(ad.get('modelo')),
+                        f"{float(ad.get('temperatura_c') or 25.0):.1f}"))
+
+    def _al_cambiar_usar_mc(self):
+        estado = "normal" if self.var_usar_mc.get() else "disabled"
+        for b in getattr(self, '_botones_mc', []):
+            b.configure(state=estado)
+
+    def _indice_adicional_seleccionado(self):
+        sel = self.tabla_adicionales.selection()
+        return int(sel[0]) if sel else None
+
+    def _agregar_adicional(self):
+        dialogo = DialogoPatronAdicional(self)
+        self.wait_window(dialogo)
+        if dialogo.resultado is not None:
+            self._patrones_adicionales.append(dialogo.resultado)
+            self._refrescar_tabla_adicionales()
+
+    def _editar_adicional(self):
+        idx = self._indice_adicional_seleccionado()
+        if idx is None or not self.var_usar_mc.get():
+            return
+        dialogo = DialogoPatronAdicional(self, patron=copy.deepcopy(self._patrones_adicionales[idx]))
+        self.wait_window(dialogo)
+        if dialogo.resultado is not None:
+            self._patrones_adicionales[idx] = dialogo.resultado
+            self._refrescar_tabla_adicionales()
+
+    def _quitar_adicional(self):
+        idx = self._indice_adicional_seleccionado()
+        if idx is None:
+            return
+        del self._patrones_adicionales[idx]
+        self._refrescar_tabla_adicionales()
 
     def _refrescar_cartel_calibracion(self):
         """Muestra (o esconde) el cartel de advertencia de la pestaña de
@@ -1243,6 +1436,8 @@ class AppPermitividad(tk.Tk):
         }
         metodos_default = (['simplificado', 'completo']
                             if self.var_usar_metodo_completo.get() else ['simplificado'])
+        if self.var_usar_mc.get():
+            metodos_default.append('minimos_cuadrados')
 
         agregados = omitidos = 0
         for nombre_archivo in archivos:
@@ -1996,6 +2191,8 @@ class AppPermitividad(tk.Tk):
                 self.vars_temp_calibracion['patron4'], 25.0)),
             'usar_metodo_completo': bool(self.var_usar_metodo_completo.get()),
             'estrategia_gn': self.var_estrategia_gn.get(),
+            'usar_minimos_cuadrados': bool(self.var_usar_mc.get()),
+            'patrones_adicionales': copy.deepcopy(self._patrones_adicionales),
             'materiales': copy.deepcopy(self._materiales),
             'carpeta_salida': self.var_carpeta_salida.get().strip(),
             'nombre_informe_pdf': self.var_nombre_pdf.get().strip() or "informe_permitividad.pdf",
@@ -2029,6 +2226,10 @@ class AppPermitividad(tk.Tk):
         self.var_usar_metodo_completo.set(bool(config.get('usar_metodo_completo', True)))
         self.var_estrategia_gn.set(config.get('estrategia_gn') or 'minimo_gn')
         self._al_cambiar_usar_metodo_completo()
+        self.var_usar_mc.set(bool(config.get('usar_minimos_cuadrados', False)))
+        self._patrones_adicionales = copy.deepcopy(config.get('patrones_adicionales') or [])
+        self._refrescar_tabla_adicionales()
+        self._al_cambiar_usar_mc()
         self._materiales = copy.deepcopy(config.get('materiales', []) or [])
         self._refrescar_tabla_materiales()
         self.var_carpeta_salida.set(config.get('carpeta_salida', "") or "")
@@ -2334,6 +2535,12 @@ class AppPermitividad(tk.Tk):
                 lambda d4=d4: ap.graficar_comparacion(
                     d4['frecs'], d4['medido'], d4['teorico'], d4['titulo'], log_x=d4['log_x'],
                     etiqueta_teorico=d4.get('etiqueta_teorico', "Teorico (Debye)")))
+        mc = chequeo.get('minimos_cuadrados')
+        if mc and mc.get('datos_grafico'):
+            dmc = mc['datos_grafico']
+            graficos["Cuadrados m\u00ednimos: residuo de cada patr\u00f3n"] = (
+                lambda dmc=dmc: ap.graficar_residuos_minimos_cuadrados(
+                    dmc['frecs'], dmc['residuos'], log_x=dmc['log_x']))
         if chequeo.get('datos_grafico_Gn'):
             dg = chequeo['datos_grafico_Gn']
             graficos["Diagnostico: Gn(f) (calibracion)"] = (

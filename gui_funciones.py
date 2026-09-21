@@ -137,6 +137,68 @@ _ARCHIVO_RECIENTES = _CARPETA_APP / "recientes.json"
 MAX_RECIENTES = 8
 
 
+# ===========================================================================
+# Juego de patrones recomendado, con el motivo de cada posicion. Lo muestra
+# la GUI como ayuda en la pestaña de Calibracion.
+# ===========================================================================
+RECOMENDACION_PATRONES = (
+    "Juego recomendado: corto, aire, patr\u00f3n 3 = agua, patr\u00f3n 4 = metanol; "
+    "para cuadrados m\u00ednimos, sumar ciclohexano e isoprop\u00edlico.\n"
+    "\u2022 Agua en el patr\u00f3n 3: es el \u00fanico l\u00edquido que usa el m\u00e9todo "
+    "simplificado y el ancla del completo; tiene que ser el de alta permitividad.\n"
+    "\u2022 Metanol en el patr\u00f3n 4: en simulaci\u00f3n baja el error ~20% frente al "
+    "isoprop\u00edlico y su permitividad est\u00e1tica est\u00e1 medida por NPL. Es t\u00f3xico.\n"
+    "\u2022 No poner ciclohexano como patr\u00f3n 4: su S11 es casi igual al del aire y "
+    "determina mal Gn (error ~4 veces mayor). S\u00ed sirve como patr\u00f3n ADICIONAL "
+    "en cuadrados m\u00ednimos, donde mejora las muestras de baja permitividad."
+)
+
+# Palabras clave para detectar, por el nombre del archivo, de que liquido
+# es una medicion. Solo se usa para AVISAR si el nombre sugiere un liquido
+# distinto del modelo asignado (p.ej. "sonda4-alc-isoprop.s1p" con el
+# modelo de metanol), un error facil al cambiar los defaults.
+_PALABRAS_LIQUIDO = {
+    'agua': ('agua', 'water', 'h2o'),
+    'metanol': ('metanol', 'methanol', 'meoh'),
+    'alcohol_etilico': ('etanol', 'etilico', 'ethanol'),
+    'alcohol_isopropilico': ('isoprop', '2-prop', '2prop', 'ipa'),
+    'propanol': ('1-prop', '1prop', 'n-prop'),
+    'butanol': ('butanol',),
+    'dmso': ('dmso', 'sulfox', 'sulphox'),
+    'etilenglicol': ('glicol', 'glycol', 'etanodiol', 'ethanediol'),
+    'acetona': ('aceton',),
+    'ciclohexano': ('ciclohex', 'cyclohex'),
+    'silicona': ('silicon',),
+}
+
+
+def liquido_sugerido_por_nombre(archivo):
+    """Clave del liquido que sugiere el nombre del archivo, o None si no
+    sugiere ninguno (o sugiere mas de uno)."""
+    nombre = os.path.basename(archivo or "").lower()
+    # Se buscan las palabras de MAS LARGA a mas corta, borrando cada una
+    # del nombre al encontrarla: si no, "metanol" tambien contiene
+    # "etanol" (y "methanol" contiene "ethanol") y un archivo de metanol
+    # quedaria como ambiguo entre los dos.
+    pares = sorted(((pal, clave) for clave, palabras in _PALABRAS_LIQUIDO.items()
+                    for pal in palabras), key=lambda x: -len(x[0]))
+    hallados = set()
+    for pal, clave in pares:
+        if pal in nombre:
+            hallados.add(clave)
+            nombre = nombre.replace(pal, " ")
+    return hallados.pop() if len(hallados) == 1 else None
+
+
+def _aviso_nombre_vs_modelo(etiqueta_posicion, archivo, modelo):
+    sugerido = liquido_sugerido_por_nombre(archivo)
+    if archivo and sugerido and modelo and sugerido != modelo:
+        return (f"{etiqueta_posicion}: el archivo '{os.path.basename(archivo)}' parece "
+                f"ser de {etiqueta_de_modelo(sugerido)}, pero tiene asignado el modelo "
+                f"{etiqueta_de_modelo(modelo)}. Revis\u00e1 que coincidan.")
+    return None
+
+
 def config_default():
     """Config razonable para arrancar la GUI de cero, antes de cargar o
     guardar nada."""
@@ -149,14 +211,31 @@ def config_default():
             'patron3': "",
             'patron4': "",
         },
-        # Por defecto, agua y alcohol isopropilico (el par tradicional de
-        # la catedra) -- pero se puede cambiar por cualquier otro par de
-        # liquidos con modelo teorico cargado en Patrones.PATRONES_TEORICOS,
-        # sin tener que calibrar si o si con esos dos.
+        # Juego de patrones RECOMENDADO (ver RECOMENDACION_PATRONES mas
+        # abajo para el porque de cada uno). Se puede cambiar por
+        # cualquier otro liquido con modelo en Patrones.PATRONES_TEORICOS.
+        #  - Patron 3 = agua: es el unico liquido del metodo simplificado y
+        #    el ancla de la ecuacion principal del completo, y conviene que
+        #    sea el de ALTA permitividad (Kaatze 2007: el aire acentua C0 y
+        #    el agua acentua la capacidad de la muestra).
+        #  - Patron 4 = metanol (antes: alcohol isopropilico). En simulacion
+        #    Monte Carlo baja el error promedio de 1.39% a 1.11%, y su es
+        #    esta MEDIDO en el NPL MAT 23 (el del isopropilico es ajustado,
+        #    nota 30). Ojo: es toxico, manipular con cuidado.
         'patron3_modelo': 'agua',
         'patron3_temperatura_c': 25.0,
-        'patron4_modelo': 'alcohol_isopropilico',
+        'patron4_modelo': 'metanol',
         'patron4_temperatura_c': 25.0,
+        # Calibracion redundante por cuadrados minimos: apagada por defecto
+        # porque requiere medir liquidos extra, pero con el juego
+        # recomendado ya cargado (falta asignar los archivos). Ciclohexano
+        # cubre las permitividades bajas (lo recomienda Kaatze 2007) y el
+        # isopropilico ya esta en el laboratorio.
+        'usar_minimos_cuadrados': False,
+        'patrones_adicionales': [
+            {'archivo': "", 'modelo': 'ciclohexano', 'temperatura_c': 25.0},
+            {'archivo': "", 'modelo': 'alcohol_isopropilico', 'temperatura_c': 25.0},
+        ],
         'usar_metodo_completo': True,
         'estrategia_gn': 'minimo_gn',
         'materiales': [],
@@ -356,6 +435,47 @@ def validar_config(config):
             "Patron 3 y Patron 4 tienen el mismo modelo teorico asignado: tienen "
             "que ser dos liquidos distintos entre si para que la calibracion "
             "tenga solucion.")
+
+    # Nombre de archivo vs liquido asignado (aviso, no bloquea nada).
+    for clave, nombre in (('patron3', "Patron 3"), ('patron4', "Patron 4")):
+        if clave == 'patron4' and not usar_completo:
+            continue
+        aviso = _aviso_nombre_vs_modelo(nombre, archivos.get(clave), config.get(f'{clave}_modelo'))
+        if aviso:
+            problemas.append(aviso)
+
+    # Calibracion redundante por cuadrados minimos.
+    if config.get('usar_minimos_cuadrados'):
+        adicionales = config.get('patrones_adicionales') or []
+        n_validos = 0
+        for i, ad in enumerate(adicionales, start=1):
+            modelo = ad.get('modelo')
+            etiqueta = f"Patron adicional {i} ({etiqueta_de_modelo(modelo)})"
+            if not modelo or modelo not in PATRONES_TEORICOS:
+                problemas.append(f"{etiqueta}: el modelo '{modelo}' no es valido.")
+                continue
+            archivo = (ad.get('archivo') or "").strip()
+            if not archivo:
+                problemas.append(f"Falta el archivo de '{etiqueta}' (o quita esa fila).")
+                continue
+            ruta_completa = os.path.join(carpeta, archivo)
+            if not os.path.isfile(ruta_completa):
+                problemas.append(f"No se encuentra el archivo de '{etiqueta}': {ruta_completa}")
+                continue
+            aviso = _aviso_nombre_vs_modelo(etiqueta, archivo, modelo)
+            if aviso:
+                problemas.append(aviso)
+            n_validos += 1
+        total = 3 + (1 if usar_completo else 0) + n_validos
+        if total < 4:
+            problemas.append(
+                "Cuadrados minimos necesita al menos 4 patrones en total: habilita el "
+                "metodo completo o agrega patrones adicionales.")
+        elif total == 4:
+            problemas.append(
+                "Aviso: con 4 patrones en total, cuadrados minimos da lo mismo que el "
+                "metodo completo (no hay redundancia). Agrega al menos un patron "
+                "adicional para que tenga sentido.")
 
     if not config.get('materiales'):
         problemas.append("No hay materiales cargados para analizar.")
