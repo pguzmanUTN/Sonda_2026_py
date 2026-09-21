@@ -1412,6 +1412,10 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
                         f"({v['err_max_pct']:.2f}% max); residuo de los demas "
                         f"{v['residuo_resto']:.2e}")
                 log(f"    residuo global con todos: {residuo_global:.2e}")
+                if gl == 2:
+                    log("    OJO: con 5 patrones hay una sola ecuacion de sobra. La inconsistencia "
+                        "se detecta pero NO se puede atribuir: el reparto entre patrones lo fija "
+                        "la geometria de la calibracion. Para acotar al culpable hacen falta >= 6.")
             ruta_fig_mc = os.path.join(carpeta_salida, "calibracion_minimos_cuadrados_residuos.png")
             residuos_banda = {k: v[mascara_mc] for k, v in calibracion_mc['residuos'].items()}
             graficar_residuos_minimos_cuadrados(frecs[mascara_mc], residuos_banda,

@@ -357,7 +357,8 @@ def _seccion_minimos_cuadrados(chequeo_mc):
             Paragraph(f"{pt['residuo_rms']:.2e}", _ESTILOS['CeldaTabla']),
             Paragraph(f"{v['err_medio_pct']:.2f}% (m\u00e1x {v['err_max_pct']:.1f}%)" if v else "\u2014",
                       _ESTILOS['CeldaTabla']),
-            Paragraph(f"{v['residuo_resto']:.2e}" if v else "\u2014", _ESTILOS['CeldaTabla']),
+            Paragraph(("\u2014 (ajuste exacto)" if v['residuo_resto'] < 1e-9 else f"{v['residuo_resto']:.2e}")
+                      if v else "\u2014", _ESTILOS['CeldaTabla']),
         ])
     datos.append([
         Paragraph("<b>Todos</b>", _ESTILOS['CeldaTabla']),
@@ -380,6 +381,16 @@ def _seccion_minimos_cuadrados(chequeo_mc):
         "correcto: sin ella no queda ning\u00fan patr\u00f3n de alta permitividad y "
         "medirla pasa a ser una extrapolaci\u00f3n."
     )
+    if gl == 2:
+        nota = (
+            "<b>Con 5 patrones hay una sola ecuaci\u00f3n de sobra: la inconsistencia se "
+            "puede DETECTAR pero no ATRIBUIR.</b> Con una sola redundancia, el residuo de "
+            "cada patr\u00f3n es la misma inconsistencia multiplicada por un factor que "
+            "depende solo de la geometr\u00eda de la calibraci\u00f3n, no de qui\u00e9n est\u00e1 mal: "
+            "el orden de las filas NO se\u00f1ala al culpable. Lo que s\u00ed informa es la "
+            "magnitud del residuo global comparada con el ruido del VNA. Para acotar al "
+            "culpable hacen falta al menos 6 patrones. (Sacando uno quedan 4 y el ajuste "
+            "es exacto, por eso la \u00faltima columna no aplica.)")
     if not vc:
         nota = ("Con exactamente 4 patrones no hay redundancia: el ajuste es "
                 "exacto, los residuos son nulos y el resultado coincide con el "

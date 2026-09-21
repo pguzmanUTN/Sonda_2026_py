@@ -722,7 +722,13 @@ def validacion_cruzada_minimos_cuadrados(frecs, patrones):
     simulacion (metanol contaminado con 2% de agua, 6 patrones):
       - DETECTAR una inconsistencia funciona bien: el residuo global sube
         ~2.5 veces respecto de una calibracion limpia.
-      - SENALAR AL CULPABLE funciona solo a medias: sacar el metanol
+      - Con 5 patrones (UNA sola ecuacion de sobra) no se puede senalar al
+        culpable en absoluto: el residuo de cada patron es la misma
+        inconsistencia por un factor geometrico, asi que el reparto es el
+        mismo este donde este el error (verificado: error en etanol o en
+        isopropilico dan residuos relativos iguales al 1%). Sacando uno
+        quedan 4 y el ajuste es exacto, asi que 'residuo_resto' da 0.
+      - Con 6 o mas, SENALAR AL CULPABLE funciona a medias: sacar el metanol
         normaliza a los demas, pero sacar el agua tambien, porque sin el
         unico patron de alta permitividad el modelo tiene libertad para
         absorber la inconsistencia. Con pocos patrones de sobra el
