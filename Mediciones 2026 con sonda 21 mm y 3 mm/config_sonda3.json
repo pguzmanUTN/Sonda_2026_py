@@ -68,7 +68,7 @@
       "modelo": "alcohol_etilico",
       "temperatura": 25.0,
       "f_min_ghz": 0.01,
-      "f_max_ghz": 6.0,
+      "f_max_ghz": 20.0,
       "n_puntos": 10000
     },
     {
@@ -76,7 +76,7 @@
       "modelo": "alcohol_isopropilico",
       "temperatura": 25.0,
       "f_min_ghz": 0.01,
-      "f_max_ghz": 6.0,
+      "f_max_ghz": 20.0,
       "n_puntos": 10000
     },
     {
@@ -84,23 +84,23 @@
       "modelo": "butanol",
       "temperatura": 25.0,
       "f_min_ghz": 0.01,
-      "f_max_ghz": 6.0,
+      "f_max_ghz": 20.0,
       "n_puntos": 10000
     },
     {
-      "etiqueta": "Ciclohexano (no polar, ε constante) a 25.0°C",
+      "etiqueta": "Ciclohexano Modelo Lineal",
       "modelo": "ciclohexano",
       "temperatura": 25.0,
       "f_min_ghz": 0.01,
-      "f_max_ghz": 6.0,
+      "f_max_ghz": 20.0,
       "n_puntos": 10000
     },
     {
-      "etiqueta": "Acetona (solo ε estatica) a 25.0°C",
+      "etiqueta": "Acetona Debye",
       "modelo": "acetona",
       "temperatura": 25.0,
       "f_min_ghz": 0.01,
-      "f_max_ghz": 6.0,
+      "f_max_ghz": 20.0,
       "n_puntos": 10000
     }
   ]

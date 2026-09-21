@@ -44,44 +44,49 @@ El modelo del agua (Liebe, Hufford y Manabe) es la excepcion: es una
 formula analitica continua en T, no una tabla, asi que no hace falta
 aproximar nada ahi.
 
-Liquidos SIN modelo de relajacion (permitividad "estatica")
-------------------------------------------------------------
-No todos los liquidos del reporte NPL MAT 23 tienen un modelo de Debye.
-La Seccion 6 del reporte (tabla de mediciones en celda de admitancia)
-publica la permitividad ESTATICA -- es decir, de baja frecuencia -- de
-varios liquidos para los que NO hay parametros de relajacion ajustados,
-por dos motivos bien distintos:
+Liquidos que NO salen de las tablas de relajacion del MAT 23
+-------------------------------------------------------------
+Tres liquidos del reporte no tienen parametros de relajacion ajustados en
+la Seccion 7, y se modelan con otras fuentes (o con la permitividad
+estatica de la Seccion 6, que es la tabla de mediciones en celda de
+admitancia):
 
-  (a) La relajacion existe pero cae MUY por encima del rango medido.
-      Es el caso de la ACETONA: su frecuencia de relajacion esta varias
-      decenas de GHz por encima de los 5 GHz que llegaba a medir el
-      equipo de NPL, asi que no se pudo ajustar ningun Debye (nota 23
-      del reporte). Dentro del rango de este proyecto la parte REAL
-      practicamente no baja todavia, pero la parte IMAGINARIA NO es
-      cero: es la cola de subida de esa relajacion lejana.
+  - ACETONA: NPL no le pudo ajustar un Debye porque su relajacion queda
+    muy por encima de los 5 GHz que median (nota 23). Se modela con un
+    Debye simple cuyo es(T) sale de la tabla estatica de NPL y cuyos
+    e_inf y fr salen de un ajuste propio sobre la figura 5 de Zarubina
+    et al. (2020), que la midieron hasta 20 GHz con sonda coaxial. Ver
+    el bloque de comentarios de `get_er_pat_acetona`.
 
-  (b) No hay relajacion dipolar en absoluto, porque la molecula es NO
-      POLAR. Es el caso del CICLOHEXANO y del FLUIDO DE SILICONA
-      (polidimetilsiloxano Dow-Corning 200, 1 cSt). Su permitividad
-      viene casi entera de la polarizacion electronica, que no se relaja
-      hasta el optico/infrarrojo: son realmente constantes y de perdidas
-      despreciables en todo RF y microondas.
+  - CICLOHEXANO: molecula NO POLAR, no tiene relajacion dipolar, asi que
+    no hay ni puede haber un Debye. er' es realmente constante con la
+    frecuencia y lineal con la temperatura (NPL MAT 23 + ecuacion (9) de
+    Kaatze 2007); er'' es minusculo y sale de la curva E de la figura 4
+    de Afsar et al. (1980). Ver `get_er_pat_ciclohexano`.
 
-Estos modelos se implementan aca igual que los demas (misma firma
-`get_er_pat_xxx(frecs, T=..., verbose=...)`, mismo diccionario
-PATRONES_TEORICOS), pero devuelven una permitividad CONSTANTE en
-frecuencia. Para que nadie los use sin darse cuenta de esa limitacion,
-cada modelo declara metadata en INFO_PATRONES (tipo, si modela perdidas,
+  - FLUIDO DE SILICONA (polidimetilsiloxano Dow-Corning 200, 1 cSt):
+    tambien no polar. No se consiguieron datos de perdidas, asi que
+    queda como permitividad estatica constante con er'' = 0. Es el unico
+    de los tres que sigue siendo un modelo puramente estatico.
+
+Cada modelo declara metadata en INFO_PATRONES (tipo, si modela perdidas,
+si esas perdidas son COMPARABLES contra una medicion con sonda coaxial,
 rangos validos y un texto de advertencia), que la GUI muestra como cartel
-de advertencia y el informe PDF imprime como caja destacada.
+y el informe PDF imprime como caja destacada.
 
-IMPORTANTE -- er'' de los modelos estaticos: se devuelve exactamente 0
-salvo que se pase `tan_delta`. Para ciclohexano y silicona eso es
-fisicamente correcto (perdidas despreciables). Para la acetona NO lo es:
-ahi el 0 significa "no modelado", no "sin perdidas". Por eso las
-funciones de error relativo del proyecto (funciones.error_relativo_
-porcentual) devuelven NaN en vez de infinito cuando la referencia tiene
-er''=0, y tanto la consola como el PDF muestran "n/a" en esa columna.
+IMPORTANTE -- cuando el error relativo de er'' no significa nada: hay dos
+casos distintos en los que no tiene sentido comparar el er'' medido
+contra el modelo.
+  (a) El modelo devuelve er'' = 0 exactamente (silicona). Dividir por
+      cero no esta definido.
+  (b) El modelo devuelve un er'' fisicamente correcto pero ORDENES DE
+      MAGNITUD por debajo de lo que puede resolver la sonda
+      (ciclohexano: er'' ~ 1e-5 a 1e-4 en la banda del proyecto). El
+      cociente existe, pero compara ruido contra un numero minusculo y
+      da porcentajes gigantescos que no dicen nada.
+En los dos casos INFO_PATRONES marca `perdidas_comparables=False`, y
+tanto la consola como el informe PDF muestran "n/a" en esa columna en vez
+de un numero enganoso.
 """
 import warnings
 
@@ -651,104 +656,251 @@ _SILICONA_ESTATICA = {
 }
 
 
-def get_er_pat_acetona(frecs, T=25.0, tan_delta=0.0, verbose=False):
+# ---------------------------------------------------------------------------
+# Parametros de relajacion de la ACETONA, ajustados sobre las curvas medidas
+# de la figura 5 de:
+#     A Yu Zarubina, S G Kibets, A A Politiko, V N Semenenko, K M Baskov y
+#     V A Chistyaev, "Complex permittivity of organic solvents at microwave
+#     frequencies", IOP Conf. Ser.: Mater. Sci. Eng. 862 (2020) 062085,
+#     doi:10.1088/1757-899X/862/6/062085.
+# Midieron con sonda coaxial (DAK + VNA Rohde & Schwarz ZVA24) entre 0.2 y
+# 20 GHz a 23 °C. El ajuste (Debye simple, 3 parametros libres, sobre las
+# dos curvas de acetona digitalizadas de la figura 5) da:
+#
+#       es = 19.94     e_inf = 5.14     fr = 46.6 GHz   (tau = 3.42 ps)
+#       rms: 0.51 en er', 0.34 en er''
+#
+# La frecuencia de relajacion es el parametro ROBUSTO del ajuste: un
+# bootstrap sobre submuestras da fr = 46.6 +- 1.0 GHz, y todas las
+# variantes probadas (es libre, es anclado, ajuste solo a los 3 puntos
+# exactos de la Table 2 del paper) caen en 45-47 GHz. es y e_inf, en
+# cambio, quedan fuertemente correlacionados entre si: con datos que solo
+# llegan a 20 GHz nunca se pasa de f/fr = 0.43, asi que la curva todavia
+# no "dobla" lo suficiente como para separarlos.
+# ---------------------------------------------------------------------------
+_ACETONA_FIT_ZARUBINA = dict(es=19.94, e_inf=5.14, fr=46.6, T_medicion=23.0)
+
+# Lo que se usa en el modelo de abajo NO es exactamente ese ajuste: se
+# conservan fr y e_inf, pero es se toma de la tabla de celda de admitancia
+# del NPL MAT 23 (_ACETONA_ESTATICA), por tres motivos:
+#
+#  1. El es de NPL es TRAZABLE (+-0.04) y el del ajuste sale de una sonda
+#     coaxial sin trazabilidad declarada.
+#  2. El paper mide a UNA sola temperatura (23 °C); la tabla de NPL da la
+#     dependencia con T entre 5 y 50 °C, que es la que necesita este
+#     proyecto.
+#  3. Los dos numeros no coinciden: 19.94 (ajuste) contra 20.81 (NPL a
+#     23 °C), un -4.1%. La discrepancia NO es ruido, es una firma de la
+#     sonda del paper: entre 2 y 10 GHz su er' se aplana en ~19.1-19.5,
+#     y una relajacion en 46 GHz no puede hacer caer er' mas de 0.03 en
+#     ese tramo (a 5 GHz, f/fr = 0.1). Es decir, esa caida de ~1.5
+#     unidades no es fisica; es la sonda perdiendo exactitud lejos del
+#     centro de su banda. El mismo efecto se ve en er'' a baja
+#     frecuencia: el paper da 1.06 a 1 GHz y 0.38 a 0.2 GHz, una relacion
+#     de 2.8 cuando un Debye exige 5.
+#
+# Consecuencia practica de la mezcla: como Delta = es - e_inf pasa de
+# 14.80 (ajuste puro) a 15.67 (es de NPL a 23 °C), el er'' que predice
+# este modelo queda ~6% por encima del ajuste puro. Esta dentro de la
+# incertidumbre de todo el ejercicio, y el paper mismo no es confiable en
+# er'' por debajo de unos 8 GHz.
+
+
+def get_er_pat_acetona(frecs, T=25.0, verbose=False):
     """
-    Permitividad de la ACETONA, NPL MAT 23 (Gregory & Clarke), Seccion 6.
+    Modelo de DEBYE simple para la acetona.
 
-    ATENCION: esto NO es un modelo de Debye, es la permitividad ESTATICA
-    (de baja frecuencia) puesta como constante en toda la banda. El
-    reporte no publica parametros de relajacion para la acetona porque su
-    frecuencia de relajacion queda muy por encima de los 5 GHz que
-    llegaba a medir el equipo (nota 23).
+        er(f) = e_inf + (es(T) - e_inf) / (1 + j*f/fr)
 
-    Consecuencias practicas, que conviene tener MUY presentes:
+    Origen de cada parametro (ver el bloque de comentarios de arriba):
 
-      - La parte REAL es una buena aproximacion mientras se trabaje
-        bastante por debajo de la relajacion (o sea, en el rango tipico
-        de este proyecto, 0.5-6 GHz): ahi er' todavia casi no bajo. Pero
-        el modelo no captura esa caida, asi que cuanto mas alto se suba
-        en frecuencia, mas optimista va a ser.
-      - La parte IMAGINARIA se devuelve como 0, y eso es FALSO: la
-        acetona tiene perdidas apreciables en GHz (es la cola de subida
-        de su relajacion). El 0 significa "no modelado", no "sin
-        perdidas". No tiene sentido calcular error relativo de er''
-        contra esta referencia.
+      - es(T) : tabla de celda de admitancia del NPL MAT 23, Seccion 6,
+                interpolada linealmente en T (trazable, +-0.04, 5-50 °C).
+      - e_inf : 5.14, del ajuste a la figura 5 de Zarubina et al. (2020).
+      - fr    : 46.6 GHz (tau = 3.42 ps), del mismo ajuste. Es el
+                parametro robusto: fr = 46.6 +- 1.0 GHz (bootstrap).
 
-    Si se consigue un dato de perdidas de la literatura, se puede pasar
-    `tan_delta` para que el modelo devuelva er = es*(1 - j*tan_delta).
+    Este modelo REEMPLAZA a la version anterior de permitividad estatica
+    constante. La diferencia importante para este proyecto es que ahora
+    er'' NO es cero: en la banda tipica de la sonda vale del orden de 0.2
+    a 2, que es perfectamente medible.
+
+    LIMITACIONES, en orden de importancia:
+
+      - fr NO depende de la temperatura en este modelo (el paper mide a
+        una sola T, 23 °C). La frecuencia de relajacion de un liquido
+        real sube al calentarse, asi que lejos de 23 °C el er'' va a
+        tener un error sistematico. La parte real es mucho menos
+        sensible, porque en la banda de este proyecto er' ~ es(T), y esa
+        si sigue la temperatura.
+      - Valido hasta ~20 GHz, que es donde llegan los datos. Por encima,
+        e_inf = 5.14 no es el limite optico real de la acetona (n^2 ~
+        1.85): es un parametro EFECTIVO que absorbe los procesos rapidos
+        que quedan fuera del rango medido. No usar este modelo para
+        estimar er' arriba de 20 GHz.
+      - e_inf y es estan correlacionados en el ajuste; ver el comentario
+        de arriba.
 
     Parametros
     ----------
     frecs : array_like
-        Frecuencias en Hz (solo se usan para darle forma al array: el
-        valor devuelto es el mismo en todas).
+        Frecuencias en Hz.
     T : float
-        Temperatura en °C (default 25 °C). Rango medido: 5-50 °C; se
-        interpola linealmente entre los escalones tabulados de 5 °C.
-    tan_delta : float
-        Tangente de perdidas a aplicar (default 0 = sin perdidas
-        modeladas). Ver arriba.
+        Temperatura en °C (default 25). Rango de es: 5-50 °C.
     verbose : bool
-        Si es True, imprime la permitividad estatica que se termino
-        usando.
+        Si es True, imprime los parametros que se terminaron usando.
 
     Retorna
     -------
-    ndarray complejo con er' - j*er'' (constante en frecuencia).
+    ndarray complejo con er' - j*er''.
     """
+    frecs = np.asarray(frecs, dtype=float)
     if _ACETONA_DUDOSAS[0] <= float(T) <= _ACETONA_DUDOSAS[1]:
         warnings.warn(
-            f"Acetona: las mediciones de NPL a {_ACETONA_DUDOSAS[0]:.0f} y "
-            f"{_ACETONA_DUDOSAS[1]:.0f} °C figuran en italica en el reporte "
-            f"porque pudo haber burbujeo dentro de la celda de medicion (la "
-            f"acetona hierve a 56 °C). El valor a T={T}°C sale de esa "
-            f"zona y puede ser menos confiable."
+            f"Acetona: las mediciones de permitividad estatica de NPL a "
+            f"{_ACETONA_DUDOSAS[0]:.0f} y {_ACETONA_DUDOSAS[1]:.0f} \u00b0C figuran "
+            f"en italica en el reporte porque pudo haber burbujeo dentro de "
+            f"la celda (la acetona hierve a 56 \u00b0C). El es a T={T}\u00b0C sale "
+            f"de esa zona y puede ser menos confiable."
         )
-    return _permitividad_estatica(frecs, _ACETONA_ESTATICA, T,
-                                   nombre="Acetona (permitividad estatica)",
-                                   rango_recomendado=(5, 50),
-                                   tan_delta=tan_delta, verbose=verbose)
+    es = _interpolar_en_T(_ACETONA_ESTATICA, T,
+                           nombre="Acetona (es, NPL MAT 23)",
+                           rango_recomendado=(5, 50), verbose=verbose)
+    p = _ACETONA_FIT_ZARUBINA
+    if verbose:
+        print(f"[Patrones] Acetona: es={es:.3f} (NPL a {T}\u00b0C), "
+              f"e_inf={p['e_inf']}, fr={p['fr']} GHz "
+              f"(ajuste Zarubina 2020 a {p['T_medicion']}\u00b0C).")
+    return _debye_simple(frecs, es, p['e_inf'], p['fr'])
 
 
-def get_er_pat_ciclohexano(frecs, T=25.0, tan_delta=0.0, verbose=False):
+# ---------------------------------------------------------------------------
+# CICLOHEXANO. Modelo armado con tres fuentes que coinciden entre si:
+#
+#  [1] NPL MAT 23, Seccion 6 (tabla _CICLOHEXANO_ESTATICA de mas arriba):
+#      permitividad estatica trazable de 10 a 50 °C, en pasos de 5 °C.
+#  [2] U Kaatze, "Reference liquids for the calibration of dielectric
+#      sensors and measurement instruments", Meas. Sci. Technol. 18 (2007)
+#      967-976, doi:10.1088/0957-0233/18/4/002.
+#  [3] M N Afsar et al., "A Comparison of Dielectric Measurement Methods
+#      for Liquids in the Frequency Range 1 GHz to 4 THz", IEEE Trans.
+#      Instrum. Meas. IM-29 (1980) 283-288.
+#
+# PARTE REAL. Un ajuste lineal por minimos cuadrados sobre los 9 puntos de
+# NPL da:
+#
+#       es(T) = 2.0565 - 1.620e-3 * T[°C]
+#             = 2.040 - 1.620e-3 * (T - 10 °C)
+#
+# con residuo maximo 0.001 en todo 10-50 °C. Eso reproduce exactamente la
+# ecuacion (9) de Kaatze [2], que da -1.6e-3/°C con error < 0.001 (no es
+# casualidad: Kaatze ajusto sobre los mismos datos de NPL).
+#
+# Que ese valor estatico se pueda usar TAMBIEN en microondas -- que es lo
+# que hace falta aca -- lo respaldan las otras dos fuentes:
+#   - Kaatze, ecuacion (10): er'(v,T) = es(T) y er''(v,T) = 0 valen "en el
+#     rango de frecuencias de interes" con error relativo < 0.0005, hasta
+#     la region submilimetrica.
+#   - Afsar [3], figura 1: promediando TODAS las mediciones entre 1 y
+#     300 GHz de siete laboratorios distintos obtiene er' = 2.0126 +-
+#     0.0056 a 25 °C, y el texto dice explicitamente que no hay evidencia
+#     de dispersion por debajo de 300 GHz.
+#
+# Se digitalizaron los puntos de esa figura 1 y se ajusto er' = a + b*f
+# hasta 100 GHz, sumando el valor estatico de NPL como punto en f = 0:
+#
+#       b = -9.0e-6 +- 7.0e-5 por GHz   ->  t = -0.13
+#
+# es decir, la pendiente NO es significativa (|b|*100 GHz = 0.0009, ocho
+# veces menor que la dispersion experimental de 0.0076). El "modelo lineal
+# en frecuencia" se reduce entonces, dentro del error de medicion, a una
+# CONSTANTE. Por eso el modelo de abajo deja er' plano en frecuencia y
+# lineal en temperatura.
+#
+# PARTE IMAGINARIA. Sale de la curva E (ciclohexano puro) de la figura 4
+# de Afsar [3], que es log-log de er'' contra frecuencia a 25 °C. La curva
+# digitalizada es una recta casi perfecta en log-log:
+#
+#       log10(er'') = -12.081 + 0.7905 * log10(f[Hz])
+#
+# con residuo rms de 0.012 decadas (~3%). En la forma que se usa aca:
+#
+#       er''(f) = 1.08e-5 * (f / 1 GHz)^0.791
+#
+# OJO con la escala: esto da 6.7e-5 a 10 GHz, 4.1e-4 a 100 GHz y recien
+# llega a 1e-3 cerca de 300 GHz (el final de la curva medida). Es decir,
+# er'' se mantiene por debajo de 1e-3 en TODO el rango util, y la tangente
+# de perdidas correspondiente (er''/er' ~ 2e-4 a 100 GHz) esta varios
+# ordenes de magnitud por debajo de lo que puede resolver una sonda
+# coaxial open-ended. Para el proyecto, a los efectos practicos el
+# ciclohexano sigue siendo un material sin perdidas; el modelo se agrega
+# por completitud fisica y para no tener que dividir por cero.
+# ---------------------------------------------------------------------------
+_CICLOHEXANO_ER1_A = 2.05649      # ordenada al origen del ajuste lineal en T
+_CICLOHEXANO_ER1_B = -1.6200e-3   # pendiente [1/°C]
+_CICLOHEXANO_ER2_A = 1.080e-5     # er'' a 1 GHz (Afsar fig. 4, curva E, 25 °C)
+_CICLOHEXANO_ER2_N = 0.7905       # exponente de la ley de potencias
+
+
+def get_er_pat_ciclohexano(frecs, T=25.0, verbose=False):
     """
-    Permitividad del CICLOHEXANO, NPL MAT 23 (Gregory & Clarke), Seccion 6.
+    Modelo del CICLOHEXANO, combinando NPL MAT 23 + Kaatze (2007) + Afsar
+    et al. (1980). Ver el bloque de comentarios de arriba para el detalle
+    de como se obtuvo cada pieza.
 
-    El ciclohexano es una molecula NO POLAR: no tiene relajacion dipolar,
-    asi que no existe modelo de Debye que ajustarle. Su permitividad
-    (~2.0) viene casi entera de la polarizacion electronica, que no se
-    relaja hasta el optico/infrarrojo. Es decir: aca la constante NO es
-    una aproximacion de conveniencia, es el comportamiento fisico real en
-    todo RF y microondas, con perdidas despreciables (er'' ~ 0).
+        er'(T)  = 2.0565 - 1.620e-3 * T[°C]     (constante en frecuencia)
+        er''(f) = 1.08e-5 * (f / 1 GHz)^0.791   (a 25 °C)
 
-    Por su permitividad baja y sus perdidas casi nulas es un buen control
-    de banco -- de hecho NPL lo midio justamente para validar su celda
-    contra Kienitz & Marsh -- pero por lo mismo es un MAL candidato a
-    patron de calibracion de la sonda coaxial: al estar tan cerca del
-    aire (er ~ 1) aporta muy poca informacion nueva y deja el sistema de
-    ecuaciones de calibracion mal condicionado.
+    El ciclohexano es NO POLAR: no tiene relajacion dipolar, asi que er'
+    es realmente constante con la frecuencia (verificado hasta 300 GHz por
+    Afsar, y hasta la region submilimetrica segun Kaatze). No es una
+    aproximacion de conveniencia como lo era el modelo estatico de la
+    acetona: aca la constante ES el comportamiento fisico.
+
+    Las perdidas son minusculas (er'' < 1e-3 hasta 300 GHz) y provienen de
+    absorcion inducida por colisiones, no de relajacion dipolar. En la
+    practica estan MUY por debajo de lo que puede medir una sonda coaxial
+    open-ended, asi que no tiene sentido comparar el er'' medido contra
+    esta referencia (ver INFO_PATRONES['ciclohexano']['perdidas_
+    comparables'], que por eso vale False).
+
+    LIMITACIONES:
+      - er'(T) esta validado entre 10 y 50 °C (el ciclohexano funde a
+        6.5 °C, por eso no hay dato a 5 °C).
+      - er''(f) sale de mediciones a 25 °C unicamente: no lleva
+        dependencia con la temperatura.
+      - er''(f) esta medido entre ~10 y 265 GHz; por debajo de eso la ley
+        de potencias es una extrapolacion (que tiende a 0 en f = 0, que
+        es el comportamiento fisicamente esperado).
 
     Parametros
     ----------
     frecs : array_like
-        Frecuencias en Hz (solo dan la forma del array de salida).
+        Frecuencias en Hz.
     T : float
-        Temperatura en °C (default 25 °C). Rango medido: 10-50 °C -- no
-        hay valor a 5 °C porque el ciclohexano funde a 6.5 °C.
-    tan_delta : float
-        Tangente de perdidas (default 0). Para el ciclohexano el 0 es
-        fisicamente correcto: tan_delta real < 1e-4.
+        Temperatura en °C (default 25). Rango validado: 10-50 °C.
     verbose : bool
-        Si es True, imprime la permitividad que se termino usando.
+        Si es True, imprime los valores que se terminaron usando.
 
     Retorna
     -------
-    ndarray complejo con er' - j*er'' (constante en frecuencia).
+    ndarray complejo con er' - j*er''.
     """
-    return _permitividad_estatica(frecs, _CICLOHEXANO_ESTATICA, T,
-                                   nombre="Ciclohexano (permitividad estatica)",
-                                   rango_recomendado=(10, 50),
-                                   tan_delta=tan_delta, verbose=verbose)
+    frecs = np.asarray(frecs, dtype=float)
+    if not (10.0 <= float(T) <= 50.0):
+        warnings.warn(
+            f"Ciclohexano: T={T}\u00b0C esta fuera del rango validado "
+            f"(10-50 \u00b0C; funde a 6.5 \u00b0C). Se extrapola la recta "
+            f"er'(T), que fuera de ese rango no esta respaldada por datos."
+        )
+    er1 = _CICLOHEXANO_ER1_A + _CICLOHEXANO_ER1_B * float(T)
+    f_ghz = np.maximum(frecs, 0.0) / 1e9
+    er2 = _CICLOHEXANO_ER2_A * (f_ghz ** _CICLOHEXANO_ER2_N)
+    if verbose:
+        print(f"[Patrones] Ciclohexano: er'={er1:.4f} a T={T}\u00b0C "
+              f"(constante en f); er'' de {er2.min():.2e} a {er2.max():.2e} "
+              f"(Afsar 1980, fig. 4 curva E).")
+    return er1 - 1j * er2
 
 
 def get_er_pat_silicona(frecs, T=25.0, tan_delta=0.0, verbose=False):
@@ -820,9 +972,9 @@ ETIQUETAS_PATRONES = {
     'etilenglicol': "Etilenglicol (etanodiol)",
     'butanol': "1-Butanol",
     'propanol': "1-Propanol",
-    'acetona': "Acetona (solo ε estatica)",
-    'ciclohexano': "Ciclohexano (no polar, ε constante)",
-    'silicona': "Fluido de silicona 1 cSt (no polar, ε constante)",
+    'acetona': "Acetona (Debye, Zarubina 2020)",
+    'ciclohexano': "Ciclohexano (Kaatze 2007 + Afsar 1980)",
+    'silicona': "Fluido de silicona 1 cSt (solo ε estatica)",
 }
 
 
@@ -853,15 +1005,17 @@ ETIQUETAS_PATRONES = {
 #   'advertencia'     : texto para mostrarle al usuario. None = sin cartel.
 # ===========================================================================
 _SIN_ADVERTENCIA = dict(
-    tipo='relajacion', modela_perdidas=True,
+    tipo='relajacion', modela_perdidas=True, perdidas_comparables=True,
     perdidas_reales_despreciables=False,
     rango_temperatura_c=(10, 50), rango_frecuencia_ghz=(0.03, 5),
+    etiqueta_curva="Teorico (Debye)",
     nivel='info', advertencia=None,
 )
 
 INFO_PATRONES = {
     'agua': dict(_SIN_ADVERTENCIA,
-                 rango_temperatura_c=(0, 100), rango_frecuencia_ghz=(0, 1000)),
+                 rango_temperatura_c=(0, 100), rango_frecuencia_ghz=(0, 1000),
+                 etiqueta_curva="Teorico (Liebe-Hufford-Manabe)"),
     'alcohol_etilico': dict(_SIN_ADVERTENCIA),
     'alcohol_isopropilico': dict(_SIN_ADVERTENCIA),
     'metanol': dict(_SIN_ADVERTENCIA, rango_frecuencia_ghz=(0.03, 10)),
@@ -872,81 +1026,104 @@ INFO_PATRONES = {
     'propanol': dict(_SIN_ADVERTENCIA),
 
     'acetona': dict(
-        tipo='estatico',
-        modela_perdidas=False,
+        tipo='relajacion',
+        modela_perdidas=True,
+        perdidas_comparables=True,
         perdidas_reales_despreciables=False,
         rango_temperatura_c=(5, 50),
-        rango_frecuencia_ghz=(0, 5),
-        nivel='critico',
+        rango_frecuencia_ghz=(0.2, 20),
+        etiqueta_curva="Teorico (Debye, ajuste Zarubina 2020)",
+        nivel='aviso',
         advertencia=(
-            "Este modelo NO es una ecuacion de Debye: es la permitividad "
-            "ESTATICA (de baja frecuencia) de la Seccion 6 del reporte NPL "
-            "MAT 23, puesta como CONSTANTE en toda la banda. NPL no publica "
-            "parametros de relajacion para la acetona porque su frecuencia "
-            "de relajacion queda muy por encima de los 5 GHz que llegaba a "
-            "medir el equipo (nota 23 del reporte).\n\n"
-            "• La parte REAL (er') es una aproximacion razonable mientras "
-            "se trabaje bastante por debajo de la relajacion, o sea en el "
-            "rango tipico de este proyecto: ahi er' todavia casi no bajo. "
-            "El modelo no captura esa caida, asi que cuanto mas se suba en "
-            "frecuencia, mas optimista va a ser.\n"
-            "• La parte IMAGINARIA (er'') se devuelve como 0, y eso es "
-            "FALSO. La acetona SI tiene perdidas apreciables en GHz (es la "
-            "cola de subida de su relajacion lejana). El 0 significa 'no "
-            "modelado', no 'sin perdidas': el error relativo de er'' contra "
-            "esta referencia no significa nada y se informa como n/a."
+            "Modelo de Debye ARMADO CON DOS FUENTES, no publicado como tal "
+            "en ningun lado: es(T) sale de la tabla de permitividad estatica "
+            "del NPL MAT 23 (trazable, \u00b10.04, 5-50 \u00b0C), mientras que "
+            "e_inf = 5.14 y fr = 46.6 GHz (tau = 3.4 ps) salen de un ajuste "
+            "propio sobre las curvas de acetona de la figura 5 de Zarubina "
+            "et al. (2020), medidas con sonda coaxial entre 0.2 y 20 GHz a "
+            "23 \u00b0C.\n\n"
+            "\u2022 fr es el parametro solido del ajuste (46.6 \u00b1 1.0 GHz por "
+            "bootstrap, y todas las variantes probadas caen en 45-47 GHz). "
+            "e_inf y es, en cambio, quedan correlacionados entre si porque "
+            "los datos no pasan de f/fr = 0.43.\n"
+            "\u2022 fr NO varia con la temperatura en este modelo: el paper mide "
+            "a una sola T. Lejos de 23 \u00b0C, er'' va a tener un error "
+            "sistematico (er' aguanta mejor, porque en esta banda er' ~ es(T) "
+            "y eso si sigue la temperatura).\n"
+            "\u2022 Valido hasta ~20 GHz. Por encima, e_inf = 5.14 no es el "
+            "limite optico real de la acetona (n^2 ~ 1.85): es un valor "
+            "EFECTIVO que absorbe los procesos rapidos fuera de rango.\n"
+            "\u2022 El er' medido por Zarubina entre 2 y 10 GHz queda ~4% por "
+            "debajo del valor trazable de NPL, y esa caida no puede ser "
+            "fisica para una relajacion en 46 GHz: es la sonda del paper "
+            "perdiendo exactitud lejos del centro de su banda. Por eso el "
+            "modelo toma es de NPL y no del ajuste."
         ),
     ),
 
     'ciclohexano': dict(
-        tipo='estatico',
-        modela_perdidas=False,
+        tipo='no_polar',
+        modela_perdidas=True,
+        perdidas_comparables=False,
         perdidas_reales_despreciables=True,
         rango_temperatura_c=(10, 50),
-        rango_frecuencia_ghz=None,
-        nivel='aviso',
+        rango_frecuencia_ghz=(0, 300),
+        etiqueta_curva="Teorico (Kaatze 2007 + Afsar 1980)",
+        nivel='info',
         advertencia=(
-            "Este modelo NO es una ecuacion de Debye, y no por una "
-            "limitacion del equipo de medicion sino por fisica: el "
-            "ciclohexano es una molecula NO POLAR, no tiene relajacion "
-            "dipolar y por lo tanto no hay nada que ajustar. Su "
-            "permitividad (~2.0) viene casi entera de la polarizacion "
-            "electronica, que no se relaja hasta el optico/infrarrojo.\n\n"
-            "• Aca la constante NO es una aproximacion de conveniencia: es "
-            "el comportamiento real en todo RF y microondas. er'' ~ 0 "
-            "tambien es correcto (tan_delta < 1e-4).\n"
-            "• Rango de temperatura medido: 10-50 °C. No hay valor a 5 °C "
-            "porque el ciclohexano funde a 6.5 °C.\n"
-            "• Como el er'' de referencia es 0, el error relativo de er'' se "
-            "informa como n/a (dividir por cero no significa nada).\n"
-            "• Es un buen control de banco, pero MAL patron de calibracion "
-            "de la sonda: al estar tan cerca del aire (er ~ 1) aporta poca "
-            "informacion nueva y deja mal condicionado el sistema de "
-            "ecuaciones de calibracion."
+            "El ciclohexano es NO POLAR: no tiene relajacion dipolar, asi "
+            "que no existe -- ni puede existir -- un modelo de Debye. Aca la "
+            "permitividad constante NO es una aproximacion de conveniencia, "
+            "es el comportamiento fisico real.\n\n"
+            "\u2022 er'(T) = 2.0565 - 1.620e-3*T[\u00b0C], ajustado sobre los 9 "
+            "puntos del NPL MAT 23 con residuo < 0.001. Reproduce la "
+            "ecuacion (9) de Kaatze (2007). Validado 10-50 \u00b0C (funde a "
+            "6.5 \u00b0C).\n"
+            "\u2022 Constante en frecuencia: Afsar et al. (1980) promedian "
+            "er' = 2.0126 \u00b1 0.0056 entre 1 y 300 GHz sin evidencia de "
+            "dispersion, y Kaatze lo extiende hasta la region "
+            "submilimetrica con error < 0.05%.\n"
+            "\u2022 er''(f) = 1.08e-5*(f/GHz)^0.791, de la curva E de la figura "
+            "4 de Afsar (25 \u00b0C). Da 4.1e-4 a 100 GHz y recien llega a "
+            "1e-3 cerca de 300 GHz: esta MUY por debajo de lo que puede "
+            "resolver una sonda coaxial, asi que el error relativo de er'' "
+            "contra esta referencia se informa como n/a.\n"
+            "\u2022 Como patron de calibracion: Kaatze (2007) lo recomienda "
+            "explicitamente como uno de los cuatro liquidos de referencia, "
+            "justamente porque hace falta un patron de BAJA permitividad "
+            "para medir bien muestras de baja permitividad (la capacidad "
+            "efectiva de la sonda depende de la permitividad de la muestra). "
+            "Como 3er patron de una calibracion de solo 3, en cambio, queda "
+            "mal condicionado frente al aire."
         ),
     ),
 
     'silicona': dict(
         tipo='estatico',
         modela_perdidas=False,
+        perdidas_comparables=False,
         perdidas_reales_despreciables=True,
         rango_temperatura_c=(5, 35),
         rango_frecuencia_ghz=None,
+        etiqueta_curva="Teorico (\u03b5 estatica NPL, sin relajacion)",
         nivel='aviso',
         advertencia=(
-            "Este modelo NO es una ecuacion de Debye. El fluido de silicona "
+            "Unico de los tres liquidos sin tabla de relajacion que sigue "
+            "siendo un modelo puramente ESTATICO. El fluido de silicona "
             "Dow-Corning 200 de 1 cSt (polidimetilsiloxano) es no polar: "
             "igual que el ciclohexano, no tiene relajacion dipolar en RF ni "
             "en microondas, asi que su permitividad (~2.3) es realmente "
-            "constante y sus perdidas despreciables (er'' ~ 0 correcto).\n\n"
-            "• OJO con la temperatura: NPL solo publica mediciones de 5 a "
-            "35 °C (no hay 40, 45 ni 50 °C), bastante menos rango que el "
+            "constante. La diferencia es que para el ciclohexano hay datos "
+            "publicados de er'' (Afsar 1980) y para la silicona no, asi que "
+            "aca er'' se devuelve como 0.\n\n"
+            "\u2022 OJO con la temperatura: NPL solo publica mediciones de 5 a "
+            "35 \u00b0C (no hay 40, 45 ni 50 \u00b0C), bastante menos rango que el "
             "resto de los liquidos. Fuera de ahi el valor se satura en el "
             "extremo mas cercano.\n"
-            "• Como el er'' de referencia es 0, el error relativo de er'' se "
-            "informa como n/a.\n"
-            "• Mismo reparo que el ciclohexano como patron de calibracion: "
-            "su permitividad esta demasiado cerca de la del aire."
+            "\u2022 Como el er'' de referencia es 0, el error relativo de er'' "
+            "se informa como n/a.\n"
+            "\u2022 Las perdidas reales son despreciables igual, asi que el 0 "
+            "es una buena aproximacion en la practica."
         ),
     ),
 }
@@ -973,33 +1150,60 @@ def nivel_advertencia_patron(clave):
 
 
 def es_modelo_estatico(clave):
-    """True si el modelo devuelve permitividad CONSTANTE en frecuencia (no
-    tiene ecuacion de relajacion ajustada)."""
-    return info_patron(clave).get('tipo') == 'estatico'
+    """True si el modelo devuelve una parte REAL constante en frecuencia
+    (o sea, no tiene relajacion ajustada). Cubre tanto los liquidos no
+    polares (ciclohexano: constante por fisica) como los que solo tienen
+    permitividad estatica tabulada (silicona)."""
+    return info_patron(clave).get('tipo') in ('estatico', 'no_polar')
 
 
 def modela_perdidas(clave):
-    """True si el er'' que devuelve el modelo es un valor fisico
-    calculado; False si es 0 por no estar modelado. Lo usan el pipeline de
-    analisis y el informe PDF para no publicar un error relativo de er''
-    que no significaria nada."""
+    """True si el modelo calcula un er'' fisico; False si devuelve 0 por
+    no tener datos de perdidas."""
     return bool(info_patron(clave).get('modela_perdidas', True))
+
+
+def perdidas_comparables(clave):
+    """True si tiene sentido calcular el error relativo del er'' MEDIDO
+    contra el de este modelo.
+
+    Es mas restrictivo que `modela_perdidas`, y la diferencia importa:
+    el ciclohexano SI modela perdidas (er'' ~ 1e-5 a 1e-4 en la banda del
+    proyecto, de la curva E de Afsar), pero esos valores estan ordenes de
+    magnitud por debajo de lo que puede resolver una sonda coaxial
+    open-ended. Dividir el ruido de la medicion por un numero tan chico
+    da porcentajes enormes que no dicen absolutamente nada, asi que en
+    ese caso el error de er'' se informa como n/a igual que cuando la
+    referencia es 0."""
+    return bool(info_patron(clave).get('perdidas_comparables', True))
+
+
+def etiqueta_curva_teorica(clave):
+    """Texto de leyenda para la curva teorica de este modelo en los
+    graficos. No todos son un Debye, asi que rotularlos a todos como
+    "Teorico (Debye)" seria enganoso."""
+    if not clave:
+        return "Teorico"
+    return info_patron(clave).get('etiqueta_curva', "Teorico (Debye)")
 
 
 def resumen_corto_patron(clave):
     """Una linea para mostrar al lado del nombre del modelo en tablas y
-    listados (o None si es un modelo de relajacion normal, donde no hace
-    falta aclarar nada)."""
+    listados (o None si es un modelo de relajacion estandar del MAT 23,
+    donde no hace falta aclarar nada)."""
     info = info_patron(clave)
-    if info.get('tipo') != 'estatico':
-        return None
+    tipo = info.get('tipo')
     t_min, t_max = info.get('rango_temperatura_c', (None, None))
-    if info.get('perdidas_reales_despreciables'):
-        base = "ε constante (no polar, sin relajacion)"
+    if tipo == 'no_polar':
+        base = "no polar: \u03b5' constante en f, perdidas despreciables"
+    elif tipo == 'estatico':
+        base = "\u03b5 estatica constante, er'' NO modelado"
+    elif clave == 'acetona':
+        base = "Debye ajustado sobre datos de 2020 (fr fijo, 23 \u00b0C)"
     else:
-        base = "ε estatica constante, er'' NO modelado"
+        return None
     if t_min is not None:
-        return f"{base} — medido {t_min:.0f}-{t_max:.0f} °C"
+        return f"{base} \u2014 validado {t_min:.0f}-{t_max:.0f} \u00b0C"
     return base
 
 

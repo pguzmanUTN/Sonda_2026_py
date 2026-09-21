@@ -185,9 +185,16 @@ class CartelAdvertencia(ttk.Frame):
             return False
         etiqueta = gf.etiqueta_de_modelo(clave_modelo)
         nivel = P.nivel_advertencia_patron(clave_modelo)
-        titulo = (f"Sin ecuación de Debye — {etiqueta}"
-                  if P.es_modelo_estatico(clave_modelo)
-                  else f"Atención — {etiqueta}")
+        # El encabezado dice de que se trata la advertencia, que no
+        # siempre es una limitacion grave: para los liquidos no polares
+        # es simplemente que no hay (ni puede haber) relajacion, y para
+        # la acetona es de donde salio el modelo.
+        if P.es_modelo_estatico(clave_modelo):
+            titulo = f"Sin ecuación de Debye — {etiqueta}"
+        elif nivel == 'info':
+            titulo = f"Sobre este modelo — {etiqueta}"
+        else:
+            titulo = f"Atención — {etiqueta}"
         self.mostrar(titulo, texto, nivel)
         return True
 
@@ -1051,46 +1058,49 @@ class AppPermitividad(tk.Tk):
         """Muestra (o esconde) el cartel de advertencia de la pestaña de
         Calibracion segun los liquidos elegidos como patron 3 y patron 4.
 
-        Junta en un solo cartel los reparos de los dos patrones: suelen
-        ser cortos, y verlos juntos deja claro de un vistazo si la
-        calibracion vigente tiene alguna limitacion conocida."""
+        Muestra el resumen corto de cada modelo que tenga advertencia
+        (ver Patrones.INFO_PATRONES). Importa mas aca que en un material
+        suelto, porque la permitividad del patron entra directo en las
+        formulas de conversion y afecta a TODOS los materiales."""
         if not hasattr(self, 'cartel_calibracion'):
             return
 
-        claves = [("Patrón 3", gf.clave_de_etiqueta(
+        claves = [("Patr\u00f3n 3", gf.clave_de_etiqueta(
             self.vars_modelo_calibracion['patron3'].get()))]
         if self.var_usar_metodo_completo.get():
-            claves.append(("Patrón 4", gf.clave_de_etiqueta(
+            claves.append(("Patr\u00f3n 4", gf.clave_de_etiqueta(
                 self.vars_modelo_calibracion['patron4'].get())))
 
         partes = []
-        nivel = 'aviso'
+        nivel = 'info'
         for rol, clave in claves:
-            if not clave or not P.es_modelo_estatico(clave):
+            if not clave or not P.advertencia_patron(clave):
                 continue
             etiqueta = gf.etiqueta_de_modelo(clave)
-            resumen = P.resumen_corto_patron(clave) or "permitividad constante"
-            partes.append(
-                f"• {rol} ({etiqueta}): {resumen}. Este modelo NO tiene "
-                f"ecuación de Debye ajustada, y su permitividad entra "
-                f"directo en las fórmulas de conversión S11 → er, así que "
-                f"su limitación se propaga al resultado de TODOS los "
-                f"materiales, no solo al de este patrón.")
-            if P.info_patron(clave).get('perdidas_reales_despreciables'):
+            resumen = P.resumen_corto_patron(clave) or "ver advertencia del modelo"
+            partes.append(f"\u2022 {rol} ({etiqueta}): {resumen}.")
+            if P.es_modelo_estatico(clave):
                 partes.append(
-                    f"   Además, al ser un líquido no polar su permitividad "
-                    f"(~2) está muy cerca de la del aire: aporta poca "
-                    f"información nueva respecto del circuito abierto y deja "
-                    f"mal condicionado el sistema de ecuaciones de "
-                    f"calibración.")
+                    "   Al ser un l\u00edquido no polar, su permitividad (~2) est\u00e1 "
+                    "cerca de la del aire: como 3er patr\u00f3n de una calibraci\u00f3n "
+                    "de solo 3 queda mal condicionado. Kaatze (2007) s\u00ed lo "
+                    "recomienda como patr\u00f3n ADICIONAL, porque para medir bien "
+                    "muestras de baja permitividad hace falta un patr\u00f3n de baja "
+                    "permitividad.")
             if P.nivel_advertencia_patron(clave) == 'critico':
                 nivel = 'critico'
+            elif nivel != 'critico' and P.nivel_advertencia_patron(clave) == 'aviso':
+                nivel = 'aviso'
 
         if not partes:
             self.cartel_calibracion.ocultar()
             return
+        partes.append(
+            "La permitividad del patr\u00f3n entra directo en las f\u00f3rmulas de "
+            "conversi\u00f3n S11 \u2192 er, as\u00ed que cualquier limitaci\u00f3n del modelo "
+            "se propaga al resultado de TODOS los materiales.")
         self.cartel_calibracion.mostrar(
-            "Patrón de calibración sin modelo de relajación",
+            "Patr\u00f3n de calibraci\u00f3n con advertencias",
             "\n".join(partes), nivel=nivel)
 
     def _al_cambiar_usar_metodo_completo(self):
@@ -1173,14 +1183,15 @@ class AppPermitividad(tk.Tk):
         for i, m in enumerate(self._materiales):
             metodos = "+".join(m.get('metodos', []))
             temp = f"{m['temperatura']:.1f}" if m.get('modelo') else "-"
-            # Los modelos SIN ecuacion de relajacion (permitividad
-            # constante: acetona, ciclohexano, silicona) se marcan con un
-            # triangulo de aviso en la tabla, para que se note de un
-            # vistazo cuales materiales se estan comparando contra una
-            # referencia con limitaciones -- el detalle completo esta en
-            # el cartel del dialogo de edicion y en el informe PDF.
+            # Los modelos que tienen alguna advertencia declarada en
+            # Patrones.INFO_PATRONES (acetona, ciclohexano, silicona: los
+            # tres que no salen de las tablas de relajacion del MAT 23) se
+            # marcan con un triangulo, para que se note de un vistazo
+            # cuales materiales se estan comparando contra una referencia
+            # con limitaciones. El detalle completo esta en el cartel del
+            # dialogo de edicion y en el informe PDF.
             etiqueta_modelo = gf.etiqueta_de_modelo(m.get('modelo'))
-            if m.get('modelo') and P.es_modelo_estatico(m['modelo']):
+            if m.get('modelo') and P.advertencia_patron(m['modelo']):
                 etiqueta_modelo = f"⚠ {etiqueta_modelo}"
             self.tabla_materiales.insert(
                 "", "end", iid=str(i),

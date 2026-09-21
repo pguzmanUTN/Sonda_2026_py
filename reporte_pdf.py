@@ -86,12 +86,12 @@ def _fmt_error(valor):
     """Formatea un error relativo en %, o 'n/a' si es NaN.
 
     Un NaN aca no es un fallo de calculo: significa que el error relativo
-    no esta DEFINIDO en ese caso. Pasa cuando la curva teorica de
-    referencia tiene er'' identicamente 0 -- los modelos de permitividad
-    estatica de Patrones.py (acetona, ciclohexano, fluido de silicona),
-    que no traen un ajuste de relajacion y por lo tanto no modelan
-    perdidas. Ver `funciones.error_relativo_porcentual` y
-    `analisis_permitividad.calcular_error`.
+    no esta DEFINIDO o no significa nada en ese caso. Pasa en dos
+    situaciones (ver `Patrones.perdidas_comparables` y
+    `analisis_permitividad.calcular_error`):
+      - la curva teorica tiene er'' identicamente 0 (fluido de silicona);
+      - la curva teorica tiene un er'' fisico pero minusculo comparado
+        con lo que resuelve una sonda coaxial (ciclohexano, er'' ~ 1e-5).
     """
     if valor is None:
         return "n/a"
@@ -106,9 +106,9 @@ def _fmt_error(valor):
 def _caja_advertencia(titulo, texto, nivel='aviso', ancho=_ANCHO_PAGINA_UTIL):
     """
     Caja destacada (con borde de color y fondo suave) para las
-    advertencias de los modelos teoricos -- por ejemplo, avisar que la
-    acetona/ciclohexano/silicona NO tienen ecuacion de Debye y se modelan
-    como permitividad constante.
+    advertencias de los modelos teoricos -- por ejemplo, avisar de que
+    fuentes salio un modelo armado a mano (la acetona), o que un liquido
+    no polar no tiene ni puede tener relajacion (ciclohexano, silicona).
 
     `texto` puede traer saltos de linea y vinetas: cada parrafo se
     convierte en su propio Paragraph, para que el salto de linea
@@ -558,12 +558,21 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
             # Si el modelo de referencia no modela perdidas, la columna de
             # er'' sale toda en "n/a": conviene aclarar por que, para que
             # no se lea como un fallo de calculo.
-            if mat.get('modelo_modela_perdidas') is False:
+            if mat.get('modelo_perdidas_comparables') is False:
+                # Dos motivos distintos para el mismo "n/a": la referencia
+                # no modela perdidas, o las modela pero son minusculas.
+                if mat.get('modelo_modela_perdidas') is False:
+                    motivo = ("el modelo te\u00f3rico de referencia no modela "
+                              "p\u00e9rdidas (devuelve er'' = 0), y el error relativo "
+                              "contra cero no est\u00e1 definido")
+                else:
+                    motivo = ("las p\u00e9rdidas de referencia son de \u00f3rdenes de "
+                              "magnitud menores que lo que puede resolver una sonda "
+                              "coaxial open-ended, as\u00ed que el cociente comparar\u00eda "
+                              "ruido de medici\u00f3n contra un n\u00famero min\u00fasculo")
                 bloque_err.append(Spacer(1, 0.15 * cm))
                 bloque_err.append(Paragraph(
-                    "Las columnas de er'' figuran como <b>n/a</b> porque el modelo "
-                    "te\u00f3rico de referencia no modela p\u00e9rdidas (devuelve "
-                    "er'' = 0): el error relativo contra cero no est\u00e1 definido. "
+                    f"Las columnas de er'' figuran como <b>n/a</b> porque {motivo}. "
                     "Ver la advertencia de arriba.",
                     _ESTILOS['Nota']))
             story.append(KeepTogether(bloque_err))

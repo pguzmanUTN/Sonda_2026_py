@@ -104,7 +104,8 @@ from Touchstone import (leer_s1p, mismas_frecuencias, resamplear,
 from funciones import get_er_DUTm, get_er_DUT_completo, error_relativo_porcentual, calcular_Gn
 from Patrones import (PATRONES_TEORICOS, etiqueta_patron, advertencia_patron,
                        nivel_advertencia_patron, es_modelo_estatico,
-                       modela_perdidas, resumen_corto_patron)
+                       modela_perdidas, perdidas_comparables,
+                       resumen_corto_patron, etiqueta_curva_teorica)
 from reporte_pdf import generar_reporte_pdf
 
 # ---------------------------------------------------------------------------
@@ -548,20 +549,29 @@ def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True, marcas_inicio=None):
     return fig
 
 
-def calcular_error(er_medido, er_teorico):
+def calcular_error(er_medido, er_teorico, comparar_imag=True):
     """Devuelve un dict con el error relativo (%) promedio y maximo de
     parte real e imaginaria, listo para tablas (consola o PDF).
 
     Usa nanmean/nanmax porque `error_relativo_porcentual` devuelve NaN
-    donde el error no esta DEFINIDO -- tipicamente cuando la curva
-    teorica tiene er'' identicamente 0, que es lo que pasa con los
-    modelos de permitividad estatica de `Patrones.py` (acetona,
-    ciclohexano, silicona). Si TODOS los puntos de una parte son NaN, el
-    promedio queda en NaN y quien lo muestre debe imprimir "n/a" en vez
-    de un numero (ver `reportar_error` y `reporte_pdf._fmt_error`), en
-    lugar de inventar un 0 o un inf.
+    donde el error no esta DEFINIDO: cuando la curva teorica tiene er''
+    identicamente 0 (el modelo de la silicona en `Patrones.py`). Si TODOS
+    los puntos de una parte son NaN, el promedio queda en NaN y quien lo
+    muestre debe imprimir "n/a" (ver `reportar_error` y
+    `reporte_pdf._fmt_error`) en lugar de inventar un 0 o un inf.
+
+    `comparar_imag=False` fuerza ese mismo n/a aunque la division se
+    pueda hacer. Hace falta para el ciclohexano: su modelo SI calcula un
+    er'' fisico (~1e-5 a 1e-4 en esta banda, de la curva E de Afsar
+    1980), pero esos valores estan ordenes de magnitud por debajo de lo
+    que resuelve una sonda coaxial, asi que el cociente existiria pero
+    compararia ruido contra un numero minusculo y daria porcentajes
+    gigantescos sin ningun significado. Lo decide
+    `Patrones.perdidas_comparables`.
     """
     err_re, err_im = error_relativo_porcentual(er_medido, er_teorico)
+    if not comparar_imag:
+        err_im = np.full(np.shape(err_im), np.nan)
 
     def _resumen(arr):
         arr = np.abs(np.asarray(arr, dtype=float))
@@ -587,17 +597,26 @@ def _fmt_pct(valor):
     return "    n/a" if valor is None or np.isnan(valor) else f"{valor:6.2f}%"
 
 
-def reportar_error(nombre, er_medido, er_teorico):
+def reportar_error(nombre, er_medido, er_teorico, comparar_imag=True):
     """Imprime el error relativo en consola y lo devuelve (ver `calcular_error`)."""
-    e = calcular_error(er_medido, er_teorico)
+    e = calcular_error(er_medido, er_teorico, comparar_imag=comparar_imag)
     print(f"  {nombre}:")
     print(f"    error medio  er' = {_fmt_pct(e['err_re_medio'])}   "
           f"error medio  er'' = {_fmt_pct(e['err_im_medio'])}")
     print(f"    error maximo er' = {_fmt_pct(e['err_re_max'])}   "
           f"error maximo er'' = {_fmt_pct(e['err_im_max'])}")
     if np.isnan(e['err_im_medio']):
-        print("    (er'' = n/a: el modelo teorico de referencia no modela "
-              "perdidas, ver la advertencia de ese modelo)")
+        # Los dos motivos posibles se distinguen mirando la referencia en
+        # si: si su er'' es identicamente 0, el modelo directamente no
+        # modela perdidas (silicona); si no, las modela pero son tan
+        # chicas que compararlas con una medicion de sonda no significa
+        # nada (ciclohexano). Ver Patrones.perdidas_comparables.
+        ref_sin_perdidas = bool(np.all(np.imag(np.asarray(er_teorico)) == 0))
+        motivo = ("el modelo de referencia no modela perdidas (er'' = 0)"
+                  if ref_sin_perdidas else
+                  "las perdidas de referencia son de ordenes de magnitud "
+                  "menores que lo que resuelve una sonda coaxial")
+        print(f"    (er'' = n/a: {motivo}, ver la advertencia de ese modelo)")
     return e
 
 
@@ -948,8 +967,10 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     if er_teo_r is not None:
         print(f"  Error relativo:")
         errores = {}
+        comparar_im = perdidas_comparables(modelo)
         for etiqueta, er in resultados_r.items():
-            errores[etiqueta] = reportar_error(etiqueta, er, er_teo_r)
+            errores[etiqueta] = reportar_error(etiqueta, er, er_teo_r,
+                                                comparar_imag=comparar_im)
         print(f"  Tabla resumen ({nombre}):")
         columnas_tabla = {"Teorico": er_teo, **resultados}
         imprimir_tabla_resumen(frecs, columnas_tabla)
@@ -990,6 +1011,7 @@ def procesar_material(material, carpeta_datos, cache, frecs,
         'nivel_advertencia': nivel_advertencia_patron(modelo) if modelo else 'info',
         'modelo_estatico': es_modelo_estatico(modelo) if modelo else False,
         'modelo_modela_perdidas': modela_perdidas(modelo) if modelo else True,
+        'modelo_perdidas_comparables': perdidas_comparables(modelo) if modelo else True,
         'modelo_resumen': resumen_corto_patron(modelo) if modelo else None,
         # Datos crudos para reconstruir la figura en vivo (interactiva,
         # con zoom/pan) en la GUI sin tener que releer el .png -- ver
@@ -1001,22 +1023,6 @@ def procesar_material(material, carpeta_datos, cache, frecs,
             'etiqueta_teorico': etiq_teorico,
         },
     }
-
-
-def etiqueta_curva_teorica(modelo):
-    """Texto de leyenda para la curva teorica de `modelo`.
-
-    No todos los patrones de `Patrones.py` son un Debye: los de
-    permitividad estatica (acetona, ciclohexano, silicona) no tienen
-    ecuacion de relajacion ajustada, asi que rotular su curva como
-    "Teorico (Debye)" -- como hacia esta funcion antes, fijo para todos --
-    seria directamente engañoso en el grafico que despues va al informe.
-    """
-    if not modelo:
-        return "Teorico"
-    if es_modelo_estatico(modelo):
-        return "Teorico (ε estatica NPL, sin relajacion)"
-    return "Teorico (Debye)"
 
 
 def _advertencias_calibracion(modelo_patron3, modelo_patron4):
@@ -1041,7 +1047,7 @@ def _advertencias_calibracion(modelo_patron3, modelo_patron4):
             continue
         texto = advertencia_patron(modelo)
         info_extra = ""
-        if es_modelo_estatico(modelo):
+        if texto:
             info_extra = (
                 f"\n\nUSADO COMO {rol.upper()} DE CALIBRACION: ademas de lo "
                 f"anterior, tener en cuenta que la permitividad de este "
@@ -1050,6 +1056,14 @@ def _advertencias_calibracion(modelo_patron3, modelo_patron4):
                 f"propaga al resultado de TODOS los materiales, no solo al "
                 f"de este patron."
             )
+            if es_modelo_estatico(modelo):
+                info_extra += (
+                    " En particular, un liquido no polar tiene permitividad "
+                    "cercana a la del aire: como 3er patron de una "
+                    "calibracion de solo 3 queda mal condicionado, aunque "
+                    "Kaatze (2007) si lo recomienda como patron ADICIONAL "
+                    "para medir bien muestras de baja permitividad."
+                )
         if not texto and not info_extra:
             continue
         advertencias.append({
@@ -1261,9 +1275,11 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
 
     mascara = (frecs >= f_min_ghz * 1e9) & (frecs <= f_max_ghz * 1e9)
     medido_p3 = {"Medido (simplificado)": er_p3_simpl[mascara]}
+    comparar_im_p3 = perdidas_comparables(modelo_patron3)
     errores_p3 = {
         "Metodo simplificado": reportar_error(
-            "Metodo simplificado", er_p3_simpl[mascara], er_p3_teo[mascara]),
+            "Metodo simplificado", er_p3_simpl[mascara], er_p3_teo[mascara],
+            comparar_imag=comparar_im_p3),
     }
     if usar_metodo_completo:
         resultados_p3_completo = _calcular_metodo_completo(
@@ -1271,7 +1287,8 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             Er_patron3, Er_patron4, estrategia_gn, prefijo="Medido (completo")
         for etiqueta, arr in resultados_p3_completo.items():
             medido_p3[etiqueta] = arr[mascara]
-            errores_p3[etiqueta] = reportar_error(etiqueta, arr[mascara], er_p3_teo[mascara])
+            errores_p3[etiqueta] = reportar_error(etiqueta, arr[mascara], er_p3_teo[mascara],
+                                                   comparar_imag=comparar_im_p3)
 
     ruta_figura_p3 = os.path.join(carpeta_salida, "chequeo_calibracion_patron3.png")
     etiq_teorico_p3 = etiqueta_curva_teorica(modelo_patron3)
@@ -1317,16 +1334,19 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         er_p4_simpl = get_er_DUTm(frecs, s11_patron4, s11_patron3, s11_aire, s11_corto,
                                    Er_patron3)
         medido_p4 = {"Medido (simplificado)": er_p4_simpl[mascara]}
+        comparar_im_p4 = perdidas_comparables(modelo_patron4)
         errores_p4 = {
             "Metodo simplificado": reportar_error(
-                "Metodo simplificado", er_p4_simpl[mascara], er_p4_teo[mascara]),
+                "Metodo simplificado", er_p4_simpl[mascara], er_p4_teo[mascara],
+                comparar_imag=comparar_im_p4),
         }
         resultados_p4_completo = _calcular_metodo_completo(
             frecs, s11_patron4, s11_patron3, s11_aire, s11_patron4, s11_corto,
             Er_patron3, Er_patron4, estrategia_gn, prefijo="Medido (completo")
         for etiqueta, arr in resultados_p4_completo.items():
             medido_p4[etiqueta] = arr[mascara]
-            errores_p4[etiqueta] = reportar_error(etiqueta, arr[mascara], er_p4_teo[mascara])
+            errores_p4[etiqueta] = reportar_error(etiqueta, arr[mascara], er_p4_teo[mascara],
+                                                   comparar_imag=comparar_im_p4)
 
         ruta_figura_p4 = os.path.join(carpeta_salida, "chequeo_calibracion_patron4.png")
         etiq_teorico_p4 = etiqueta_curva_teorica(modelo_patron4)
