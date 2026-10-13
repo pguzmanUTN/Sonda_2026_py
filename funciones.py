@@ -224,13 +224,17 @@ def _resolver_raiz_fisica(coeficientes, semilla):
 def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
                          S11_patron4, S11_corto, Er_patron3, Er_patron4,
                          Er_aire=ER_AIRE, verbose=False,
-                         estrategia_semilla='minimo_gn'):
+                         estrategia_semilla='minimo_gn', Gn=None):
     """
     Calcula la permitividad relativa compleja del DUT a partir del modelo
     de admitancia "completo" (con conductancia de radiacion normalizada Gn),
     usando 4 patrones de calibracion: cortocircuito, aire, "patron 3" y
     "patron 4" (tradicionalmente agua destilada y alcohol isopropilico,
     pero puede ser cualquier par de liquidos con permitividad conocida).
+    Si `Gn` se pasa explicitamente (p.ej. precalculado o acondicionado con
+    `acondicionar_gn`), se utiliza directamente ese vector en lugar de
+    recalcularlo.
+
 
     Para cada frecuencia se arma la ecuacion polinomica de 5to orden en
     u = sqrt(er):
@@ -301,12 +305,13 @@ def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
     r_corto = np.asarray(S11_corto, dtype=complex)
     Er_patron3 = np.asarray(Er_patron3, dtype=complex)
 
-    # Conductancia normalizada Gn, a partir del patron 4. Se delega a
-    # `calcular_Gn` (definida arriba) para no duplicar la formula: esa
-    # misma funcion queda disponible aparte como diagnostico de
-    # calibracion (ver su docstring y `analisis_permitividad.graficar_Gn`).
-    Gn = calcular_Gn(frecs, S11_patron3, S11_aire, S11_patron4, S11_corto,
-                      Er_patron3, Er_patron4, Er_aire=Er_aire)
+    # Conductancia normalizada Gn. Si no se paso explicitamente, se
+    # calcula a partir del patron 4.
+    if Gn is None:
+        Gn = calcular_Gn(frecs, S11_patron3, S11_aire, S11_patron4, S11_corto,
+                          Er_patron3, Er_patron4, Er_aire=Er_aire)
+    else:
+        Gn = np.asarray(Gn, dtype=complex)
 
     # --- Coeficientes X, Z de la ecuacion principal (idem metodo simple) ---
     d32 = r_patron3 - r_aire
@@ -352,6 +357,35 @@ def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
     # punto), y se marcha hacia AMBOS lados en frecuencia -- hacia arriba y
     # hacia abajo -- usando siempre la solucion del vecino inmediato ya
     # resuelto como semilla del siguiente.
+    # Termino independiente del polinomio Gn*u^5 + u^2 + c0 = 0, en todo el
+    # barrido de una vez. Corregido: antes el aire entraba como `1.0 + Gn`,
+    # o sea con er = 1 exacto, mientras que calcular_Gn y get_er_DUTm usan
+    # Er_aire = 1.0006. Esa inconsistencia dejaba un error sistematico de
+    # hasta ~0.03% aun con datos perfectos.
+    coef_X = Er_patron3 + Gn * (Er_patron3 ** 2.5)
+    coef_1 = Er_aire + Gn * (Er_aire ** 2.5)
+    c0 = X * coef_X + Z * coef_1
+
+    return _marchar_en_frecuencia(frecs, Gn, c0, semillas, estrategia_semilla,
+                                  verbose=verbose, etiqueta="get_er_DUT_completo")
+
+
+def _marchar_en_frecuencia(frecs, Gn, c0, semillas, estrategia_semilla='minimo_gn',
+                           verbose=False, etiqueta="marcha"):
+    """
+    Resuelve, frecuencia por frecuencia, el polinomio Gn*u^5 + u^2 + c0 = 0
+    (u = sqrt(er)) eligiendo la raiz fisica por "marcha en frecuencia":
+    arranca donde |Gn| es minimo (ahi la semilla del modelo con Gn = 0 es
+    la mejor posible) y avanza hacia ambos lados usando como semilla la
+    solucion ya aceptada en el punto vecino. Ver el docstring de
+    `get_er_DUT_completo` para la justificacion completa.
+
+    Lo comparten `get_er_DUT_completo` (4 patrones, solucion exacta) y
+    `get_er_DUT_minimos_cuadrados` (N patrones, calibracion ajustada): la
+    unica diferencia entre los dos metodos esta en como se obtienen Gn y
+    c0, no en como se resuelve el polinomio.
+    """
+    frecs = np.asarray(frecs, dtype=float)
     idx_gn_minimo = int(np.argmin(np.abs(Gn)))
     orden = np.argsort(frecs)  # indices en orden ASCENDENTE de frecuencia
 
@@ -370,19 +404,15 @@ def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
             f"(opciones validas: 'minimo_gn', 'frecuencia_maxima')")
 
     if verbose:
-        print(f"  [get_er_DUT_completo] estrategia='{estrategia_semilla}': "
+        print(f"  [{etiqueta}] estrategia='{estrategia_semilla}': "
               f"la marcha arranca en f={frecs[orden[pos_inicio]] / 1e9:.4f} GHz "
               f"(|Gn| ahi = {abs(Gn[orden[pos_inicio]]):.4g}; el minimo real de "
               f"|Gn| en todo el barrido es {abs(Gn[idx_gn_minimo]):.4g}, en "
               f"f={frecs[idx_gn_minimo] / 1e9:.4f} GHz).")
 
     def _resolver_en(n, semilla):
-        coef_X = Er_patron3[n] + Gn[n] * (Er_patron3[n] ** 2.5)
-        coef_1 = 1.0 + Gn[n]
-        c0 = X[n] * coef_X + Z[n] * coef_1
         # Gn*u^5 + 0*u^4 + 0*u^3 + 1*u^2 + 0*u + c0 = 0
-        coeficientes = [Gn[n], 0, 0, 1, 0, c0]
-        return _resolver_raiz_fisica(coeficientes, semilla)
+        return _resolver_raiz_fisica([Gn[n], 0, 0, 1, 0, c0[n]], semilla)
 
     Er_out = np.zeros_like(frecs, dtype=complex)
 
@@ -405,6 +435,351 @@ def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
         _diagnosticar_saltos(frecs, Er_out)
 
     return Er_out
+
+
+# ---------------------------------------------------------------------------
+# Metodo por CUADRADOS MINIMOS (N >= 4 patrones: calibracion redundante)
+# ---------------------------------------------------------------------------
+# Motivacion: Kaatze (2007), "Reference liquids for the calibration of
+# dielectric sensors and measurement instruments", Meas. Sci. Technol. 18
+# 967, recomienda calibraciones REDUNDANTES, con mas patrones que los
+# estrictamente necesarios:
+#   - pag. 968: "Redundant calibrations with more than two reference
+#     liquids are therefore being recommended."
+#   - pag. 969: "...in order to improve the accuracy of the measurements
+#     by redundant reference routines..."
+#   - pag. 974 (conclusiones): cuatro liquidos de referencia -- aire,
+#     agua, ciclohexano y metanol a 25 °C -- mas DMSO "for redundancy and
+#     consistency checks".
+# OJO: Kaatze NO dice como resolver el sistema redundante (no aparecen
+# "least squares" ni "fit" en todo el paper; remite a sus referencias
+# [15] Evans & Michelson 1995 y [33] Folgero 1996). Resolverlo por
+# cuadrados minimos es la eleccion de ESTA implementacion: es la forma
+# estandar de resolver un sistema sobredeterminado, y minimizando en el
+# espacio de S11 es ademas el estimador de maxima verosimilitud si el
+# ruido del VNA es gaussiano y parejo entre mediciones.
+#
+# Modelo (el mismo que el metodo completo, sin simplificar nada):
+#
+#     F(er) = er + Gn*er^(5/2) = (a*rho + b) / (c*rho + 1)
+#
+# donde rho es el S11 medido. (a, b, c) es la transformacion bilineal que
+# absorbe la caja de error del VNA/cable y la capacidad C0 de la sonda --
+# es la ecuacion (3) de Kaatze -- y Gn es la conductancia de radiacion
+# normalizada. Son 4 incognitas complejas por frecuencia: con 4 patrones
+# el sistema tiene solucion exacta (y reproduce get_er_DUT_completo); con
+# 5 o mas queda sobredeterminado y se ajusta.
+#
+# El cortocircuito es el caso limite F -> inf, que en la bilineal implica
+# c*rho_corto + 1 = 0, o sea rho_corto = -1/c.
+# ---------------------------------------------------------------------------
+
+def _rho_modelo(p, er):
+    """S11 que predice el modelo para un patron de permitividad `er`
+    (None = cortocircuito), dados p = (a, b, c, Gn) complejos. Devuelve
+    (rho, derivadas respecto de a, b, c, Gn). El modelo es holomorfo en los
+    4 parametros, asi que la derivada compleja alcanza para Gauss-Newton."""
+    a, b, c, Gn = p
+    if er is None:  # cortocircuito
+        rho = -1.0 / c
+        cero = np.zeros_like(rho)
+        return rho, (cero, cero, 1.0 / c ** 2, cero)
+    e25 = er ** 2.5
+    F = er + Gn * e25
+    D = c * F - a
+    rho = (b - F) / D
+    d_a = (b - F) / D ** 2
+    d_b = 1.0 / D
+    d_c = -(b - F) * F / D ** 2
+    d_Gn = (a - b * c) / D ** 2 * e25
+    return rho, (d_a, d_b, d_c, d_Gn)
+
+
+def calibrar_minimos_cuadrados(frecs, patrones, max_iter=60, tol=1e-12, verbose=False):
+    """
+    Calibracion redundante de la sonda por cuadrados minimos.
+
+    Parametros
+    ----------
+    frecs : array_like
+        Frecuencias en Hz.
+    patrones : list[dict]
+        Uno por patron medido, con las claves:
+          'nombre' : str (para diagnosticos)
+          'S11'    : array complejo medido, en las mismas `frecs`
+          'er'     : array complejo con la permitividad teorica del patron
+                     YA evaluada en `frecs` y a su temperatura, o None si
+                     el patron es el CORTOCIRCUITO
+          'peso'   : float opcional (default 1). Peso relativo de ese
+                     patron en el ajuste.
+        Hacen falta al menos 4 patrones (4 incognitas complejas). Tipico:
+        corto, aire, agua, metanol, ciclohexano, ...
+    max_iter, tol :
+        Control del Levenberg-Marquardt (se hace una corrida por
+        frecuencia, todas en paralelo).
+    verbose : bool
+        Imprime un resumen de la convergencia y de los residuos.
+
+    Retorna
+    -------
+    dict con:
+      'a', 'b', 'c', 'Gn' : arrays complejos, uno por frecuencia
+      'nombres'           : lista de nombres de los patrones
+      'residuos'          : dict {nombre: array |rho_med - rho_modelo|}
+      'residuo_rms'       : array, rms sobre patrones, por frecuencia
+      'grados_libertad'   : 2*N - 8 (reales). 0 = solucion exacta, sin
+                            redundancia (y residuos nulos)
+      'iteraciones'       : array de iteraciones usadas por frecuencia
+      'convergio'         : array bool por frecuencia
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    nf = frecs.size
+    npat = len(patrones)
+    if npat < 4:
+        raise ValueError(
+            f"La calibracion por cuadrados minimos necesita al menos 4 patrones "
+            f"(hay {npat}): son 4 incognitas complejas por frecuencia.")
+
+    nombres = [pt.get('nombre', f"patron {k + 1}") for k, pt in enumerate(patrones)]
+    rho = np.array([np.asarray(pt['S11'], dtype=complex) for pt in patrones])      # (npat, nf)
+    ers = [None if pt.get('er') is None else np.asarray(pt['er'], dtype=complex)
+           for pt in patrones]
+    w = np.sqrt(np.array([float(pt.get('peso', 1.0)) for pt in patrones]))          # (npat,)
+
+    # --- 1) Arranque con Gn = 0: bilineal lineal en (a, b, c) -------------
+    #   dielectrico: a*rho + b - er*rho*c = er      corto: rho*c = -1
+    A = np.zeros((nf, npat, 3), dtype=complex)
+    y = np.zeros((nf, npat), dtype=complex)
+    for k in range(npat):
+        if ers[k] is None:
+            A[:, k, 2] = rho[k]
+            y[:, k] = -1.0
+        else:
+            A[:, k, 0] = rho[k]
+            A[:, k, 1] = 1.0
+            A[:, k, 2] = -ers[k] * rho[k]
+            y[:, k] = ers[k]
+    A *= w[None, :, None]
+    y *= w[None, :]
+    p = np.zeros((nf, 4), dtype=complex)
+    for n in range(nf):
+        sol, *_ = np.linalg.lstsq(A[n], y[n], rcond=None)
+        p[n, :3] = sol
+    # p[:, 3] (Gn) arranca en 0
+
+    # --- 2) Levenberg-Marquardt en paralelo sobre todas las frecuencias ---
+    def _residuos_y_jac(pp):
+        r = np.zeros((nf, npat), dtype=complex)
+        J = np.zeros((nf, npat, 4), dtype=complex)
+        for k in range(npat):
+            rm, dm = _rho_modelo((pp[:, 0], pp[:, 1], pp[:, 2], pp[:, 3]), ers[k])
+            r[:, k] = w[k] * (rho[k] - rm)
+            J[:, k, :] = w[k] * np.stack(np.broadcast_arrays(*dm), axis=-1)
+        return r, J
+
+    lam = np.full(nf, 1e-3)
+    iteraciones = np.zeros(nf, dtype=int)
+    convergio = np.zeros(nf, dtype=bool)
+    r, J = _residuos_y_jac(p)
+    costo = np.sum(np.abs(r) ** 2, axis=1)
+    for it in range(max_iter):
+        activos = ~convergio
+        if not np.any(activos):
+            break
+        # escalado de columnas (Marquardt): hace comparables a (a, b, c)
+        # con Gn, que tienen escalas MUY distintas.
+        esc = np.sqrt(np.sum(np.abs(J) ** 2, axis=1))            # (nf, 4)
+        esc[esc == 0] = 1.0
+        Js = J / esc[:, None, :]
+        JhJ = np.einsum('nki,nkj->nij', Js.conj(), Js)
+        Jhr = np.einsum('nki,nk->ni', Js.conj(), r)
+        M = JhJ + lam[:, None, None] * np.eye(4)[None]
+        try:
+            # el [..., None] hace falta en numpy >= 2: sin eso, solve()
+            # interpreta el vector apilado (nf, 4) como una matriz
+            paso_s = np.linalg.solve(M, Jhr[..., None])[..., 0]
+        except np.linalg.LinAlgError:
+            paso_s = np.array([np.linalg.lstsq(M[n], Jhr[n], rcond=None)[0] for n in range(nf)])
+        paso = paso_s / esc
+        p_nuevo = p + np.where(activos[:, None], paso, 0)
+        r_n, J_n = _residuos_y_jac(p_nuevo)
+        costo_n = np.sum(np.abs(r_n) ** 2, axis=1)
+        mejora = (costo_n <= costo) & activos
+        p[mejora] = p_nuevo[mejora]
+        r[mejora] = r_n[mejora]; J[mejora] = J_n[mejora]
+        rel = np.abs(costo[mejora] - costo_n[mejora]) / np.maximum(costo[mejora], 1e-300)
+        tam = np.linalg.norm(paso_s[mejora], axis=1)
+        costo[mejora] = costo_n[mejora]
+        lam[mejora] = np.maximum(lam[mejora] / 3.0, 1e-12)
+        lam[activos & ~mejora] *= 4.0
+        iteraciones[activos] += 1
+        idx = np.where(mejora)[0]
+        listo = (rel < tol) | (tam < 1e-10) | (costo[idx] < 1e-28)
+        convergio[idx[listo]] = True
+        convergio |= lam > 1e10   # estancado: ya no puede mejorar
+
+    # --- 3) Diagnostico: residuo de cada patron --------------------------
+    residuos = {}
+    for k in range(npat):
+        rm, _ = _rho_modelo((p[:, 0], p[:, 1], p[:, 2], p[:, 3]), ers[k])
+        residuos[nombres[k]] = np.abs(rho[k] - rm)
+    residuo_rms = np.sqrt(np.mean(np.array(list(residuos.values())) ** 2, axis=0))
+
+    if verbose:
+        print(f"  [cuadrados minimos] {npat} patrones, {2 * npat - 8} grados de libertad; "
+              f"convergio en {int(np.sum(convergio))}/{nf} frecuencias "
+              f"(max {int(iteraciones.max())} iteraciones).")
+        for nom, res in residuos.items():
+            print(f"      residuo rms de '{nom}': {np.sqrt(np.mean(res ** 2)):.2e} (en S11)")
+
+    return {
+        'a': p[:, 0], 'b': p[:, 1], 'c': p[:, 2], 'Gn': p[:, 3],
+        'nombres': nombres, 'residuos': residuos, 'residuo_rms': residuo_rms,
+        'grados_libertad': 2 * npat - 8,
+        'iteraciones': iteraciones, 'convergio': convergio,
+    }
+
+
+def reajustar_abc_con_gn_fijo(frecs, patrones, Gn_fijo, calibracion_base=None, verbose=False):
+    """
+    Dado un vector `Gn_fijo` (por ejemplo el `Gn` acondicionado mediante
+    tapering, transicion cuadratica o cero clamping), reajusta los
+    coeficientes bilineales (a, b, c):
+      - En las frecuencias donde `Gn_fijo` coincide con `calibracion_base['Gn']`
+        (zona no modificada por el acondicionamiento), conserva exactamente
+        los `(a, b, c)` de `calibracion_base`.
+      - En las frecuencias donde `Gn` fue modificado por el acondicionamiento,
+        resuelve el sistema bilineal lineal por cuadrados minimos para (a, b, c)
+        con F_k = er_k + Gn_fijo * er_k^(5/2), evitando que un reajuste no lineal
+        en bajas frecuencias desplace el polo c hacia la region dielectrica.
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    Gn_fijo = np.asarray(Gn_fijo, dtype=complex)
+    nf = frecs.size
+    npat = len(patrones)
+
+    nombres = [pt.get('nombre', f"patron {k + 1}") for k, pt in enumerate(patrones)]
+    rho = np.array([np.asarray(pt['S11'], dtype=complex) for pt in patrones])
+    ers = [None if pt.get('er') is None else np.asarray(pt['er'], dtype=complex)
+           for pt in patrones]
+    w = np.sqrt(np.array([float(pt.get('peso', 1.0)) for pt in patrones]))
+
+    A = np.zeros((nf, npat, 3), dtype=complex)
+    y = np.zeros((nf, npat), dtype=complex)
+    for k in range(npat):
+        if ers[k] is None:
+            A[:, k, 2] = rho[k]
+            y[:, k] = -1.0
+        else:
+            Fk = ers[k] + Gn_fijo * (ers[k] ** 2.5)
+            A[:, k, 0] = rho[k]
+            A[:, k, 1] = 1.0
+            A[:, k, 2] = -Fk * rho[k]
+            y[:, k] = Fk
+    A *= w[None, :, None]
+    y *= w[None, :]
+    abc = np.zeros((nf, 3), dtype=complex)
+    if calibracion_base is not None and 'Gn' in calibracion_base:
+        gn_orig = np.asarray(calibracion_base['Gn'], dtype=complex)
+        sin_cambio = np.abs(Gn_fijo - gn_orig) <= 1e-15 * np.maximum(np.abs(gn_orig), 1.0)
+    else:
+        sin_cambio = np.zeros(nf, dtype=bool)
+
+    for n in range(nf):
+        if sin_cambio[n]:
+            abc[n, 0] = calibracion_base['a'][n]
+            abc[n, 1] = calibracion_base['b'][n]
+            abc[n, 2] = calibracion_base['c'][n]
+        else:
+            sol, *_ = np.linalg.lstsq(A[n], y[n], rcond=None)
+            abc[n] = sol
+
+    residuos = {}
+    for k in range(npat):
+        rm, _ = _rho_modelo((abc[:, 0], abc[:, 1], abc[:, 2], Gn_fijo), ers[k])
+        residuos[nombres[k]] = np.abs(rho[k] - rm)
+    residuo_rms = np.sqrt(np.mean(np.array(list(residuos.values())) ** 2, axis=0))
+
+    if verbose:
+        n_reaj = int(np.sum(~sin_cambio))
+        print(f"  [cuadrados minimos - reajuste (a,b,c) con Gn acondicionado] "
+              f"reajustado linealmente en {n_reaj}/{nf} frecuencias.")
+
+    return {
+        'a': abc[:, 0], 'b': abc[:, 1], 'c': abc[:, 2], 'Gn': Gn_fijo,
+        'nombres': nombres, 'residuos': residuos, 'residuo_rms': residuo_rms,
+        'grados_libertad': 2 * npat - 8,
+        'iteraciones': np.zeros(nf, dtype=int),
+        'convergio': np.ones(nf, dtype=bool),
+    }
+
+
+def get_er_DUT_minimos_cuadrados(frecs, S11_medido, calibracion, verbose=False,
+                                 estrategia_semilla='minimo_gn'):
+    """
+    Permitividad del DUT a partir de una calibracion hecha con
+    `calibrar_minimos_cuadrados` (o `reajustar_abc_con_gn_fijo`).
+
+    Con (a, b, c, Gn) ya ajustados, el S11 medido da directamente
+    F = (a*rho + b)/(c*rho + 1), y er sale de resolver er + Gn*er^(5/2) = F,
+    o sea el mismo polinomio en u = sqrt(er) que el metodo completo:
+    Gn*u^5 + u^2 - F = 0, con la misma marcha en frecuencia para elegir la
+    raiz fisica. La semilla de arranque es F misma (la solucion con Gn = 0).
+
+    Con exactamente 4 patrones (corto, aire, patron 3, patron 4) el
+    resultado coincide con `get_er_DUT_completo`.
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    rho = np.asarray(S11_medido, dtype=complex)
+    a, b, c, Gn = (calibracion[k] for k in ('a', 'b', 'c', 'Gn'))
+    F = (a * rho + b) / (c * rho + 1.0)
+    return _marchar_en_frecuencia(frecs, Gn, -F, F, estrategia_semilla,
+                                  verbose=verbose, etiqueta="minimos_cuadrados")
+
+
+def validacion_cruzada_minimos_cuadrados(frecs, patrones, cfg_acond=None):
+    """
+    Chequeo de CONSISTENCIA de una calibracion redundante, "dejando uno
+    afuera": para cada patron liquido se calibra con TODOS LOS DEMAS y se
+    mide el patron que quedo afuera como si fuera una muestra desconocida.
+
+    Si `cfg_acond` tiene `'habilitado': True`, aplica el mismo acondicionamiento
+    sobre el `Gn` obtenido en cada sub-calibracion y reajusta linealmente/LM
+    `(a, b, c)` antes de predecir la permitividad del patron excluido.
+
+    Retorna
+    -------
+    dict {nombre: {'er_predicho', 'er_teorico', 'modelo', 'residuo_resto'}}
+    """
+    resultado = {}
+    if len(patrones) < 5:
+        return resultado
+    acond_activo = bool(cfg_acond and cfg_acond.get('habilitado', False))
+    for k, pt in enumerate(patrones):
+        if pt.get('er') is None or pt.get('es_aire'):
+            continue
+        resto = [q for j, q in enumerate(patrones) if j != k]
+        cal = calibrar_minimos_cuadrados(frecs, resto)
+        if acond_activo:
+            tipo_acond = cfg_acond.get('tipo', 'transicion_polinomica_cero')
+            modo_acond = cfg_acond.get('modo', 'automatico')
+            f1_acond = float(cfg_acond.get('f1_ghz', 0.0) or 0.0) * 1e9
+            f2_acond = float(cfg_acond.get('f2_ghz', 0.5) or 0.5) * 1e9
+            umbral_acond = float(cfg_acond.get('umbral_pct', 30.0) or 30.0)
+            gn_ac, _ = acondicionar_gn(
+                frecs, cal['Gn'], modo=modo_acond, tipo=tipo_acond,
+                f1=f1_acond, f2=f2_acond, umbral_pct=umbral_acond)
+            cal = reajustar_abc_con_gn_fijo(frecs, resto, gn_ac, calibracion_base=cal)
+        er_pred = get_er_DUT_minimos_cuadrados(frecs, pt['S11'], cal)
+        er_teo = np.asarray(pt['er'], dtype=complex)
+        resultado[pt.get('nombre', f"patron {k + 1}")] = {
+            'er_predicho': er_pred,
+            'er_teorico': er_teo,
+            'modelo': pt.get('modelo'),
+            'residuo_resto': float(np.sqrt(np.mean(cal['residuo_rms'] ** 2))),
+        }
+    return resultado
+
 
 
 def _diagnosticar_saltos(frecs, Er_out, salto_relativo_max=0.5):
@@ -440,6 +815,27 @@ def _diagnosticar_saltos(frecs, Er_out, salto_relativo_max=0.5):
 # numeros complejos: tiraba TypeError). Se deja el alias para no romper
 # notebooks/scripts previos que la llamaban `get_er_setup`.
 get_er_setup = get_er_DUT_completo
+
+
+def error_absoluto(Er_medido, Er_teorico):
+    """
+    Error absoluto de la parte real e imaginaria de la permitividad
+    medida respecto de la curva teorica, punto a punto:
+      err_real = |Re(Er_medido) - Re(Er_teorico)|
+      err_imag = |Im(Er_medido) - Im(Er_teorico)|
+
+    Retorna
+    -------
+    (error_real, error_imag) : tupla de ndarrays float con el error absoluto
+    (adimensional, en las mismas unidades de la permitividad).
+    """
+    Er_medido = np.asarray(Er_medido, dtype=complex)
+    Er_teorico = np.asarray(Er_teorico, dtype=complex)
+
+    err_real = np.abs(np.real(Er_medido) - np.real(Er_teorico))
+    err_imag = np.abs(np.imag(Er_medido) - np.imag(Er_teorico))
+
+    return err_real, err_imag
 
 
 def error_relativo_porcentual(Er_medido, Er_teorico):
@@ -486,3 +882,237 @@ def error_relativo_porcentual(Er_medido, Er_teorico):
               out=err_imag, where=(ref_imag != 0))
 
     return err_real, err_imag
+
+
+# ===========================================================================
+# ACONDICIONAMIENTO DE Gn (EN TESTEO / DESARROLLO)
+# ===========================================================================
+# Herramientas para acondicionar la conductancia normalizada Gn(f) a bajas
+# frecuencias. Diseñado para mitigar divergencias o ruido de medicion sin
+# alterar la zona de alta frecuencia donde el modelo de radiacion es critico.
+#
+# Metodos disponibles:
+#   - 'cero_clamping'             : anula a 0 por debajo de una frecuencia.
+#   - 'transicion_polinomica_cero': transicion cuadratica suave (f^2) entre
+#                                   f1 (donde Gn=0) y f2 (Gn original en f2),
+#                                   garantizando monotonicidad y sin sobrepicos.
+#   - 'tapering'                  : desvanecimiento suave a 0 multiplicando
+#                                   por una ventana coseno alzada en [f1, f2].
+# ===========================================================================
+
+def _detectar_frecuencia_disparo(frecs, gn, umbral_pct=30.0):
+    """
+    Recorre el barrido en frecuencia de forma DESCENDENTE (desde la frecuencia
+    mas alta hacia la mas baja) y detecta el primer salto relativo |Delta(Gn)| / |Gn|
+    que supere `umbral_pct`.
+
+    Retorna
+    -------
+    (f_disparo, idx_disparo) o (None, None) si no se detecto ninguna variacion
+    superior al umbral.
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    gn = np.asarray(gn, dtype=complex)
+    umbral_frac = float(umbral_pct) / 100.0
+
+    for i in range(len(frecs) - 1, 0, -1):
+        denominador = float(np.abs(gn[i]))
+        if denominador == 0.0:
+            denominador = 1e-15  # Resguardo unico si el punto de referencia vale exactamente cero
+
+        salto_relativo = float(np.abs(gn[i - 1] - gn[i])) / denominador
+        if salto_relativo > umbral_frac:
+            return frecs[i], i
+
+    return None, None
+
+
+def _aplicar_cero_clamping(frecs, gn, f_corte):
+    """
+    Anula abruptamente Gn(f) a 0 para toda frecuencia f <= f_corte.
+    """
+    gn_mod = np.copy(gn)
+    mascara_corte = frecs <= f_corte
+    gn_mod[mascara_corte] = 0.0 + 0.0j
+    return gn_mod
+
+
+def _aplicar_transicion_polinomica_cero(frecs, gn, f1, f2):
+    """
+    Reemplaza Gn en el intervalo [f1, f2] por una ley de potencia cuadratica
+    (polinomio de grado 2, proporcional a f^2), modelando el comportamiento
+    asintotico de la radiacion de la apertura coaxial a baja frecuencia:
+      - En f <= f1 : Gn = 0 (cero absoluto)
+      - En f1 < f < f2 : Gn(f) = Gn(f2) * ((f - f1)/(f2 - f1))^2
+        (crecimiento cuadratico monótono, derivada cero en f1, sin sobrepicos)
+      - En f >= f2 : Gn original
+
+    Garantiza monotonicidad estricta en el modulo (|Gn| <= |Gn(f2)|) y
+    elimina cualquier sobrepico u oscilacion artificial debida a ruido.
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    gn_mod = np.copy(gn)
+
+    if f2 <= f1:
+        return gn_mod
+
+    # 1. Zona f <= f1 (cero absoluto)
+    gn_mod[frecs <= f1] = 0.0 + 0.0j
+
+    # 2. Localizar punto de empalme f2
+    idx2 = int(np.argmin(np.abs(frecs - f2)))
+    val_f2 = gn[idx2]
+
+    # 3. Transicion cuadratica suave (proporcional a f^2) en (f1, f2)
+    mascara_transicion = (frecs > f1) & (frecs < f2)
+    if np.any(mascara_transicion):
+        delta_f = f2 - f1
+        tau = (frecs[mascara_transicion] - f1) / delta_f  # Normalizado en (0, 1)
+        gn_mod[mascara_transicion] = val_f2 * (tau ** 2)
+
+    return gn_mod
+
+
+def _aplicar_tapering(frecs, gn, f1, f2):
+    """
+    Aplica una ventana suave de desvanecimiento (coseno alzado / semi-Hann)
+    sobre Gn(f) entre f1 y f2:
+      - f <= f1     : w = 0 -> Gn = 0
+      - f1 < f < f2 : w = 0.5 * (1 - cos(pi * (f - f1) / (f2 - f1)))
+      - f >= f2     : w = 1 -> Gn original
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    gn_mod = np.copy(gn)
+
+    if f2 <= f1:
+        return gn_mod
+
+    gn_mod[frecs <= f1] = 0.0 + 0.0j
+
+    mascara_transicion = (frecs > f1) & (frecs < f2)
+    if np.any(mascara_transicion):
+        tau = (frecs[mascara_transicion] - f1) / (f2 - f1)
+        w = 0.5 * (1.0 - np.cos(np.pi * tau))
+        gn_mod[mascara_transicion] = gn[mascara_transicion] * w
+
+    return gn_mod
+
+
+def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_cero',
+                     f1=None, f2=None, umbral_pct=30.0):
+    """
+    Acondiciona el vector de conductancia normalizada Gn(f) segun el metodo
+    y modo seleccionados.
+
+    Parametros
+    ----------
+    frecs : array_like float
+        Vector de frecuencias en Hz.
+    gn : array_like complex
+        Vector complejo de Gn(f) obtenido con `calcular_Gn`.
+    modo : {'automatico', 'manual'}, opcional (default 'automatico')
+        - 'automatico': busca de forma descendente en frecuencia la primera
+          discontinuidad |Delta(Gn)| / |Gn| > umbral_pct para determinar la
+          frecuencia de corte/empalme. En metodos de transicion, toma
+          f1 como la frecuencia minima del archivo (frecs[0]).
+        - 'manual': utiliza las frecuencias explicitas pasadas en `f1` y `f2`.
+    tipo : {'cero_clamping', 'transicion_polinomica_cero', 'tapering'}, opcional
+        - 'cero_clamping': anula Gn = 0 por debajo de la frecuencia de corte.
+        - 'transicion_polinomica_cero': sustituye el tramo [f1, f2] por una
+          ley de potencia cuadratica (proporcional a f^2), suave y monotona.
+        - 'tapering': modula suavemente el Gn existente mediante ventana de
+          coseno alzado hacia 0 en [f1, f2].
+    f1 : float, opcional
+        Frecuencia inicial donde Gn=0 (Hz). En automatico se fija en la frecuencia minima del archivo.
+    f2 : float, opcional
+        Frecuencia final de empalme con el Gn original (Hz), o frecuencia de corte
+        para 'cero_clamping'.
+    umbral_pct : float, opcional (default 30.0)
+        Porcentaje de variacion relativa para el detector automatico de disparo.
+
+    Retorna
+    -------
+    gn_acondicionado : ndarray complex
+        Vector de Gn acondicionado.
+    info : dict
+        Metadatos de la operacion ('tipo', 'modo', 'disparo_detectado',
+        'f1_aplicada', 'f2_aplicada', 'f_corte_aplicada', 'aviso').
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    gn = np.asarray(gn, dtype=complex)
+
+    tipos_validos = ('cero_clamping', 'transicion_polinomica_cero', 'tapering')
+    if tipo not in tipos_validos:
+        raise ValueError(f"Tipo '{tipo}' no valido. Debe ser uno de {tipos_validos}.")
+
+    modos_validos = ('automatico', 'manual')
+    if modo not in modos_validos:
+        raise ValueError(f"Modo '{modo}' no valido. Debe ser uno de {modos_validos}.")
+
+    info = {
+        'tipo': tipo,
+        'modo': modo,
+        'disparo_detectado': None,
+        'f1_aplicada': None,
+        'f2_aplicada': None,
+        'f_corte_aplicada': None,
+        'aviso': None,
+    }
+
+    if modo == 'automatico':
+        f_disp, idx_disp = _detectar_frecuencia_disparo(frecs, gn, umbral_pct=umbral_pct)
+        if f_disp is None:
+            info['disparo_detectado'] = False
+            info['aviso'] = (
+                f"[aviso] No se detecto ninguna variacion relativa mayor al "
+                f"{umbral_pct:.1f}% en Gn. Se mantuvo la curva original intacta."
+            )
+            print(info['aviso'])
+            return np.copy(gn), info
+
+        info['disparo_detectado'] = True
+
+        if tipo == 'cero_clamping':
+            f_corte = f_disp
+            info['f_corte_aplicada'] = f_corte
+            gn_out = _aplicar_cero_clamping(frecs, gn, f_corte)
+        else:
+            # En automatico: f1 se fija en la frecuencia minima del archivo (frecs[0])
+            # y f2 en la frecuencia de disparo detectada
+            f1_eff = float(frecs[0])
+            f2_eff = f_disp
+            info['f1_aplicada'] = f1_eff
+            info['f2_aplicada'] = f2_eff
+            if tipo == 'transicion_polinomica_cero':
+                gn_out = _aplicar_transicion_polinomica_cero(frecs, gn, f1_eff, f2_eff)
+            else:
+                gn_out = _aplicar_tapering(frecs, gn, f1_eff, f2_eff)
+
+        return gn_out, info
+
+    else:  # modo == 'manual'
+        info['disparo_detectado'] = True
+        if tipo == 'cero_clamping':
+            f_corte = f2 if f2 is not None else (f1 if f1 is not None else frecs[0])
+            info['f_corte_aplicada'] = float(f_corte)
+            gn_out = _aplicar_cero_clamping(frecs, gn, f_corte)
+        else:
+            f1_eff = 0.0 if f1 is None else float(f1)
+            f2_eff = float(frecs[-1]) if f2 is None else float(f2)
+
+            if f2_eff <= f1_eff:
+                info['aviso'] = (
+                    f"[aviso] f2 ({f2_eff/1e9:.3f} GHz) debe ser mayor que f1 "
+                    f"({f1_eff/1e9:.3f} GHz). Se mantuvo la curva original intacta."
+                )
+                print(info['aviso'])
+                return np.copy(gn), info
+
+            info['f1_aplicada'] = f1_eff
+            info['f2_aplicada'] = f2_eff
+            if tipo == 'transicion_polinomica_cero':
+                gn_out = _aplicar_transicion_polinomica_cero(frecs, gn, f1_eff, f2_eff)
+            else:
+                gn_out = _aplicar_tapering(frecs, gn, f1_eff, f2_eff)
+
+        return gn_out, info
