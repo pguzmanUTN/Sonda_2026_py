@@ -87,82 +87,73 @@ def _generar_preview_s11(ruta_s1p, log_x=True):
 
 def _generar_preview_gn(frecs, Gn, Gn_acondicionado=None, log_x=True, info_acond=None):
     """
-    Genera dos Figures de matplotlib (modulo y fase) para la vista previa
+    Genera dos Figures de matplotlib (parte real y parte imaginaria) para la vista previa
     interactiva de Gn(f) en la pestaña 'Vista previa S11'.
     """
     from matplotlib.figure import Figure
-    from matplotlib.ticker import FormatStrFormatter
 
-    fig_mag = Figure(figsize=(6, 5))
-    ax_mag = fig_mag.subplots(1, 1)
+    fig_re = Figure(figsize=(6, 5))
+    ax_re = fig_re.subplots(1, 1)
 
-    fig_fase = Figure(figsize=(6, 5))
-    ax_fase = fig_fase.subplots(1, 1)
+    fig_im = Figure(figsize=(6, 5))
+    ax_im = fig_im.subplots(1, 1)
 
-    mag_Gn = np.abs(Gn)
-    fase_Gn = np.degrees(np.unwrap(np.angle(Gn)))
+    re_Gn = np.real(Gn)
+    im_Gn = np.imag(Gn)
     tiene_acond = Gn_acondicionado is not None
 
     if tiene_acond:
-        mag_Gn_acond = np.abs(Gn_acondicionado)
-        fase_Gn_acond = np.degrees(np.unwrap(np.angle(Gn_acondicionado)))
+        re_Gn_acond = np.real(Gn_acondicionado)
+        im_Gn_acond = np.imag(Gn_acondicionado)
 
-        # Alinear la fase del Gn acondicionado en multiplos enteros de 360 grados
-        # para que coincida exactamente con la rama del Gn original en alta frecuencia:
-        if len(fase_Gn) > 0 and len(fase_Gn_acond) > 0:
-            idx_comp = int(len(fase_Gn) * 0.7)
-            offset = np.median(fase_Gn_acond[idx_comp:] - fase_Gn[idx_comp:])
-            k = np.round(offset / 360.0)
-            fase_Gn_acond = fase_Gn_acond - k * 360.0
+        ax_re.plot(frecs / 1e9, re_Gn, linewidth=1.4, color='#777777', linestyle='--',
+                   label="Re(Gn) Original", zorder=3)
+        ax_re.plot(frecs / 1e9, re_Gn_acond, linewidth=1.8, color='tab:purple',
+                   label="Re(Gn) Acondicionado", zorder=4)
 
-        ax_mag.plot(frecs / 1e9, mag_Gn, linewidth=1.4, color='#777777', linestyle='--',
-                    label="|Gn(f)| Original", zorder=3)
-        ax_mag.plot(frecs / 1e9, mag_Gn_acond, linewidth=1.8, color='tab:purple',
-                    label="|Gn(f)| Acondicionado", zorder=4)
-
-        ax_fase.plot(frecs / 1e9, fase_Gn, linewidth=1.4, color='#777777', linestyle='--',
-                     label="Fase Original", zorder=3)
-        ax_fase.plot(frecs / 1e9, fase_Gn_acond, linewidth=1.8, color='tab:purple',
-                     label="Fase Acondicionada", zorder=4)
+        ax_im.plot(frecs / 1e9, im_Gn, linewidth=1.4, color='#777777', linestyle='--',
+                   label="Im(Gn) Original", zorder=3)
+        ax_im.plot(frecs / 1e9, im_Gn_acond, linewidth=1.8, color='tab:purple',
+                   label="Im(Gn) Acondicionado", zorder=4)
     else:
-        ax_mag.plot(frecs / 1e9, mag_Gn, linewidth=1.6, color='tab:purple',
-                    label="|Gn(f)|", zorder=3)
-        ax_fase.plot(frecs / 1e9, fase_Gn, linewidth=1.6, color='tab:purple',
-                    label="Fase Gn(f)", zorder=3)
+        ax_re.plot(frecs / 1e9, re_Gn, linewidth=1.6, color='tab:purple',
+                   label="Re(Gn)", zorder=3)
+        ax_im.plot(frecs / 1e9, im_Gn, linewidth=1.6, color='tab:purple',
+                   label="Im(Gn)", zorder=3)
 
     if info_acond and info_acond.get('disparo_detectado'):
         f_disp = info_acond.get('f2_aplicada') or info_acond.get('f_corte_aplicada')
         if f_disp is not None and f_disp > 0:
             f_disp_ghz = f_disp / 1e9
             lbl_trans = f"Empalme/Corte: {f_disp_ghz:.3f} GHz"
-            ax_mag.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
-                           label=lbl_trans, zorder=2)
-            ax_fase.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
-                            label=lbl_trans, zorder=2)
+            ax_re.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
+                          label=lbl_trans, zorder=2)
+            ax_im.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
+                          label=lbl_trans, zorder=2)
 
     if log_x:
-        ax_mag.set_xscale('log')
-        ax_fase.set_xscale('log')
+        ax_re.set_xscale('log')
+        ax_im.set_xscale('log')
 
-    ax_mag.set_xlabel("Frecuencia (GHz)")
-    ax_mag.set_ylabel("|Gn|")
-    ax_mag.set_title("Conductancia normalizada |Gn(f)|")
-    ax_mag.minorticks_on()
-    ax_mag.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
-    ax_mag.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
-    ax_mag.legend(loc='best', framealpha=0.9, fontsize=8)
+    ax_re.set_xlabel("Frecuencia (GHz)")
+    ax_re.set_ylabel("Re(Gn)")
+    ax_re.set_title("Conductancia normalizada Re(Gn)")
+    ax_re.minorticks_on()
+    ax_re.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_re.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    ax_re.legend(loc='best', framealpha=0.9, fontsize=8)
 
-    ax_fase.set_xlabel("Frecuencia (GHz)")
-    ax_fase.set_ylabel("Fase Gn (\u00b0)")
-    ax_fase.set_title("Fase de Gn(f)")
-    ax_fase.minorticks_on()
-    ax_fase.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-    ax_fase.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
-    ax_fase.legend(loc='best', framealpha=0.9, fontsize=8)
+    ax_im.set_xlabel("Frecuencia (GHz)")
+    ax_im.set_ylabel("Im(Gn)")
+    ax_im.set_title("Conductancia normalizada Im(Gn)")
+    ax_im.minorticks_on()
+    ax_im.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_im.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    ax_im.legend(loc='best', framealpha=0.9, fontsize=8)
 
-    fig_mag.tight_layout()
-    fig_fase.tight_layout()
-    return fig_mag, fig_fase
+    fig_re.tight_layout()
+    fig_im.tight_layout()
+    return fig_re, fig_im
 
 
 # ===========================================================================
@@ -2038,7 +2029,7 @@ class AppPermitividad(tk.Tk):
                 gn_acond_plot = gn_acond
 
             log_x = bool(cfg.get('escala_log_frecuencia', True))
-            fig_mag, fig_fase = _generar_preview_gn(
+            fig_re, fig_im = _generar_preview_gn(
                 frecs_plot, gn_plot, Gn_acondicionado=gn_acond_plot, log_x=log_x,
                 info_acond=info_acond)
 
@@ -2047,10 +2038,10 @@ class AppPermitividad(tk.Tk):
                 f"No se pudo calcular la vista previa de Gn(f):\n{exc}")
             return
 
-        self.frm_preview_s11_magfase.configure(text="Conductancia normalizada |Gn(f)|")
-        self.frm_preview_s11_smith.configure(text="Fase de Gn(f) (grados)")
-        self.visor_preview_s11_magfase.mostrar(fig_mag)
-        self.visor_preview_s11_smith.mostrar(fig_fase)
+        self.frm_preview_s11_magfase.configure(text="Conductancia normalizada Re(Gn)")
+        self.frm_preview_s11_smith.configure(text="Conductancia normalizada Im(Gn)")
+        self.visor_preview_s11_magfase.mostrar(fig_re)
+        self.visor_preview_s11_smith.mostrar(fig_im)
 
         texto_status = (
             f"[Calibracion] Conductancia normalizada Gn(f) \u2014 {len(frecs_plot)} puntos, "
@@ -2220,11 +2211,21 @@ class AppPermitividad(tk.Tk):
         frm_preview.columnconfigure(0, weight=1)
         frm_preview.rowconfigure(1, weight=1)
 
+        frm_preview_top = ttk.Frame(frm_preview)
+        frm_preview_top.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+        frm_preview_top.columnconfigure(0, weight=1)
+
         self.var_figura_seleccionada = tk.StringVar()
-        self.combo_figuras = ttk.Combobox(frm_preview, textvariable=self.var_figura_seleccionada,
+        self.combo_figuras = ttk.Combobox(frm_preview_top, textvariable=self.var_figura_seleccionada,
                                            state="readonly", values=[])
-        self.combo_figuras.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+        self.combo_figuras.grid(row=0, column=0, sticky="ew")
         self.combo_figuras.bind("<<ComboboxSelected>>", lambda _e: self._mostrar_preview_seleccionada())
+
+        self.var_limitar_eje_y = tk.BooleanVar(value=True)
+        chk_lim_y = ttk.Checkbutton(frm_preview_top, text="Limitar eje Y a teórica",
+                                    variable=self.var_limitar_eje_y,
+                                    command=self._al_cambiar_limitar_eje_y)
+        chk_lim_y.grid(row=0, column=1, padx=(10, 0))
 
         # El S11 (modulo/fase y Smith) de calibracion y materiales se ve en
         # la pestaña "3. Vista previa S11" -- ahi ademas se puede ver antes
@@ -2232,6 +2233,10 @@ class AppPermitividad(tk.Tk):
         # ANALISIS en si (permitividad medida vs. teorica).
         self.visor_preview = VisorFigura(frm_preview)
         self.visor_preview.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+
+    def _al_cambiar_limitar_eje_y(self):
+        if hasattr(self, '_resultado_analisis') and self._resultado_analisis:
+            self._mostrar_figuras_disponibles(self._figuras_desde_resultado(self._resultado_analisis))
 
     def _examinar_carpeta_salida(self):
         ruta = filedialog.askdirectory(title="Carpeta de salida", parent=self)
@@ -2695,6 +2700,7 @@ class AppPermitividad(tk.Tk):
             'f_err_int1_ghz': float(self._obtener_double(self.var_f_err_int1, 2.0)),
             'f_err_int2_ghz': float(self._obtener_double(self.var_f_err_int2, 4.0)),
             'escala_log_frecuencia': bool(self.var_log_x.get()),
+            'limitar_eje_y': bool(self.var_limitar_eje_y.get()) if hasattr(self, 'var_limitar_eje_y') else True,
             'curvas_comparacion': copy.deepcopy(self._curvas_comparar),
             'curvas_modelos': copy.deepcopy(self._curvas_modelos),
         }
@@ -2747,6 +2753,8 @@ class AppPermitividad(tk.Tk):
         self.var_f_err_int1.set(float(config.get('f_err_int1_ghz', 2.0) or 2.0))
         self.var_f_err_int2.set(float(config.get('f_err_int2_ghz', 4.0) or 4.0))
         self.var_log_x.set(bool(config.get('escala_log_frecuencia', True)))
+        if hasattr(self, 'var_limitar_eje_y'):
+            self.var_limitar_eje_y.set(bool(config.get('limitar_eje_y', True)))
         self._curvas_comparar = copy.deepcopy(config.get('curvas_comparacion', []) or [])
         self._refrescar_tabla_comparar()
         self._graficar_comparacion_curvas()
@@ -3028,23 +3036,27 @@ class AppPermitividad(tk.Tk):
         que ya vienen en el resultado ('datos_grafico'/'datos_grafico_Gn'
         -- ver `procesar_material` y `ejecutar_analisis` en
         analisis_permitividad.py) -- no hace falta releer ningun .png."""
+        self._resultado_analisis = resultado
+        limitar_y = bool(self.var_limitar_eje_y.get()) if hasattr(self, 'var_limitar_eje_y') else True
         graficos = {}
         chequeo = resultado.get('chequeo_calibracion') or {}
         if chequeo.get('datos_grafico'):
             etiqueta_p3 = chequeo.get('etiqueta_patron3') or "patron 3"
             d = chequeo['datos_grafico']
             graficos[f"Chequeo de calibracion ({etiqueta_p3})"] = (
-                lambda d=d: ap.graficar_comparacion(
+                lambda d=d, ly=limitar_y: ap.graficar_comparacion(
                     d['frecs'], d['medido'], d['teorico'], d['titulo'], log_x=d['log_x'],
-                    etiqueta_teorico=d.get('etiqueta_teorico', "Teorico (Debye)")))
+                    etiqueta_teorico=d.get('etiqueta_teorico', "Teorico (Debye)"),
+                    limitar_eje_y=ly))
         chequeo_p4 = chequeo.get('patron4')
         if chequeo_p4 and chequeo_p4.get('datos_grafico'):
             etiqueta_p4 = chequeo.get('etiqueta_patron4') or "patron 4"
             d4 = chequeo_p4['datos_grafico']
             graficos[f"Chequeo de calibracion ({etiqueta_p4})"] = (
-                lambda d4=d4: ap.graficar_comparacion(
+                lambda d4=d4, ly=limitar_y: ap.graficar_comparacion(
                     d4['frecs'], d4['medido'], d4['teorico'], d4['titulo'], log_x=d4['log_x'],
-                    etiqueta_teorico=d4.get('etiqueta_teorico', "Teorico (Debye)")))
+                    etiqueta_teorico=d4.get('etiqueta_teorico', "Teorico (Debye)"),
+                    limitar_eje_y=ly))
         if chequeo.get('datos_grafico_Gn'):
             dg = chequeo['datos_grafico_Gn']
             graficos["Diagnostico: Gn(f) (calibracion)"] = (
@@ -3059,19 +3071,13 @@ class AppPermitividad(tk.Tk):
                 lambda dmc=dmc: ap.graficar_residuos_minimos_cuadrados(
                     dmc['frecs'], dmc['residuos'], log_x=dmc['log_x']))
         for r in resultado.get('resultados_materiales', []):
-            # Ojo: antes tambien se listaban aca "<material> - S11
-            # (modulo/fase)" y "<material> - S11 (Smith)". Se sacaron
-            # porque ahora esa vista existe en la pestaña "3. Vista previa
-            # S11" (y ahi ademas se puede ver ANTES de correr el analisis,
-            # leyendo el .s1p directo). Esta lista queda solo con lo que es
-            # resultado del ANALISIS en si: la permitividad medida vs.
-            # teorica de cada material, y el chequeo de calibracion.
             if r.get('datos_grafico'):
                 d = r['datos_grafico']
                 graficos[r['nombre']] = (
-                    lambda d=d: ap.graficar_comparacion(
+                    lambda d=d, ly=limitar_y: ap.graficar_comparacion(
                         d['frecs'], d['medido'], d['teorico'], d['titulo'], log_x=d['log_x'],
-                        etiqueta_teorico=d.get('etiqueta_teorico', "Teorico (Debye)")))
+                        etiqueta_teorico=d.get('etiqueta_teorico', "Teorico (Debye)"),
+                        limitar_eje_y=ly))
         return graficos
 
     def _mostrar_figuras_disponibles(self, graficos):

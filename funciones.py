@@ -903,8 +903,10 @@ def error_relativo_porcentual(Er_medido, Er_teorico):
 def _detectar_frecuencia_disparo(frecs, gn, umbral_pct=30.0):
     """
     Recorre el barrido en frecuencia de forma DESCENDENTE (desde la frecuencia
-    mas alta hacia la mas baja) y detecta el primer salto relativo |Delta(Gn)| / |Gn|
-    que supere `umbral_pct`.
+    mas alta hacia la mas baja) y detecta el primer salto relativo que supere
+    `umbral_pct`, evaluando independientemente la parte real e imaginaria de Gn:
+      |Delta(Re)| / max(|Re|, piso_re) > umbral_frac  o
+      |Delta(Im)| / max(|Im|, piso_im) > umbral_frac
 
     Retorna
     -------
@@ -912,16 +914,29 @@ def _detectar_frecuencia_disparo(frecs, gn, umbral_pct=30.0):
     superior al umbral.
     """
     frecs = np.asarray(frecs, dtype=float)
-    gn = np.asarray(gn, dtype=complex)
+    gn_re = np.real(gn)
+    gn_im = np.imag(gn)
     umbral_frac = float(umbral_pct) / 100.0
 
-    for i in range(len(frecs) - 1, 0, -1):
-        denominador = float(np.abs(gn[i]))
-        if denominador == 0.0:
-            denominador = 1e-15  # Resguardo unico si el punto de referencia vale exactamente cero
+    # Escalas de referencia para evitar division por cero o cerca de cero
+    escala_re = float(np.median(np.abs(gn_re))) if len(gn_re) > 0 else 1.0
+    if escala_re <= 0:
+        escala_re = 1e-12
+    escala_im = float(np.median(np.abs(gn_im))) if len(gn_im) > 0 else 1.0
+    if escala_im <= 0:
+        escala_im = 1e-12
 
-        salto_relativo = float(np.abs(gn[i - 1] - gn[i])) / denominador
-        if salto_relativo > umbral_frac:
+    piso_re = 0.1 * escala_re
+    piso_im = 0.1 * escala_im
+
+    for i in range(len(frecs) - 1, 0, -1):
+        den_re = max(abs(float(gn_re[i])), piso_re)
+        den_im = max(abs(float(gn_im[i])), piso_im)
+
+        salto_re = abs(float(gn_re[i - 1] - gn_re[i])) / den_re
+        salto_im = abs(float(gn_im[i - 1] - gn_im[i])) / den_im
+
+        if salto_re > umbral_frac or salto_im > umbral_frac:
             return frecs[i], i
 
     return None, None
@@ -929,73 +944,88 @@ def _detectar_frecuencia_disparo(frecs, gn, umbral_pct=30.0):
 
 def _aplicar_cero_clamping(frecs, gn, f_corte):
     """
-    Anula abruptamente Gn(f) a 0 para toda frecuencia f <= f_corte.
+    Anula a 0 tanto la parte real como la parte imaginaria de Gn(f)
+    para toda frecuencia f <= f_corte.
     """
-    gn_mod = np.copy(gn)
+    frecs = np.asarray(frecs, dtype=float)
+    gn_re = np.real(gn).copy()
+    gn_im = np.imag(gn).copy()
+
     mascara_corte = frecs <= f_corte
-    gn_mod[mascara_corte] = 0.0 + 0.0j
-    return gn_mod
+    gn_re[mascara_corte] = 0.0
+    gn_im[mascara_corte] = 0.0
+
+    return gn_re + 1j * gn_im
 
 
 def _aplicar_transicion_polinomica_cero(frecs, gn, f1, f2):
     """
-    Reemplaza Gn en el intervalo [f1, f2] por una ley de potencia cuadratica
-    (polinomio de grado 2, proporcional a f^2), modelando el comportamiento
-    asintotico de la radiacion de la apertura coaxial a baja frecuencia:
-      - En f <= f1 : Gn = 0 (cero absoluto)
-      - En f1 < f < f2 : Gn(f) = Gn(f2) * ((f - f1)/(f2 - f1))^2
-        (crecimiento cuadratico monótono, derivada cero en f1, sin sobrepicos)
-      - En f >= f2 : Gn original
-
-    Garantiza monotonicidad estricta en el modulo (|Gn| <= |Gn(f2)|) y
-    elimina cualquier sobrepico u oscilacion artificial debida a ruido.
+    Reemplaza la parte real e imaginaria de Gn en el intervalo [f1, f2] por una
+    ley de potencia cuadratica (polinomio de grado 2, proporcional a f^2),
+    modelando el comportamiento asintotico de la radiacion de la apertura coaxial
+    a baja frecuencia:
+      - En f <= f1 : Re(Gn) = 0, Im(Gn) = 0 (cero absoluto)
+      - En f1 < f < f2 :
+          Re(Gn)(f) = Re(Gn(f2)) * ((f - f1)/(f2 - f1))^2
+          Im(Gn)(f) = Im(Gn(f2)) * ((f - f1)/(f2 - f1))^2
+        (crecimiento cuadratico monotono, derivada cero en f1, sin sobrepicos)
+      - En f >= f2 : Re(Gn) e Im(Gn) originales
     """
     frecs = np.asarray(frecs, dtype=float)
-    gn_mod = np.copy(gn)
+    gn_re = np.real(gn).copy()
+    gn_im = np.imag(gn).copy()
 
     if f2 <= f1:
-        return gn_mod
+        return np.asarray(gn, dtype=complex)
 
     # 1. Zona f <= f1 (cero absoluto)
-    gn_mod[frecs <= f1] = 0.0 + 0.0j
+    gn_re[frecs <= f1] = 0.0
+    gn_im[frecs <= f1] = 0.0
 
     # 2. Localizar punto de empalme f2
     idx2 = int(np.argmin(np.abs(frecs - f2)))
-    val_f2 = gn[idx2]
+    re_f2 = float(gn_re[idx2])
+    im_f2 = float(gn_im[idx2])
 
     # 3. Transicion cuadratica suave (proporcional a f^2) en (f1, f2)
     mascara_transicion = (frecs > f1) & (frecs < f2)
     if np.any(mascara_transicion):
         delta_f = f2 - f1
         tau = (frecs[mascara_transicion] - f1) / delta_f  # Normalizado en (0, 1)
-        gn_mod[mascara_transicion] = val_f2 * (tau ** 2)
+        factor = tau ** 2
+        gn_re[mascara_transicion] = re_f2 * factor
+        gn_im[mascara_transicion] = im_f2 * factor
 
-    return gn_mod
+    return gn_re + 1j * gn_im
 
 
 def _aplicar_tapering(frecs, gn, f1, f2):
     """
     Aplica una ventana suave de desvanecimiento (coseno alzado / semi-Hann)
-    sobre Gn(f) entre f1 y f2:
-      - f <= f1     : w = 0 -> Gn = 0
-      - f1 < f < f2 : w = 0.5 * (1 - cos(pi * (f - f1) / (f2 - f1)))
-      - f >= f2     : w = 1 -> Gn original
+    sobre la parte real e imaginaria de Gn(f) entre f1 y f2:
+      - f <= f1     : Re(Gn) = 0, Im(Gn) = 0
+      - f1 < f < f2 : Re(Gn) = Re(Gn) * w, Im(Gn) = Im(Gn) * w
+                      donde w = 0.5 * (1 - cos(pi * (f - f1) / (f2 - f1)))
+      - f >= f2     : Re(Gn) e Im(Gn) originales
     """
     frecs = np.asarray(frecs, dtype=float)
-    gn_mod = np.copy(gn)
+    gn_re = np.real(gn).copy()
+    gn_im = np.imag(gn).copy()
 
     if f2 <= f1:
-        return gn_mod
+        return np.asarray(gn, dtype=complex)
 
-    gn_mod[frecs <= f1] = 0.0 + 0.0j
+    gn_re[frecs <= f1] = 0.0
+    gn_im[frecs <= f1] = 0.0
 
     mascara_transicion = (frecs > f1) & (frecs < f2)
     if np.any(mascara_transicion):
         tau = (frecs[mascara_transicion] - f1) / (f2 - f1)
         w = 0.5 * (1.0 - np.cos(np.pi * tau))
-        gn_mod[mascara_transicion] = gn[mascara_transicion] * w
+        gn_re[mascara_transicion] = gn_re[mascara_transicion] * w
+        gn_im[mascara_transicion] = gn_im[mascara_transicion] * w
 
-    return gn_mod
+    return gn_re + 1j * gn_im
 
 
 def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_cero',

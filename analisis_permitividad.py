@@ -410,7 +410,7 @@ def _copiar_insumos(carpeta_datos, archivos_calibracion, materiales, carpeta_des
 
 
 def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_salida=None,
-                          log_x=True, etiqueta_teorico="Teorico (Debye)"):
+                          log_x=True, etiqueta_teorico="Teorico (Debye)", limitar_eje_y=True):
     """
     Grafica parte real e imaginaria: curva medida (una o varias) y, si se
     conoce, la curva teorica de referencia.
@@ -441,6 +441,11 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
         ciclohexano, silicona) no tienen ecuacion de relajacion, asi que
         etiquetarlos como "Debye" seria engañoso. `procesar_material`
         pasa la etiqueta que corresponde a cada modelo.
+    limitar_eje_y : bool, opcional (default True)
+        Si es True, y algun trace de medicion excede el rango
+        [curva_teorica_min - 1, curva_teorica_max + 1], limita el eje Y
+        a dicho intervalo para evitar distorsiones. Si es False, se deja
+        el autoescalado por defecto de matplotlib.
     """
     from matplotlib.figure import Figure
     fig = Figure(figsize=(9, 7))
@@ -467,6 +472,42 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
     ax_im.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
     ax_im.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
     ax_im.legend()
+
+    # Limitar rango del eje Y si algun trace de las calibraciones excede
+    # el intervalo [curva_teorica_min - 1, curva_teorica_max + 1].
+    # En caso contrario (o si limitar_eje_y es False), se preserva el autoescalado natural de matplotlib.
+    if limitar_eje_y and er_teorico is not None:
+        # 1. Parte real (ax_re)
+        teo_re = np.real(er_teorico)
+        valid_teo_re = teo_re[np.isfinite(teo_re)]
+        if len(valid_teo_re) > 0:
+            lim_inf_re = float(np.min(valid_teo_re)) - 1.0
+            lim_sup_re = float(np.max(valid_teo_re)) + 1.0
+            excede_re = False
+            for er in er_medido_dict.values():
+                v = np.real(er)
+                v_valid = v[np.isfinite(v)]
+                if len(v_valid) > 0 and (np.min(v_valid) < lim_inf_re or np.max(v_valid) > lim_sup_re):
+                    excede_re = True
+                    break
+            if excede_re:
+                ax_re.set_ylim(lim_inf_re, lim_sup_re)
+
+        # 2. Parte imaginaria (ax_im)
+        teo_im = np.imag(er_teorico)
+        valid_teo_im = teo_im[np.isfinite(teo_im)]
+        if len(valid_teo_im) > 0:
+            lim_inf_im = float(np.min(valid_teo_im)) - 1.0
+            lim_sup_im = float(np.max(valid_teo_im)) + 1.0
+            excede_im = False
+            for er in er_medido_dict.values():
+                v = np.imag(er)
+                v_valid = v[np.isfinite(v)]
+                if len(v_valid) > 0 and (np.min(v_valid) < lim_inf_im or np.max(v_valid) > lim_sup_im):
+                    excede_im = True
+                    break
+            if excede_im:
+                ax_im.set_ylim(lim_inf_im, lim_sup_im)
 
     if log_x and frecs.size > 0 and np.all(frecs > 0):
         ax_re.set_xscale('log')
@@ -517,90 +558,72 @@ def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True, marcas_inicio=None,
     """
     from matplotlib.figure import Figure
     fig = Figure(figsize=(9, 6))
-    ax_mag, ax_fase = fig.subplots(2, 1, sharex=True)
+    ax_re, ax_im = fig.subplots(2, 1, sharex=True)
 
-    mag_Gn = np.abs(Gn)
-    # np.angle() sola da la fase "envuelta" en (-180, 180]; con np.unwrap
-    # se corrigen los saltos artificiales de +-360 grados, igual que se
-    # hace con la fase de S11 en Touchstone.graficar_s11_mag_fase.
-    fase_Gn = np.degrees(np.unwrap(np.angle(Gn)))
+    re_Gn = np.real(Gn)
+    im_Gn = np.imag(Gn)
 
     tiene_marcas = bool(marcas_inicio)
     tiene_acond = Gn_acondicionado is not None
 
     if tiene_acond:
-        mag_Gn_acond = np.abs(Gn_acondicionado)
-        fase_Gn_acond = np.degrees(np.unwrap(np.angle(Gn_acondicionado)))
+        re_Gn_acond = np.real(Gn_acondicionado)
+        im_Gn_acond = np.imag(Gn_acondicionado)
 
-        # Alinear la fase del Gn acondicionado en multiplos enteros de 360 grados
-        # para que coincida exactamente con la rama del Gn original en alta frecuencia:
-        if len(fase_Gn) > 0 and len(fase_Gn_acond) > 0:
-            idx_comp = int(len(fase_Gn) * 0.7)
-            offset = np.median(fase_Gn_acond[idx_comp:] - fase_Gn[idx_comp:])
-            k = np.round(offset / 360.0)
-            fase_Gn_acond = fase_Gn_acond - k * 360.0
+        ax_re.plot(frecs / 1e9, re_Gn, linewidth=1.4, color='#777777', linestyle='--',
+                   label="Re(Gn) Original", zorder=3)
+        ax_re.plot(frecs / 1e9, re_Gn_acond, linewidth=1.8, color='tab:purple',
+                   label="Re(Gn) Acondicionado", zorder=4)
 
-        ax_mag.plot(frecs / 1e9, mag_Gn, linewidth=1.4, color='#777777', linestyle='--',
-                    label="|Gn(f)| Original", zorder=3)
-        ax_mag.plot(frecs / 1e9, mag_Gn_acond, linewidth=1.8, color='tab:purple',
-                    label="|Gn(f)| Acondicionado", zorder=4)
-
-        ax_fase.plot(frecs / 1e9, fase_Gn, linewidth=1.4, color='#777777', linestyle='--',
-                     label="Fase Original", zorder=3)
-        ax_fase.plot(frecs / 1e9, fase_Gn_acond, linewidth=1.8, color='tab:purple',
-                     label="Fase Acondicionada", zorder=4)
+        ax_im.plot(frecs / 1e9, im_Gn, linewidth=1.4, color='#777777', linestyle='--',
+                   label="Im(Gn) Original", zorder=3)
+        ax_im.plot(frecs / 1e9, im_Gn_acond, linewidth=1.8, color='tab:purple',
+                   label="Im(Gn) Acondicionado", zorder=4)
     else:
-        ax_mag.plot(frecs / 1e9, mag_Gn, linewidth=1.6, color='tab:purple',
-                    label="|Gn(f)|" if tiene_marcas else None, zorder=3)
-        ax_fase.plot(frecs / 1e9, fase_Gn, linewidth=1.6, color='tab:purple',
-                     label="Fase Gn(f)" if tiene_marcas else None, zorder=3)
+        ax_re.plot(frecs / 1e9, re_Gn, linewidth=1.6, color='tab:purple',
+                   label="Re(Gn)" if tiene_marcas else None, zorder=3)
+        ax_im.plot(frecs / 1e9, im_Gn, linewidth=1.6, color='tab:purple',
+                   label="Im(Gn)" if tiene_marcas else None, zorder=3)
 
-    ax_mag.set_ylabel("|Gn|")
-    ax_mag.set_title("Conductancia normalizada Gn(f) \u2014 diagnostico de calibracion")
-    ax_mag.minorticks_on()
-    ax_mag.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
-    ax_mag.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    ax_re.set_ylabel("Re(Gn)")
+    ax_re.set_title("Conductancia normalizada Gn(f) \u2014 diagnostico de calibracion")
+    ax_re.minorticks_on()
+    ax_re.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_re.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
 
-    ax_fase.set_xlabel("Frecuencia (GHz)")
-    ax_fase.set_ylabel("Fase Gn (\u00b0)")
-    ax_fase.minorticks_on()
-    # Sin esto, cuando la fase varia muy poco en todo el barrido (queda
-    # casi constante), matplotlib intenta ser "util" agregando una
-    # notacion de offset+escala en la esquina que queda superpuesta y
-    # dificil de leer (p.ej. "1e-11-9e1"). Se fuerza un formato de numero
-    # llano con 2 decimales (de sobra para fase en grados) en vez de
-    # offset automatico o precision de punto flotante completa.
-    ax_fase.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-    ax_fase.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
-    ax_fase.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    ax_im.set_xlabel("Frecuencia (GHz)")
+    ax_im.set_ylabel("Im(Gn)")
+    ax_im.minorticks_on()
+    ax_im.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_im.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
 
     if marcas_inicio:
         colores_marca = ['#d62728', '#2ca02c', '#ff7f0e']
         for i, (etiqueta, f_hz) in enumerate(marcas_inicio.items()):
             color = colores_marca[i % len(colores_marca)]
             f_ghz = f_hz / 1e9
-            ax_mag.axvline(f_ghz, color=color, linestyle='--', linewidth=1.4,
-                            label=f"Arranque: {etiqueta}", zorder=2)
-            ax_fase.axvline(f_ghz, color=color, linestyle='--', linewidth=1.4,
-                             label=f"Arranque: {etiqueta}", zorder=2)
+            ax_re.axvline(f_ghz, color=color, linestyle='--', linewidth=1.4,
+                          label=f"Arranque: {etiqueta}", zorder=2)
+            ax_im.axvline(f_ghz, color=color, linestyle='--', linewidth=1.4,
+                          label=f"Arranque: {etiqueta}", zorder=2)
 
     if info_acond and info_acond.get('disparo_detectado'):
         f_disp = info_acond.get('f2_aplicada') or info_acond.get('f_corte_aplicada')
         if f_disp is not None and f_disp > 0:
             f_disp_ghz = f_disp / 1e9
             lbl_trans = f"Empalme/Corte: {f_disp_ghz:.3f} GHz"
-            ax_mag.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
-                           label=lbl_trans, zorder=2)
-            ax_fase.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
-                            label=lbl_trans, zorder=2)
+            ax_re.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
+                          label=lbl_trans, zorder=2)
+            ax_im.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
+                          label=lbl_trans, zorder=2)
 
     if tiene_marcas or tiene_acond:
-        ax_mag.legend(fontsize=8)
-        ax_fase.legend(fontsize=8)
+        ax_re.legend(fontsize=8)
+        ax_im.legend(fontsize=8)
 
     if log_x and frecs.size > 0 and np.all(frecs > 0):
-        ax_mag.set_xscale('log')
-        ax_fase.set_xscale('log')
+        ax_re.set_xscale('log')
+        ax_im.set_xscale('log')
 
     fig.tight_layout()
     if archivo_salida is not None:
@@ -1099,7 +1122,8 @@ def procesar_material(material, carpeta_datos, cache, frecs,
                        comparar_gn=False,
                        intervalos_error=None,
                        calibracion_mc=None,
-                       calibracion_mc_acond=None):
+                       calibracion_mc_acond=None,
+                       limitar_eje_y=True):
     """Procesa una entrada de MATERIALES: lee su .s1p, calcula la
     permitividad con los metodos indicados, grafica (contra la curva
     teorica si se conoce, o solo lo medido si no), exporta CSV y devuelve
@@ -1212,7 +1236,8 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     etiq_teorico = etiqueta_curva_teorica(modelo)
 
     graficar_comparacion(f_r, resultados_r, er_teo_r, titulo, ruta_figura,
-                          log_x=log_x, etiqueta_teorico=etiq_teorico)
+                          log_x=log_x, etiqueta_teorico=etiq_teorico,
+                          limitar_eje_y=limitar_eje_y)
 
     # S11 medido (crudo, previo a la conversion a permitividad): modulo+fase
     # y diagrama de Smith, en el mismo recorte de frecuencias y la misma
@@ -1382,6 +1407,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     log(f"  Intervalos de error para el informe: " +
         ", ".join([f"[{fa/1e9:.2f} - {fb/1e9:.2f}] GHz" for fa, fb in intervalos_error]))
     log_x = config.get('escala_log_frecuencia', ESCALA_LOG_FRECUENCIA)
+    limitar_eje_y = bool(config.get('limitar_eje_y', True))
     materiales = config['materiales']
     archivos_cal = dict(config['archivos_calibracion'])
     if not usar_metodo_completo:
@@ -1644,6 +1670,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         ruta_figura_p3,
         log_x=log_x,
         etiqueta_teorico=etiq_teorico_p3,
+        limitar_eje_y=limitar_eje_y,
     )
     chequeo_calibracion = {
         'figura': ruta_figura_p3,
@@ -1657,6 +1684,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             'titulo': f"{etiqueta_p3}: chequeo de calibracion (medido vs. teorico)",
             'log_x': log_x,
             'etiqueta_teorico': etiq_teorico_p3,
+            'limitar_eje_y': limitar_eje_y,
         },
     }
 
@@ -1706,6 +1734,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             ruta_figura_p4,
             log_x=log_x,
             etiqueta_teorico=etiq_teorico_p4,
+            limitar_eje_y=limitar_eje_y,
         )
         chequeo_calibracion['patron4'] = {
             'figura': ruta_figura_p4,
@@ -1717,6 +1746,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
                 'titulo': f"{etiqueta_p4}: chequeo de calibracion (medido vs. teorico)",
                 'log_x': log_x,
                 'etiqueta_teorico': etiq_teorico_p4,
+                'limitar_eje_y': limitar_eje_y,
             },
         }
 
@@ -1779,6 +1809,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             intervalos_error=intervalos_error,
             calibracion_mc=calibracion_mc,
             calibracion_mc_acond=calibracion_mc_acond,
+            limitar_eje_y=limitar_eje_y,
         )
         if resultado is not None:
             resultados_materiales.append(resultado)

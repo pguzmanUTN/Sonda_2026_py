@@ -29,6 +29,7 @@ import queue
 import threading
 import contextlib
 import traceback
+from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -46,7 +47,7 @@ from matplotlib.ticker import FormatStrFormatter
 
 import Patrones as P
 import gui_funciones as gf
-from analisis_permitividad import graficar_comparacion, graficar_Gn
+from analisis_permitividad import graficar_comparacion, graficar_Gn, _slug
 from combinatoria.analisis_combinatoria import ejecutar_analisis_combinatoria, filtrar_combinaciones_redundantes
 from combinatoria.reporte_combinatoria_pdf import generar_reporte_combinatoria_pdf, generar_reporte_combinacion_pdf
 
@@ -187,13 +188,30 @@ class VisorFigura(ttk.Frame):
 # ===========================================================================
 # Diálogo para agregar / editar candidato
 # ===========================================================================
+def generar_alias_defecto(nombre: str) -> str:
+    """
+    Genera el alias por defecto (máximo 3 letras, primera en mayúscula):
+    - Si el nombre consta de 2 o más palabras separadas por espacios,
+      usa las primeras 3 letras de la segunda palabra.
+    - Si consta de 1 palabra, usa las primeras 3 letras de esa palabra.
+    """
+    if not nombre:
+        return ""
+    palabras = nombre.strip().split()
+    if len(palabras) >= 2:
+        palabra = palabras[1]
+    else:
+        palabra = palabras[0]
+    return palabra[:3].capitalize()
+
+
 class DialogoCandidato(tk.Toplevel):
     def __init__(self, master, candidato=None, carpeta_datos=""):
         super().__init__(master)
         self.resultado = None
         self.carpeta_datos = carpeta_datos
         candidato = candidato or {
-            'nombre': '', 'archivo': '', 'modelo': 'agua', 'temperatura': 25.0, 'habilitado': True
+            'nombre': '', 'alias': '', 'archivo': '', 'modelo': 'agua', 'temperatura': 25.0, 'habilitado': True
         }
 
         self.title("Agregar candidato a patrón" if not candidato.get('nombre') else
@@ -207,7 +225,26 @@ class DialogoCandidato(tk.Toplevel):
 
         ttk.Label(frm, text="Nombre:").grid(row=0, column=0, sticky="w", pady=4)
         self.var_nombre = tk.StringVar(value=candidato.get('nombre', ''))
-        ttk.Entry(frm, textvariable=self.var_nombre, width=34).grid(row=0, column=1, columnspan=3, sticky="ew", pady=4)
+        entry_nom = ttk.Entry(frm, textvariable=self.var_nombre, width=22)
+        entry_nom.grid(row=0, column=1, sticky="ew", pady=4)
+
+        ttk.Label(frm, text="Alias (máx 3):").grid(row=0, column=2, sticky="w", padx=(8, 4), pady=4)
+        alias_inicial = candidato.get('alias') or generar_alias_defecto(self.var_nombre.get())
+        self.var_alias = tk.StringVar(value=alias_inicial)
+        self._alias_editado_manual = bool(candidato.get('alias'))
+        entry_alias = ttk.Entry(frm, textvariable=self.var_alias, width=8)
+        entry_alias.grid(row=0, column=3, sticky="w", pady=4)
+
+        def _al_teclear_alias(_e):
+            self._alias_editado_manual = True
+
+        entry_alias.bind("<Key>", _al_teclear_alias)
+
+        def _al_cambiar_nombre(*_):
+            if not self._alias_editado_manual:
+                self.var_alias.set(generar_alias_defecto(self.var_nombre.get()))
+
+        self.var_nombre.trace_add("write", _al_cambiar_nombre)
 
         ttk.Label(frm, text="Archivo .s1p:").grid(row=1, column=0, sticky="w", pady=4)
         self.var_archivo = tk.StringVar(value=candidato.get('archivo', ''))
@@ -252,7 +289,10 @@ class DialogoCandidato(tk.Toplevel):
             self.var_archivo.set(_normalizar_ruta_s1p(ruta, self.carpeta_datos))
             if not self.var_nombre.get().strip():
                 base = os.path.splitext(os.path.basename(ruta))[0]
-                self.var_nombre.set(base.replace('_', ' ').capitalize())
+                nom = base.replace('_', ' ').capitalize()
+                self.var_nombre.set(nom)
+                if not self._alias_editado_manual:
+                    self.var_alias.set(generar_alias_defecto(nom))
 
     def _guardar(self):
         nombre = self.var_nombre.get().strip()
@@ -264,6 +304,13 @@ class DialogoCandidato(tk.Toplevel):
         if not archivo:
             messagebox.showwarning("Falta archivo", "Seleccioná el archivo .s1p correspondiente.", parent=self)
             return
+
+        alias = self.var_alias.get().strip()[:3]
+        if not alias:
+            alias = generar_alias_defecto(nombre)
+        else:
+            alias = alias.capitalize()
+
         try:
             temp = float(self.var_temperatura.get())
         except (ValueError, tk.TclError):
@@ -271,6 +318,7 @@ class DialogoCandidato(tk.Toplevel):
 
         self.resultado = {
             'nombre': nombre,
+            'alias': alias,
             'archivo': archivo,
             'modelo': modelo,
             'temperatura': temp,
@@ -302,13 +350,27 @@ class AppCombinatoria(tk.Tk):
         self._mapa_display_a_combo_id = {}
         self._combo_id_activo = None
 
+        self.var_limitar_y_tab2 = tk.BooleanVar(value=True)
+        self.var_limitar_y_tab3 = tk.BooleanVar(value=True)
+        self.var_filtro_palabra_combo = tk.StringVar(value="")
+        self.var_filtro_liquido_combo = tk.StringVar(value="Todos")
+        self.var_comparar_activo = tk.BooleanVar(value=False)
+        self.var_combo_b_seleccionada = tk.StringVar(value="")
+        self._combo_id_b_activo = None
+        self._todas_opciones_combos = []
+
+        self.var_carpeta_salida = tk.StringVar(value=r"..\salidas")
+        self.var_guardar_fechayhora = tk.BooleanVar(value=True)
+        self.var_exportar_imagenes_csv = tk.BooleanVar(value=True)
+        self._ultima_carpeta_salida = None
+
         self._candidatos = [
-            {'nombre': "Agua", 'archivo': "agua.s1p", 'modelo': "agua", 'temperatura': 25.0, 'habilitado': True},
-            {'nombre': "Alcohol etilico", 'archivo': "etanol.s1p", 'modelo': "alcohol_etilico", 'temperatura': 25.0, 'habilitado': True},
-            {'nombre': "Alcohol isopropilico", 'archivo': "isopropilico.s1p", 'modelo': "alcohol_isopropilico", 'temperatura': 25.0, 'habilitado': True},
-            {'nombre': "Butanol", 'archivo': "butanol.s1p", 'modelo': "butanol", 'temperatura': 25.0, 'habilitado': True},
-            {'nombre': "Ciclohexano", 'archivo': "ciclohexano.s1p", 'modelo': "ciclohexano", 'temperatura': 25.0, 'habilitado': True},
-            {'nombre': "Acetona", 'archivo': "acetona.s1p", 'modelo': "acetona", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Agua", 'alias': "Agu", 'archivo': "agua.s1p", 'modelo': "agua", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Alcohol etilico", 'alias': "Eti", 'archivo': "etanol.s1p", 'modelo': "alcohol_etilico", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Alcohol isopropilico", 'alias': "Iso", 'archivo': "isopropilico.s1p", 'modelo': "alcohol_isopropilico", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Butanol", 'alias': "But", 'archivo': "butanol.s1p", 'modelo': "butanol", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Ciclohexano", 'alias': "Cic", 'archivo': "ciclohexano.s1p", 'modelo': "ciclohexano", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Acetona", 'alias': "Ace", 'archivo': "acetona.s1p", 'modelo': "acetona", 'temperatura': 25.0, 'habilitado': True},
         ]
 
         self._construir_estilos()
@@ -395,6 +457,17 @@ class AppCombinatoria(tk.Tk):
         self.var_f_int2 = tk.DoubleVar(value=4.0)
         ttk.Spinbox(frm_ints, from_=0.001, to=50, increment=0.1, textvariable=self.var_f_int2, width=7).pack(side="left", padx=(4, 0))
         _tooltip(frm_ints, "Define 3 intervalos contiguos [F_min, F_int1], [F_int1, F_int2] y [F_int2, F_max] para evaluar el error ponderado.")
+
+        ttk.Label(lf_base, text="Carpeta de salida:").grid(row=5, column=0, sticky="w", pady=(6, 3))
+        ttk.Entry(lf_base, textvariable=self.var_carpeta_salida).grid(row=5, column=1, columnspan=2, sticky="ew", pady=(6, 3))
+        ttk.Button(lf_base, text="Examinar...", command=self._examinar_carpeta_salida).grid(row=5, column=3, padx=(4, 0), pady=(6, 3))
+
+        frm_salida_opts = ttk.Frame(lf_base)
+        frm_salida_opts.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        ttk.Checkbutton(frm_salida_opts, text=r"Guardar en ..\salidas\fechayhora",
+                        variable=self.var_guardar_fechayhora).pack(side="left")
+        ttk.Checkbutton(frm_salida_opts, text="Exportar figuras y .csv",
+                        variable=self.var_exportar_imagenes_csv).pack(side="left", padx=(10, 0))
 
         # Panel Superior Derecho: Métodos y Acondicionamiento
         lf_metodos = ttk.LabelFrame(f, text="Métodos de Cálculo y Acondicionamiento Gn", padding=8)
@@ -484,21 +557,23 @@ class AppCombinatoria(tk.Tk):
         lf_cand.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=6)
         lf_cand.columnconfigure(0, weight=1)
 
-        cols = ("hab", "nombre", "archivo", "existe", "modelo", "temp")
+        cols = ("hab", "alias", "nombre", "archivo", "existe", "modelo", "temp")
         self.tree_cand = ttk.Treeview(lf_cand, columns=cols, show="headings", height=6, selectmode="browse")
         self.tree_cand.heading("hab", text="Activo")
+        self.tree_cand.heading("alias", text="Alias")
         self.tree_cand.heading("nombre", text="Nombre")
         self.tree_cand.heading("archivo", text="Archivo .s1p")
         self.tree_cand.heading("existe", text="Estado")
         self.tree_cand.heading("modelo", text="Modelo Teórico")
         self.tree_cand.heading("temp", text="T (°C)")
 
-        self.tree_cand.column("hab", width=55, anchor="center")
-        self.tree_cand.column("nombre", width=160, anchor="w")
-        self.tree_cand.column("archivo", width=230, anchor="w")
+        self.tree_cand.column("hab", width=50, anchor="center")
+        self.tree_cand.column("alias", width=55, anchor="center")
+        self.tree_cand.column("nombre", width=155, anchor="w")
+        self.tree_cand.column("archivo", width=220, anchor="w")
         self.tree_cand.column("existe", width=60, anchor="center")
-        self.tree_cand.column("modelo", width=200, anchor="w")
-        self.tree_cand.column("temp", width=70, anchor="center")
+        self.tree_cand.column("modelo", width=190, anchor="w")
+        self.tree_cand.column("temp", width=65, anchor="center")
 
         self.tree_cand.grid(row=0, column=0, sticky="nsew")
         sc_cand = ttk.Scrollbar(lf_cand, orient="vertical", command=self.tree_cand.yview)
@@ -536,7 +611,8 @@ class AppCombinatoria(tk.Tk):
             frm_ctrl, text="📄 Generar Informe PDF (Top 3)...",
             state="disabled", command=self._generar_informe_pdf)
         self.btn_pdf_tab1.pack(side="left")
-        ttk.Checkbutton(frm_ctrl, text="Omitir redundantes (*)", variable=self.var_omitir_redundantes).pack(side="left", padx=(8, 4))
+        ttk.Button(frm_ctrl, text="📂 Abrir salida", command=self._abrir_carpeta_salida).pack(side="left", padx=(4, 6))
+        ttk.Checkbutton(frm_ctrl, text="Omitir redundantes (*)", variable=self.var_omitir_redundantes).pack(side="left", padx=(4, 4))
         ttk.Checkbutton(frm_ctrl, text="Excluir patrones en reporte", variable=self.var_excluir_patrones_pdf).pack(side="left", padx=(4, 4))
 
         ttk.Button(frm_ctrl, text="Guardar Config...", command=self._guardar_config).pack(side="right")
@@ -677,14 +753,53 @@ class AppCombinatoria(tk.Tk):
         carpeta = self.var_carpeta_datos.get().strip() if hasattr(self, 'var_carpeta_datos') else ""
         for i, cand in enumerate(self._candidatos):
             hab_str = "✓" if cand.get('habilitado', True) else "✗"
+            alias_str = cand.get('alias') or generar_alias_defecto(cand['nombre'])
             archivo = cand.get('archivo', '')
             ruta_completa = os.path.join(carpeta, archivo) if archivo else ""
             existe_str = "✓ OK" if (archivo and os.path.isfile(ruta_completa)) else "✗ No hallado"
             et_mod = gf.etiqueta_de_modelo(cand.get('modelo'))
             self.tree_cand.insert("", "end", iid=str(i), values=(
-                hab_str, cand['nombre'], archivo, existe_str, et_mod, f"{cand.get('temperatura', 25.0):.1f}"
+                hab_str, alias_str, cand['nombre'], archivo, existe_str, et_mod, f"{cand.get('temperatura', 25.0):.1f}"
             ))
         self._actualizar_opciones_mc_k()
+        self._actualizar_opciones_filtro_liquidos()
+
+    def _obtener_alias(self, nombre: str) -> str:
+        """Devuelve el alias de máximo 3 letras asociado a un nombre de líquido."""
+        if not nombre or nombre == "—":
+            return "—"
+        for c in self._candidatos:
+            if c.get('nombre') == nombre:
+                return c.get('alias') or generar_alias_defecto(nombre)
+        return generar_alias_defecto(nombre)
+
+    def _formatear_patrones_alias(self, c_o_item) -> str:
+        """Formatea la lista de patrones de calibración usando los alias de los líquidos."""
+        if c_o_item.get('es_mc'):
+            pat_str = c_o_item.get('patrones_str') or f"{c_o_item.get('p3', '')} + {c_o_item.get('p4', '')}"
+            partes = [p.strip() for p in pat_str.split('+')]
+            partes_alias = [self._obtener_alias(p) for p in partes]
+            return " + ".join(partes_alias)
+        else:
+            p3_alias = self._obtener_alias(c_o_item.get('p3', ''))
+            p4_val = c_o_item.get('p4')
+            if p4_val and p4_val != '—':
+                p4_alias = self._obtener_alias(p4_val)
+                return f"P3: {p3_alias} | P4: {p4_alias}"
+            return f"P3: {p3_alias}"
+
+    def _actualizar_opciones_filtro_liquidos(self):
+        """Actualiza el combobox de filtro de líquidos en Tab 3."""
+        if not hasattr(self, 'combo_filtro_liquido'):
+            return
+        vals = ["Todos"]
+        for c in self._candidatos:
+            if c.get('habilitado', True):
+                alias = c.get('alias') or generar_alias_defecto(c.get('nombre', ''))
+                vals.append(f"{c['nombre']} ({alias})")
+        self.combo_filtro_liquido.configure(values=vals)
+        if self.var_filtro_liquido_combo.get() not in vals:
+            self.var_filtro_liquido_combo.set("Todos")
 
     def _agregar_candidato(self):
         d = DialogoCandidato(self, carpeta_datos=self.var_carpeta_datos.get())
@@ -721,12 +836,12 @@ class AppCombinatoria(tk.Tk):
 
     def _cargar_candidatos_default(self):
         self._candidatos = [
-            {'nombre': "Agua", 'archivo': "agua.s1p", 'modelo': "agua", 'temperatura': 25.0, 'habilitado': True},
-            {'nombre': "Alcohol etilico", 'archivo': "etanol.s1p", 'modelo': "alcohol_etilico", 'temperatura': 25.0, 'habilitado': True},
-            {'nombre': "Alcohol isopropilico", 'archivo': "isopropilico.s1p", 'modelo': "alcohol_isopropilico", 'temperatura': 25.0, 'habilitado': True},
-            {'nombre': "Butanol", 'archivo': "butanol.s1p", 'modelo': "butanol", 'temperatura': 25.0, 'habilitado': True},
-            {'nombre': "Ciclohexano", 'archivo': "ciclohexano.s1p", 'modelo': "ciclohexano", 'temperatura': 25.0, 'habilitado': True},
-            {'nombre': "Acetona", 'archivo': "acetona.s1p", 'modelo': "acetona", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Agua", 'alias': "Agu", 'archivo': "agua.s1p", 'modelo': "agua", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Alcohol etilico", 'alias': "Eti", 'archivo': "etanol.s1p", 'modelo': "alcohol_etilico", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Alcohol isopropilico", 'alias': "Iso", 'archivo': "isopropilico.s1p", 'modelo': "alcohol_isopropilico", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Butanol", 'alias': "But", 'archivo': "butanol.s1p", 'modelo': "butanol", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Ciclohexano", 'alias': "Cic", 'archivo': "ciclohexano.s1p", 'modelo': "ciclohexano", 'temperatura': 25.0, 'habilitado': True},
+            {'nombre': "Acetona", 'alias': "Ace", 'archivo': "acetona.s1p", 'modelo': "acetona", 'temperatura': 25.0, 'habilitado': True},
         ]
         self._refrescar_tabla_candidatos()
 
@@ -771,6 +886,8 @@ class AppCombinatoria(tk.Tk):
                         command=self._al_cambiar_criterio_ranking).pack(side="left", padx=(10, 0))
         ttk.Checkbutton(frm_top, text="Excluir patrones en reporte", variable=self.var_excluir_patrones_pdf,
                         command=self._al_cambiar_criterio_ranking).pack(side="left", padx=(10, 0))
+        ttk.Checkbutton(frm_top, text="Limitar eje Y", variable=self.var_limitar_y_tab2,
+                        command=self._al_cambiar_limitar_y_tab2).pack(side="left", padx=(10, 0))
 
         self.btn_pdf_tab2 = ttk.Button(
             frm_top, text="📄 Generar Informe PDF (Top 3)...",
@@ -835,21 +952,21 @@ class AppCombinatoria(tk.Tk):
         frm_top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
 
         frm_fila1 = ttk.Frame(frm_top)
-        frm_fila1.pack(side="top", fill="x", pady=(0, 4))
+        frm_fila1.pack(side="top", fill="x", pady=(0, 3))
 
-        ttk.Label(frm_fila1, text="Combinación de Patrones:", style="Subtitulo.TLabel").pack(side="left")
+        ttk.Label(frm_fila1, text="Combinación A:", style="Subtitulo.TLabel").pack(side="left")
         self.var_combo_seleccionada = tk.StringVar()
-        self.combo_combinacion = ttk.Combobox(frm_fila1, textvariable=self.var_combo_seleccionada, state="readonly", width=55)
-        self.combo_combinacion.pack(side="left", padx=(8, 12))
+        self.combo_combinacion = ttk.Combobox(frm_fila1, textvariable=self.var_combo_seleccionada, state="readonly", width=50)
+        self.combo_combinacion.pack(side="left", padx=(6, 12))
         self.combo_combinacion.bind("<<ComboboxSelected>>", self._al_cambiar_combinacion)
 
-        ttk.Label(frm_fila1, text="Ordenar por score:").pack(side="left")
+        ttk.Label(frm_fila1, text="Ordenar:").pack(side="left")
         self.combo_orden_combos = ttk.Combobox(
             frm_fila1, textvariable=self.var_orden_combos, state="readonly",
             values=["Menor error (mejor primero)", "Mayor error (peor primero)", "Orden de cálculo"],
-            width=24
+            width=22
         )
-        self.combo_orden_combos.pack(side="left", padx=(6, 12))
+        self.combo_orden_combos.pack(side="left", padx=(4, 12))
         self.combo_orden_combos.bind("<<ComboboxSelected>>", self._al_cambiar_orden_combos)
 
         self.btn_pdf_combo = ttk.Button(
@@ -858,10 +975,37 @@ class AppCombinatoria(tk.Tk):
         )
         self.btn_pdf_combo.pack(side="right")
 
+        ttk.Button(frm_fila1, text="📂 Abrir salida", command=self._abrir_carpeta_salida).pack(side="right", padx=(0, 6))
+
         frm_fila2 = ttk.Frame(frm_top)
-        frm_fila2.pack(side="top", fill="x")
-        self.lbl_score_combo = ttk.Label(frm_fila2, text="", font=("Segoe UI", 9, "bold"), foreground="#004d40")
+        frm_fila2.pack(side="top", fill="x", pady=(2, 3))
+
+        ttk.Label(frm_fila2, text="Filtrar texto:").pack(side="left")
+        self.entry_filtro_combo = ttk.Entry(frm_fila2, textvariable=self.var_filtro_palabra_combo, width=13)
+        self.entry_filtro_combo.pack(side="left", padx=(4, 8))
+        self.var_filtro_palabra_combo.trace_add("write", lambda *_: self._filtrar_lista_combinaciones())
+
+        ttk.Label(frm_fila2, text="Líquido patrón:").pack(side="left")
+        self.combo_filtro_liquido = ttk.Combobox(frm_fila2, textvariable=self.var_filtro_liquido_combo, state="readonly", width=16)
+        self.combo_filtro_liquido.pack(side="left", padx=(4, 8))
+        self.combo_filtro_liquido.bind("<<ComboboxSelected>>", lambda *_: self._filtrar_lista_combinaciones())
+
+        ttk.Checkbutton(frm_fila2, text="Limitar eje Y", variable=self.var_limitar_y_tab3,
+                        command=self._al_cambiar_limitar_y_tab3).pack(side="left", padx=(4, 8))
+
+        ttk.Checkbutton(frm_fila2, text="Comparar con B:", variable=self.var_comparar_activo,
+                        command=self._al_toggle_comparar).pack(side="left", padx=(8, 4))
+
+        self.combo_combinacion_b = ttk.Combobox(frm_fila2, textvariable=self.var_combo_b_seleccionada, state="disabled", width=42)
+        self.combo_combinacion_b.pack(side="left", padx=(2, 4))
+        self.combo_combinacion_b.bind("<<ComboboxSelected>>", self._al_cambiar_combinacion_b)
+
+        frm_fila3 = ttk.Frame(frm_top)
+        frm_fila3.pack(side="top", fill="x", pady=(1, 0))
+        self.lbl_score_combo = ttk.Label(frm_fila3, text="", font=("Segoe UI", 9, "bold"), foreground="#004d40")
         self.lbl_score_combo.pack(side="left")
+        self.lbl_score_combo_b = ttk.Label(frm_fila3, text="", font=("Segoe UI", 9, "bold"), foreground="#6c3483")
+        self.lbl_score_combo_b.pack(side="left", padx=(24, 0))
 
         # Fila 1 izquierda: Gráfico de Gn(f) + etiqueta de transición
         lf_gn = ttk.LabelFrame(f, text="Diagnóstico de Conductancia Normalizada Gn(f)", padding=6)
@@ -1063,6 +1207,58 @@ class AppCombinatoria(tk.Tk):
         # Cambiar de pestaña al ranking automáticamente
         self.notebook.select(self.tab_ranking)
 
+    def _examinar_carpeta_salida(self):
+        actual = self.var_carpeta_salida.get().strip() or "."
+        d = filedialog.askdirectory(title="Seleccionar carpeta de salida base", initialdir=actual, parent=self)
+        if d:
+            self.var_carpeta_salida.set(d)
+
+    def _abrir_carpeta_salida(self):
+        if hasattr(self, '_ultima_carpeta_salida') and self._ultima_carpeta_salida and os.path.isdir(self._ultima_carpeta_salida):
+            gf.abrir_carpeta(self._ultima_carpeta_salida)
+            return
+        base = self.var_carpeta_salida.get().strip() or r"..\salidas"
+        if os.path.isdir(base):
+            gf.abrir_carpeta(base)
+        else:
+            messagebox.showinfo(
+                "Carpeta de salida",
+                "La carpeta de salida todavía no existe. Generá un informe primero, o creala en disco.",
+                parent=self
+            )
+
+    def _resolver_carpeta_y_archivo(self, tipo_informe="top3", nombre_sufijo=""):
+        usar_fyh = bool(self.var_guardar_fechayhora.get())
+        carpeta_base = self.var_carpeta_salida.get().strip() or r"..\salidas"
+
+        if tipo_informe == "top3":
+            nombre_pdf = f"informe_combinatoria_top3_{nombre_sufijo}.pdf"
+            titulo_dialogo = "Guardar Informe PDF de Combinatoria (Top 3 por líquido)"
+        else:
+            nombre_pdf = f"informe_combinacion_{nombre_sufijo}.pdf"
+            titulo_dialogo = "Guardar Informe PDF de la Combinación"
+
+        if usar_fyh:
+            ahora = datetime.now()
+            carpeta_dia = ahora.strftime("%Y-%m-%d")
+            carpeta_hora = ahora.strftime("%H-%M-%S")
+            carpeta_run = os.path.join(carpeta_base, carpeta_dia, carpeta_hora)
+            os.makedirs(carpeta_run, exist_ok=True)
+            ruta_pdf = os.path.join(carpeta_run, nombre_pdf)
+            return ruta_pdf, carpeta_run
+        else:
+            ruta_pdf = filedialog.asksaveasfilename(
+                title=titulo_dialogo,
+                initialfile=nombre_pdf,
+                defaultextension=".pdf",
+                parent=self,
+                filetypes=[("Documento PDF", "*.pdf"), ("Todos los archivos", "*.*")]
+            )
+            if not ruta_pdf:
+                return None, None
+            carpeta_run = os.path.dirname(os.path.abspath(ruta_pdf))
+            return ruta_pdf, carpeta_run
+
     def _generar_informe_pdf(self):
         if not self._datos_resultados or not self._ultima_config:
             messagebox.showwarning(
@@ -1081,14 +1277,7 @@ class AppCombinatoria(tk.Tk):
         elif criterio.startswith("Intervalo 3"):
             sufijo = "int3"
 
-        nombre_default = f"informe_combinatoria_top3_{sufijo}.pdf"
-        ruta_pdf = filedialog.asksaveasfilename(
-            title="Guardar Informe PDF de Combinatoria (Top 3 por líquido)",
-            initialfile=nombre_default,
-            defaultextension=".pdf",
-            parent=self,
-            filetypes=[("Documento PDF", "*.pdf"), ("Todos los archivos", "*.*")]
-        )
+        ruta_pdf, carpeta_run = self._resolver_carpeta_y_archivo("top3", sufijo)
         if not ruta_pdf:
             return
 
@@ -1098,6 +1287,8 @@ class AppCombinatoria(tk.Tk):
             omitir_red = getattr(self, 'var_omitir_redundantes', None)
             omitir_val = bool(omitir_red.get()) if omitir_red is not None else True
             excluir_pat = bool(self.var_excluir_patrones_pdf.get()) if hasattr(self, 'var_excluir_patrones_pdf') else True
+            exportar = carpeta_run if self.var_exportar_imagenes_csv.get() else None
+
             generar_reporte_combinatoria_pdf(
                 ruta_pdf,
                 self._ultima_config,
@@ -1106,14 +1297,18 @@ class AppCombinatoria(tk.Tk):
                 top_n=3,
                 omitir_redundantes=omitir_val,
                 excluir_patrones=excluir_pat,
+                carpeta_exportar=exportar,
+                limitar_eje_y=self.var_limitar_y_tab2.get(),
             )
-            self.var_paso_actual.set(f"Informe PDF generado: {os.path.basename(ruta_pdf)}")
-            if messagebox.askyesno(
-                "Informe PDF generado",
-                f"Se generó el informe PDF con las 3 mejores combinaciones por líquido\n"
-                f"(criterio: {criterio}):\n\n{ruta_pdf}\n\n¿Querés abrir el PDF ahora?",
-                parent=self
-            ):
+            self._ultima_carpeta_salida = carpeta_run
+            self.var_paso_actual.set(f"Informe generado en: {os.path.basename(ruta_pdf)}")
+
+            msg = f"Se generó el informe PDF con las 3 mejores combinaciones por líquido\n(criterio: {criterio}):\n\n{ruta_pdf}"
+            if exportar:
+                msg += f"\n\nSe exportaron las figuras (.png) y tablas (.csv) en:\n{os.path.abspath(carpeta_run)}"
+            msg += "\n\n¿Querés abrir el PDF ahora?"
+
+            if messagebox.askyesno("Informe PDF generado", msg, parent=self):
                 try:
                     os.startfile(ruta_pdf)
                 except Exception:
@@ -1179,8 +1374,14 @@ class AppCombinatoria(tk.Tk):
             s_int3 = f"{it['puntaje_int3']:.4f}" if not np.isnan(it['puntaje_int3']) else "n/a"
             s_glob = f"{it['puntaje_global']:.4f}" if not np.isnan(it['puntaje_global']) else "n/a"
 
+            p3_disp = self._obtener_alias(it.get('p3', ''))
+            if it.get('es_mc'):
+                p4_disp = self._formatear_patrones_alias(it)
+            else:
+                p4_disp = self._obtener_alias(it.get('p4', '')) if it.get('p4') and it['p4'] != "—" else "—"
+
             self.tree_ranking.insert("", "end", iid=str(i - 1), values=(
-                rank_txt, rol_txt, it['p3'], it['p4'] or "—", it['metodo'], s_int1, s_int2, s_int3, s_glob
+                rank_txt, rol_txt, p3_disp, p4_disp, it['metodo'], s_int1, s_int2, s_int3, s_glob
             ))
 
         if items_ord:
@@ -1191,6 +1392,14 @@ class AppCombinatoria(tk.Tk):
 
     def _al_cambiar_criterio_ranking(self, _event=None):
         self._al_cambiar_muestra_ranking()
+
+    def _al_cambiar_limitar_y_tab2(self):
+        sel = self.tree_ranking.selection()
+        if sel and hasattr(self, '_items_ranking_actual'):
+            idx = int(sel[0])
+            item = self._items_ranking_actual[idx]
+            muestra = self.var_muestra_ranking.get()
+            self._mostrar_grafico_muestra(item, muestra)
 
     def _al_seleccionar_fila_ranking(self, _event=None):
         sel = self.tree_ranking.selection()
@@ -1224,6 +1433,7 @@ class AppCombinatoria(tk.Tk):
             archivo_salida=None,
             log_x=log_x,
             etiqueta_teorico=etiq_teo,
+            limitar_eje_y=self.var_limitar_y_tab2.get(),
         )
         # Marcar los límites de los intervalos de evaluación
         for _, fb in self._datos_resultados['intervalos'][:-1]:
@@ -1238,14 +1448,18 @@ class AppCombinatoria(tk.Tk):
     def _refrescar_lista_combinaciones(self, mantener_seleccion=True):
         if not self._datos_resultados:
             self.combo_combinacion.configure(values=[])
+            self.combo_combinacion_b.configure(values=[])
             self.var_combo_seleccionada.set("")
+            self.var_combo_b_seleccionada.set("")
             self.btn_pdf_combo.configure(state="disabled")
             return
 
         res_combos = self._datos_resultados.get('resultados_por_combinacion', {})
         if not res_combos:
             self.combo_combinacion.configure(values=[])
+            self.combo_combinacion_b.configure(values=[])
             self.var_combo_seleccionada.set("")
+            self.var_combo_b_seleccionada.set("")
             self.btn_pdf_combo.configure(state="disabled")
             return
 
@@ -1264,46 +1478,143 @@ class AppCombinatoria(tk.Tk):
             items_combo.sort(key=_clave_score_desc)
 
         self._mapa_display_a_combo_id.clear()
-        opciones_display = []
-        combo_id_previo = getattr(self, '_combo_id_activo', None)
-        target_display = None
+        self._todas_opciones_combos = []
 
         for idx, (cid, c) in enumerate(items_combo, 1):
             sc = c.get('puntaje_promedio_total')
             sc_str = f"{sc:.4f}" if (sc is not None and not np.isnan(sc)) else "n/a"
             met = c.get('metodo', '')
-            if c.get('es_mc'):
-                pat_str = c.get('patrones_str') or f"{c.get('p3', '')} + {c.get('p4', '')}"
-                disp = f"#{idx} [Score: {sc_str}] {met} — {pat_str}"
-            else:
-                p4_txt = f" | P4: {c['p4']}" if c.get('p4') and c['p4'] != "—" else ""
-                disp = f"#{idx} [Score: {sc_str}] {met} — P3: {c['p3']}{p4_txt}"
+            pat_alias = self._formatear_patrones_alias(c)
+            disp = f"#{idx} [Score: {sc_str}] {met} — {pat_alias}"
 
             if disp in self._mapa_display_a_combo_id:
                 disp = f"{disp} ({cid})"
 
             self._mapa_display_a_combo_id[disp] = cid
-            opciones_display.append(disp)
+            self._todas_opciones_combos.append({
+                'disp': disp,
+                'cid': cid,
+                'datos': c,
+                'metodo': met,
+                'patrones_str': c.get('patrones_str', ''),
+                'p3': c.get('p3', ''),
+                'p4': c.get('p4', ''),
+                'pat_alias': pat_alias,
+            })
 
-            if mantener_seleccion and cid == combo_id_previo:
-                target_display = disp
+        self._filtrar_lista_combinaciones(mantener_seleccion=mantener_seleccion)
 
-        self.combo_combinacion.configure(values=opciones_display)
-        self.btn_pdf_combo.configure(state="normal" if opciones_display else "disabled")
+    def _filtrar_lista_combinaciones(self, mantener_seleccion=True):
+        if not hasattr(self, '_todas_opciones_combos') or not self._todas_opciones_combos:
+            return
 
-        if not target_display and opciones_display:
-            target_display = opciones_display[0]
+        palabra = self.var_filtro_palabra_combo.get().strip().lower()
+        liq_filtro = self.var_filtro_liquido_combo.get()
+        liq_nom = liq_filtro.split(" (")[0].strip() if (liq_filtro and liq_filtro != "Todos") else None
 
-        if target_display:
-            self.var_combo_seleccionada.set(target_display)
-            self._combo_id_activo = self._mapa_display_a_combo_id[target_display]
+        filtradas = []
+        for item in self._todas_opciones_combos:
+            if palabra:
+                texto_busq = f"{item['disp']} {item['cid']} {item['metodo']} {item['patrones_str']} {item['p3']} {item['p4']} {item['pat_alias']}".lower()
+                if palabra not in texto_busq:
+                    continue
+
+            if liq_nom:
+                p3_nom = item['p3']
+                p4_nom = item['p4']
+                pat_str = item['patrones_str']
+                c_datos = item['datos']
+                en_combo = (p3_nom == liq_nom) or (p4_nom == liq_nom) or (liq_nom in pat_str) or (liq_nom in c_datos.get('patrones', []))
+                if not en_combo:
+                    continue
+
+            filtradas.append(item['disp'])
+
+        self.combo_combinacion.configure(values=filtradas)
+        self.combo_combinacion_b.configure(values=filtradas)
+        self.btn_pdf_combo.configure(state="normal" if filtradas else "disabled")
+
+        combo_id_previo_a = getattr(self, '_combo_id_activo', None)
+        target_a = None
+        if mantener_seleccion and combo_id_previo_a:
+            for disp in filtradas:
+                if self._mapa_display_a_combo_id.get(disp) == combo_id_previo_a:
+                    target_a = disp
+                    break
+
+        if not target_a and filtradas:
+            target_a = filtradas[0]
+
+        if target_a:
+            self.var_combo_seleccionada.set(target_a)
+            self._combo_id_activo = self._mapa_display_a_combo_id[target_a]
             self._al_cambiar_combinacion()
         else:
             self.var_combo_seleccionada.set("")
             self._combo_id_activo = None
+            self.lbl_score_combo.configure(text="Sin combinaciones coincidentes")
+            self.visor_curvas_combo.limpiar("Sin combinaciones para el filtro actual.")
+
+        if self.var_comparar_activo.get():
+            combo_id_previo_b = getattr(self, '_combo_id_b_activo', None)
+            target_b = None
+            if mantener_seleccion and combo_id_previo_b:
+                for disp in filtradas:
+                    if self._mapa_display_a_combo_id.get(disp) == combo_id_previo_b:
+                        target_b = disp
+                        break
+            if not target_b and filtradas:
+                target_b = filtradas[1] if len(filtradas) > 1 else filtradas[0]
+
+            if target_b:
+                self.var_combo_b_seleccionada.set(target_b)
+                self._combo_id_b_activo = self._mapa_display_a_combo_id[target_b]
+                self._al_cambiar_combinacion_b()
+            else:
+                self.var_combo_b_seleccionada.set("")
+                self._combo_id_b_activo = None
+                self.lbl_score_combo_b.configure(text="")
 
     def _al_cambiar_orden_combos(self, _event=None):
         self._refrescar_lista_combinaciones(mantener_seleccion=True)
+
+    def _al_toggle_comparar(self):
+        if self.var_comparar_activo.get():
+            self.combo_combinacion_b.configure(state="readonly")
+            self.btn_pdf_combo.configure(text="📄 Imprimir Comparativa (A vs B)...")
+            vals = list(self.combo_combinacion_b['values'])
+            if not self.var_combo_b_seleccionada.get() and vals:
+                sel_b = vals[1] if len(vals) > 1 else vals[0]
+                self.var_combo_b_seleccionada.set(sel_b)
+                self._combo_id_b_activo = self._mapa_display_a_combo_id.get(sel_b, sel_b)
+            self._al_cambiar_combinacion_b()
+        else:
+            self.combo_combinacion_b.configure(state="disabled")
+            self.btn_pdf_combo.configure(text="📄 Imprimir Informe de Combinación...")
+            self.lbl_score_combo_b.configure(text="")
+            self._al_refrescar_grafico_combo_actual()
+
+    def _al_cambiar_combinacion_b(self, _event=None):
+        disp_b = self.var_combo_b_seleccionada.get()
+        self._combo_id_b_activo = self._mapa_display_a_combo_id.get(disp_b, disp_b)
+        datos_b = self._datos_resultados.get('resultados_por_combinacion', {}).get(self._combo_id_b_activo, {})
+        sc = datos_b.get('puntaje_promedio_total')
+        sc_str = f"{sc:.4f}" if (sc is not None and not np.isnan(sc)) else "n/a"
+        met = datos_b.get('metodo', '')
+        self.lbl_score_combo_b.configure(text=f"Combo B: [Score: {sc_str}] {met}")
+        self._al_refrescar_grafico_combo_actual()
+
+    def _al_cambiar_limitar_y_tab3(self):
+        self._al_refrescar_grafico_combo_actual()
+
+    def _al_refrescar_grafico_combo_actual(self):
+        sel = self.tree_combo_muestras.selection()
+        if sel and hasattr(self, '_muestras_combo_actual'):
+            idx = int(sel[0])
+            m_dat = list(self._muestras_combo_actual.values())[idx]
+            combo_id = getattr(self, '_combo_id_activo', None)
+            datos_combo = self._datos_resultados.get('resultados_por_combinacion', {}).get(combo_id, {})
+            self._mostrar_grafico_curvas_combo(m_dat, datos_combo)
 
     def _al_cambiar_combinacion(self, _event=None):
         if not self._datos_resultados:
@@ -1326,7 +1637,7 @@ class AppCombinatoria(tk.Tk):
             partes.append(f"Patrones (ajuste): {score_pat:.4f}")
         if score_res is not None and not np.isnan(score_res):
             partes.append(f"Muestras (validación): {score_res:.4f}")
-        self.lbl_score_combo.configure(text="   |   ".join(partes) if partes else "Puntaje: n/a")
+        self.lbl_score_combo.configure(text="Combo A:  " + ("   |   ".join(partes) if partes else "n/a"))
 
         # 1. Graficar Gn(f) usando `graficar_Gn` de `analisis_permitividad.py`
         frecs_r = datos_combo.get('frecs_r', self._datos_resultados['frecs_r'])
@@ -1428,34 +1739,56 @@ class AppCombinatoria(tk.Tk):
             )
             return
 
-        nombre_sanit = "".join(c if (c.isalnum() or c in "._-") else "_" for c in combo_id)
-        nombre_default = f"informe_combinacion_{nombre_sanit}.pdf"
+        comparando = bool(self.var_comparar_activo.get())
+        combo_b_id = None
+        if comparando:
+            combo_b_id = getattr(self, '_combo_id_b_activo', None)
+            if not combo_b_id:
+                disp_b = self.var_combo_b_seleccionada.get()
+                combo_b_id = self._mapa_display_a_combo_id.get(disp_b, disp_b)
+            if not combo_b_id or combo_b_id not in self._datos_resultados.get('resultados_por_combinacion', {}):
+                messagebox.showwarning(
+                    "Combinación B no válida",
+                    "Seleccioná una combinación B válida para comparar.",
+                    parent=self
+                )
+                return
+            nombre_sufijo = f"comp_{_slug(combo_id)[:30].rstrip('_')}_{_slug(combo_b_id)[:30].rstrip('_')}"
+        else:
+            nombre_sufijo = _slug(combo_id)[:50].rstrip('_')
 
-        ruta_pdf = filedialog.asksaveasfilename(
-            title="Guardar Informe PDF de la Combinación",
-            initialfile=nombre_default,
-            defaultextension=".pdf",
-            parent=self,
-            filetypes=[("Documento PDF", "*.pdf"), ("Todos los archivos", "*.*")]
-        )
+        ruta_pdf, carpeta_run = self._resolver_carpeta_y_archivo("combo", nombre_sufijo)
         if not ruta_pdf:
             return
 
         try:
-            self.var_paso_actual.set("Generando informe PDF de la combinación...")
+            texto_paso = "Generando informe PDF comparativo..." if comparando else "Generando informe PDF de la combinación..."
+            self.var_paso_actual.set(texto_paso)
             self.update_idletasks()
+            exportar = carpeta_run if self.var_exportar_imagenes_csv.get() else None
+
             generar_reporte_combinacion_pdf(
                 ruta_pdf,
                 self._ultima_config,
                 self._datos_resultados,
                 combo_id=combo_id,
+                combo_id_comparar=combo_b_id,
+                carpeta_exportar=exportar,
+                limitar_eje_y=self.var_limitar_y_tab3.get(),
             )
-            self.var_paso_actual.set(f"Informe PDF generado: {os.path.basename(ruta_pdf)}")
-            if messagebox.askyesno(
-                "Informe PDF generado",
-                f"Se generó el informe PDF para la combinación:\n'{combo_id}'\n\n{ruta_pdf}\n\n¿Querés abrir el PDF ahora?",
-                parent=self
-            ):
+            self._ultima_carpeta_salida = carpeta_run
+            self.var_paso_actual.set(f"Informe generado en: {os.path.basename(ruta_pdf)}")
+
+            if comparando and combo_b_id:
+                msg = f"Se generó el informe PDF comparativo entre:\n'{combo_id}'\ny\n'{combo_b_id}':\n\n{ruta_pdf}"
+            else:
+                msg = f"Se generó el informe PDF para la combinación:\n'{combo_id}'\n\n{ruta_pdf}"
+
+            if exportar:
+                msg += f"\n\nSe exportaron las figuras (.png) y tablas (.csv) en:\n{os.path.abspath(carpeta_run)}"
+            msg += "\n\n¿Querés abrir el PDF ahora?"
+
+            if messagebox.askyesno("Informe PDF generado", msg, parent=self):
                 try:
                     os.startfile(ruta_pdf)
                 except Exception:
@@ -1464,7 +1797,7 @@ class AppCombinatoria(tk.Tk):
             self.var_paso_actual.set("Error al generar el informe PDF de la combinación.")
             messagebox.showerror(
                 "Error al generar PDF",
-                f"No se pudo generar el informe PDF de la combinación:\n{exc}\n\n{traceback.format_exc()}",
+                f"No se pudo generar el informe PDF:\n{exc}\n\n{traceback.format_exc()}",
                 parent=self
             )
 
@@ -1475,17 +1808,42 @@ class AppCombinatoria(tk.Tk):
         m_nom = m_dat['muestra']
         log_x = self._datos_resultados.get('log_x', True)
         etiq_teo = m_dat.get('etiqueta_teorico', 'Teórico')
-        metodo_str = datos_combo.get('metodo', 'Medido') if datos_combo else 'Medido'
-        rol_txt = f" [{m_dat.get('rol')}]" if m_dat.get('rol') else ""
+        comparando = self.var_comparar_activo.get() and bool(getattr(self, '_combo_id_b_activo', None))
+
+        curvas = {}
+        if comparando:
+            cid_a = getattr(self, '_combo_id_activo', None)
+            cid_b = getattr(self, '_combo_id_b_activo', None)
+            combos = self._datos_resultados.get('resultados_por_combinacion', {})
+            datos_a = datos_combo or combos.get(cid_a, {})
+            datos_b = combos.get(cid_b, {})
+            m_dat_a = datos_a.get('muestras', {}).get(m_nom, m_dat)
+            m_dat_b = datos_b.get('muestras', {}).get(m_nom)
+
+            pat_a_alias = self._formatear_patrones_alias(datos_a)
+            pat_b_alias = self._formatear_patrones_alias(datos_b)
+            met_a = datos_a.get('metodo', 'Medido')
+            met_b = datos_b.get('metodo', 'Medido')
+
+            curvas[f"A ({met_a}): {pat_a_alias}"] = m_dat_a.get('er_medido')
+            if m_dat_b and m_dat_b.get('er_medido') is not None:
+                curvas[f"B ({met_b}): {pat_b_alias}"] = m_dat_b.get('er_medido')
+            titulo = f"{m_nom} — Comparación Medido A vs Medido B vs Teórico"
+        else:
+            metodo_str = datos_combo.get('metodo', 'Medido') if datos_combo else 'Medido'
+            rol_txt = f" [{m_dat.get('rol')}]" if m_dat.get('rol') else ""
+            curvas[f"Medido ({metodo_str})"] = er_med
+            titulo = f"{m_nom}{rol_txt}: medido vs. teórico"
 
         fig = graficar_comparacion(
             frecs_r,
-            {f"Medido ({metodo_str})": er_med},
+            curvas,
             er_teo,
-            titulo=f"{m_nom}{rol_txt}: medido vs. teórico",
+            titulo=titulo,
             archivo_salida=None,
             log_x=log_x,
             etiqueta_teorico=etiq_teo,
+            limitar_eje_y=self.var_limitar_y_tab3.get(),
         )
         for _, fb in self._datos_resultados['intervalos'][:-1]:
             for ax in fig.axes:
@@ -1529,6 +1887,9 @@ class AppCombinatoria(tk.Tk):
                 'f1_ghz': float(self.var_acond_f1.get()),
                 'f2_ghz': float(self.var_acond_f2.get()),
             },
+            'carpeta_salida': self.var_carpeta_salida.get().strip(),
+            'guardar_subcarpeta_fechayhora': bool(self.var_guardar_fechayhora.get()),
+            'exportar_imagenes_csv': bool(self.var_exportar_imagenes_csv.get()),
             'candidatos': copy.deepcopy(self._candidatos),
         }
         with open(ruta, "w", encoding="utf-8") as f:
@@ -1571,7 +1932,14 @@ class AppCombinatoria(tk.Tk):
             self.var_acond_f1.set(float(ac.get('f1_ghz', 0.0)))
             self.var_acond_f2.set(float(ac.get('f2_ghz', 0.5)))
 
+            self.var_carpeta_salida.set(cfg.get('carpeta_salida', r"..\salidas"))
+            self.var_guardar_fechayhora.set(bool(cfg.get('guardar_subcarpeta_fechayhora', True)))
+            self.var_exportar_imagenes_csv.set(bool(cfg.get('exportar_imagenes_csv', True)))
+
             self._candidatos = copy.deepcopy(cfg.get('candidatos', []))
+            for c in self._candidatos:
+                if 'alias' not in c or not c['alias']:
+                    c['alias'] = generar_alias_defecto(c.get('nombre', ''))
             self._refrescar_tabla_candidatos()
             self._setear_mc_k_desde_config(cfg.get('mc_k_liquidos', 'todos'))
             self._al_cambiar_acond()

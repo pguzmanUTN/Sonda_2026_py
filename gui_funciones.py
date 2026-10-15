@@ -233,6 +233,7 @@ def config_default():
         'f_min_ghz': 0.5,
         'f_max_ghz': 6.0,
         'escala_log_frecuencia': True,
+        'limitar_eje_y': True,
         'curvas_comparacion': [],
         'curvas_modelos': [],
     }
