@@ -1,0 +1,789 @@
+  Intervalos de error para el informe: [0.01 - 0.05] GHz, [0.05 - 0.50] GHz, [0.50 - 6.00] GHz
+Carpeta de esta corrida: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30
+Leyendo patrones de calibracion...
+  corto        <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/short_sonda_3mm_9oct.s1p  (1280 puntos, 0.001-6.000 GHz)
+  aire         <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/open_sonda_3mm_9oct.s1p  (1280 puntos, 0.001-6.000 GHz)
+  patron3      <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/agua21grados_sonda_3mm_9oct.s1p  (1280 puntos, 0.001-6.000 GHz)
+  patron4      <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/isopropilico_sonda_3mm_9oct.s1p  (1280 puntos, 0.001-6.000 GHz)
+  Patron 3 = Agua (Liebe-Hufford-Manabe) a 21.0°C
+  Patron 4 = Alcohol isopropilico (2-propanol) a 21.0°C (estrategia de Gn: minimo_gn)
+  14 archivo(s) de entrada copiado(s) a: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15
+
+  [ADVERTENCIA - Patron 7 (cuadrados minimos): Ciclohexano (Kaatze 2007 + Afsar 1980)]
+    El ciclohexano es NO POLAR: no tiene relajacion dipolar, asi que no existe -- ni puede existir -- un modelo de Debye. Aca la permitividad constante NO es una aproximacion de conveniencia, es el comportamiento fisico real.
+    • er'(T) = 2.0565 - 1.620e-3*T[°C], ajustado sobre los 9 puntos del NPL MAT 23 con residuo < 0.001. Reproduce la ecuacion (9) de Kaatze (2007). Validado 10-50 °C (funde a 6.5 °C).
+    • Constante en frecuencia: Afsar et al. (1980) promedian er' = 2.0126 ± 0.0056 entre 1 y 300 GHz sin evidencia de dispersion, y Kaatze lo extiende hasta la region submilimetrica con error < 0.05%.
+    • er''(f) = 1.08e-5*(f/GHz)^0.791, de la curva E de la figura 4 de Afsar (25 °C). Da 4.1e-4 a 100 GHz y recien llega a 1e-3 cerca de 300 GHz: esta MUY por debajo de lo que puede resolver una sonda coaxial, asi que el error relativo de er'' contra esta referencia se informa como n/a.
+    • Como patron de calibracion: Kaatze (2007) lo recomienda explicitamente como uno de los cuatro liquidos de referencia, justamente porque hace falta un patron de BAJA permitividad para medir bien muestras de baja permitividad (la capacidad efectiva de la sonda depende de la permitividad de la muestra). Como 3er patron de una calibracion de solo 3, en cambio, queda mal condicionado frente al aire.
+    USADO COMO PATRON 7 (CUADRADOS MINIMOS) DE CALIBRACION: ademas de lo anterior, tener en cuenta que la permitividad de este patron entra DIRECTAMENTE en las formulas de conversion S11 -> er, asi que cualquier limitacion del modelo se propaga al resultado de TODOS los materiales, no solo al de este patron. En particular, un liquido no polar tiene permitividad cercana a la del aire: como 3er patron de una calibracion de solo 3 queda mal condicionado, aunque Kaatze (2007) si lo recomienda como patron ADICIONAL para medir bien muestras de baja permitividad.
+
+  [ADVERTENCIA - Patron 8 (cuadrados minimos): Acetona (Debye, Zarubina 2020)]
+    Modelo de Debye ARMADO CON DOS FUENTES, no publicado como tal en ningun lado: es(T) sale de la tabla de permitividad estatica del NPL MAT 23 (trazable, ±0.04, 5-50 °C), mientras que e_inf = 5.14 y fr = 46.6 GHz (tau = 3.4 ps) salen de un ajuste propio sobre las curvas de acetona de la figura 5 de Zarubina et al. (2020), medidas con sonda coaxial entre 0.2 y 20 GHz a 23 °C.
+    • fr es el parametro solido del ajuste (46.6 ± 1.0 GHz por bootstrap, y todas las variantes probadas caen en 45-47 GHz). e_inf y es, en cambio, quedan correlacionados entre si porque los datos no pasan de f/fr = 0.43.
+    • fr NO varia con la temperatura en este modelo: el paper mide a una sola T. Lejos de 23 °C, er'' va a tener un error sistematico (er' aguanta mejor, porque en esta banda er' ~ es(T) y eso si sigue la temperatura).
+    • Valido hasta ~20 GHz. Por encima, e_inf = 5.14 no es el limite optico real de la acetona (n^2 ~ 1.85): es un valor EFECTIVO que absorbe los procesos rapidos fuera de rango.
+    • El er' medido por Zarubina entre 2 y 10 GHz queda ~4% por debajo del valor trazable de NPL, y esa caida no puede ser fisica para una relajacion en 46 GHz: es la sonda del paper perdiendo exactitud lejos del centro de su banda. Por eso el modelo toma es de NPL y no del ajuste.
+    USADO COMO PATRON 8 (CUADRADOS MINIMOS) DE CALIBRACION: ademas de lo anterior, tener en cuenta que la permitividad de este patron entra DIRECTAMENTE en las formulas de conversion S11 -> er, asi que cualquier limitacion del modelo se propaga al resultado de TODOS los materiales, no solo al de este patron.
+Calculando conductancia normalizada Gn(f) (diagnostico de calibracion)...
+
+======================================================================
+[calcular_Gn] VALORES DE ENTRADA Y CALCULO INTERMEDIO DE Gn
+======================================================================
+r_corto:
+[-0.99191246-0.00047608j -0.99076502+0.00220513j -0.9898844 +0.00372257j
+ ... -0.95824059-0.1592643j  -0.95849665-0.16011341j
+ -0.95880116-0.16089694j]
+
+r_aire:
+[1.00000368-3.73303639e-05j 1.00004315+2.70198748e-05j
+ 1.00002694+6.84818434e-05j ... 1.00005358-4.91777475e-04j
+ 0.99988076-4.08171432e-04j 0.99980411-5.37561858e-04j]
+
+r_patron3:
+[ 1.00000756-0.00096931j  1.00000562-0.00197865j  0.99996071-0.00286498j
+ ... -0.56510007-0.50865036j -0.56450785-0.50943258j
+ -0.56377595-0.51049395j]
+
+r_patron4:
+[0.99998842-0.0002009j  0.9999178 -0.0004284j  0.99999237-0.00068589j ...
+ 0.88873067-0.17402374j 0.88853576-0.17394668j 0.88849119-0.17361847j]
+
+----------------------------------------------------------------------
+Diferencias entre patrones (dij):
+d41 (r_patron4 - r_corto):
+[1.99190088+0.00027518j 1.99068282-0.00263353j 1.98987677-0.00440846j ...
+ 1.84697126-0.01475944j 1.8470324 -0.01383327j 1.84729235-0.01272153j]
+
+d32 (r_patron3 - r_aire):
+[ 3.88092320e-06-0.00093198j -3.75271584e-05-0.00200567j
+ -6.62228644e-05-0.00293346j ... -1.56515365e+00-0.50815858j
+ -1.56438862e+00-0.50902441j -1.56358006e+00-0.50995638j]
+
+d42 (r_patron4 - r_aire):
+[-1.52584837e-05-1.63568679e-04j -1.25345406e-04-4.55419750e-04j
+ -3.45658814e-05-7.54374639e-04j ... -1.11322904e-01-1.73531958e-01j
+ -1.11345009e-01-1.73538509e-01j -1.11312922e-01-1.73080904e-01j]
+
+d13 (r_corto - r_patron3):
+[-1.99192002+0.00049322j -1.99077064+0.00418378j -1.98984512+0.00658755j
+ ... -0.39314052+0.34938606j -0.39398879+0.34931917j
+ -0.39502521+0.34959701j]
+
+d43 (r_patron4 - r_patron3):
+[-1.91394069e-05+0.00076841j -8.78182473e-05+0.00155025j
+  3.16569830e-05+0.00217909j ...  1.45383074e+00+0.33462662j
+  1.45304361e+00+0.3354859j   1.45226714e+00+0.33687548j]
+
+d21 (r_aire - r_corto):
+[1.99191614+0.00043875j 1.99080816-0.00217811j 1.98991134-0.00365409j ...
+ 1.95829417+0.15877252j 1.95837741+0.15970524j 1.95860527+0.16035938j]
+
+----------------------------------------------------------------------
+num_Gn (numerador):
+[0.00246506-0.00982939j 0.01789375-0.00496439j 0.00223197+0.00662476j ...
+ 0.14112969+1.06822872j 0.15245329+1.06327095j 0.15166063+1.04756794j]
+
+den_Gn (denominador):
+[1.72606758e+00  +15.11897128j 1.40485818e+01  +44.16823856j
+ 3.76946108e+00  +74.57385687j ... 4.65646199e+03-2505.01377213j
+ 4.66236711e+03-2505.29210985j 4.65876154e+03-2508.07964991j]
+
+Gn = -num_Gn / den_Gn:
+[ 6.23396821e-04+2.34214355e-04j -1.49490179e-05+4.00372295e-04j
+ -9.01174266e-05+2.53745271e-05j ...  7.22076672e-05-1.90562604e-04j
+  6.97151510e-05-1.90592913e-04j  6.86146052e-05-1.87920553e-04j]
+
+----------------------------------------------------------------------
+Muestra detallada en 3 frecuencias representativas:
+
+  * Frecuencia: 0.001 GHz (punto 1/1280)
+    r_corto   = -0.991912-0.000476j
+    r_aire    = 1.000004-0.000037j
+    r_patron3 = 1.000008-0.000969j
+    r_patron4 = 0.999988-0.000201j
+    d41 = 1.991901+0.000275j | d32 = 0.000004-0.000932j
+    d42 = -0.000015-0.000164j | d13 = -1.991920+0.000493j
+    d43 = -0.000019+0.000768j | d21 = 1.991916+0.000439j
+    num_Gn    = 2.465055e-03-9.829388e-03j
+    den_Gn    = 1.726068e+00+1.511897e+01j
+    Gn        = 6.233968e-04+2.342144e-04j  -->  Re(Gn) = 6.233968e-04, Im(Gn) = 2.342144e-04
+
+  * Frecuencia: 2.805 GHz (punto 641/1280)
+    r_corto   = -0.959735+0.168511j
+    r_aire    = 1.000091-0.000131j
+    r_patron3 = -0.331171-0.745978j
+    r_patron4 = 0.917150-0.091851j
+    d41 = 1.876884-0.260362j | d32 = -1.331262-0.745847j
+    d42 = -0.082941-0.091720j | d13 = -0.628564+0.914489j
+    d43 = 1.248321+0.654127j | d21 = 1.959826-0.168642j
+    num_Gn    = 5.734590e-01+1.821985e-01j
+    den_Gn    = 6.543468e+03-3.549290e+03j
+    Gn        = -5.604560e-05-5.824444e-05j  -->  Re(Gn) = -5.604560e-05, Im(Gn) = -5.824444e-05
+
+  * Frecuencia: 6.000 GHz (punto 1280/1280)
+    r_corto   = -0.958801-0.160897j
+    r_aire    = 0.999804-0.000538j
+    r_patron3 = -0.563776-0.510494j
+    r_patron4 = 0.888491-0.173618j
+    d41 = 1.847292-0.012722j | d32 = -1.563580-0.509956j
+    d42 = -0.111313-0.173081j | d13 = -0.395025+0.349597j
+    d43 = 1.452267+0.336875j | d21 = 1.958605+0.160359j
+    num_Gn    = 1.516606e-01+1.047568e+00j
+    den_Gn    = 4.658762e+03-2.508080e+03j
+    Gn        = 6.861461e-05-1.879206e-04j  -->  Re(Gn) = 6.861461e-05, Im(Gn) = -1.879206e-04
+======================================================================
+
+  Acondicionando Gn(f) (4 patrones): tipo='transicion_polinomica_cero', modo='automatico'...
+    Transicion aplicada entre 0.001 GHz y 3.785 GHz
+  Patron 5 (cuadrados minimos) = Alcohol etilico (etanol) a 21.0°C <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/etilico_sonda_3mm_9oct.s1p
+  Patron 6 (cuadrados minimos) = 1-Butanol a 21.0°C <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/butilico_sonda_3mm_9oct.s1p
+  Patron 7 (cuadrados minimos) = Ciclohexano (Kaatze 2007 + Afsar 1980) a 21.0°C <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/ciclohexano2_sonda_3mm_9oct.s1p
+  Patron 8 (cuadrados minimos) = Acetona (Debye, Zarubina 2020) a 21.0°C <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/acetona_sonda_3mm_9oct.s1p
+
+Calibrando por cuadrados minimos con 8 patrones (8 grados de libertad reales por frecuencia)...
+  residuo rms S11 [Corto                       ] = 1.3991e-04
+  residuo rms S11 [Aire                        ] = 3.7909e-03
+  residuo rms S11 [Agua (Liebe-Hufford-Manabe) (21°C)] = 3.5254e-04
+  residuo rms S11 [Alcohol isopropilico (2-propanol) (21°C)] = 3.7354e-03
+  residuo rms S11 [Alcohol etilico (etanol) (21°C)] = 3.4874e-03
+  residuo rms S11 [1-Butanol (21°C)            ] = 2.0864e-03
+  residuo rms S11 [Ciclohexano (Kaatze 2007 + Afsar 1980) (21°C)] = 2.6363e-03
+  residuo rms S11 [Acetona (Debye, Zarubina 2020) (21°C)] = 2.5598e-03
+  Acondicionando Gn(f) de cuadrados minimos y reajustando (a, b, c)...
+  Validacion cruzada (sacando 1 patron liquido por vez y midiendo su er):
+  Al excluir Agua (Liebe-Hufford-Manabe) (21°C) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   1.5625   error medio  er'' =   0.8884
+      error maximo er' =   3.2381   error maximo er'' =   6.7572
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   1.9605   error medio  er'' =  22.9857
+      error maximo er' =  12.3585   error maximo er'' =  32.1177
+    [0.50 - 6.00 GHz]:
+      error medio  er' =  14.8698   error medio  er'' =  25.4539
+      error maximo er' =  36.8661   error maximo er'' =  39.4632
+  Al excluir Alcohol isopropilico (2-propanol) (21°C) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1989   error medio  er'' =   0.2077
+      error maximo er' =   0.6349   error maximo er'' =   1.1713
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.2298   error medio  er'' =   0.1039
+      error maximo er' =   0.4081   error maximo er'' =   0.2810
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1295   error medio  er'' =   0.0675
+      error maximo er' =   0.3694   error maximo er'' =   0.1533
+  Al excluir Alcohol etilico (etanol) (21°C) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2321   error medio  er'' =   0.2099
+      error maximo er' =   0.8689   error maximo er'' =   1.3232
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.2778   error medio  er'' =   0.1256
+      error maximo er' =   0.4414   error maximo er'' =   0.3451
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1584   error medio  er'' =   0.0743
+      error maximo er' =   0.3374   error maximo er'' =   0.3781
+  Al excluir 1-Butanol (21°C) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2345   error medio  er'' =   0.2650
+      error maximo er' =   1.0978   error maximo er'' =   1.6802
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1814   error medio  er'' =   0.1484
+      error maximo er' =   0.3560   error maximo er'' =   0.3454
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0661   error medio  er'' =   0.0404
+      error maximo er' =   0.2626   error maximo er'' =   0.1222
+  Al excluir Ciclohexano (Kaatze 2007 + Afsar 1980) (21°C) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' = 3299.0139   error medio  er'' =     n/a
+      error maximo er' = 11079.1935   error maximo er'' =     n/a
+    [0.05 - 0.50 GHz]:
+      error medio  er' = 271.3525   error medio  er'' =     n/a
+      error maximo er' = 1153.8885   error maximo er'' =     n/a
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0854   error medio  er'' =     n/a
+      error maximo er' =   0.2179   error maximo er'' =     n/a
+      (er'' = n/a: las perdidas de referencia son menores que la resolucion de la sonda, ver la advertencia de ese modelo)
+  Al excluir Acetona (Debye, Zarubina 2020) (21°C) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.4065   error medio  er'' =   0.1742
+      error maximo er' =   1.2182   error maximo er'' =   0.7136
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1630   error medio  er'' =   0.2388
+      error maximo er' =   0.4904   error maximo er'' =   0.4198
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.4749   error medio  er'' =   0.3282
+      error maximo er' =   0.7295   error maximo er'' =   0.5686
+  Figura guardada: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\calibracion_minimos_cuadrados_residuos.png
+
+Chequeo de calibracion (Agua (Liebe-Hufford-Manabe) medido vs. teorico, debe dar ~0 de error)...
+  Metodo simplificado (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+  Medido (completo, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+  Medido (completo, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+  Medido (cuadrados mínimos, 8 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0024   error medio  er'' =   0.0025
+      error maximo er' =   0.0116   error maximo er'' =   0.0079
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0081   error medio  er'' =   0.0062
+      error maximo er' =   0.0131   error maximo er'' =   0.0088
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0396   error medio  er'' =   0.0077
+      error maximo er' =   0.1192   error maximo er'' =   0.0708
+  Medido (cuadrados mínimos, 8 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1411   error medio  er'' =   0.2736
+      error maximo er' =   0.2985   error maximo er'' =   0.9073
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1366   error medio  er'' =   0.2543
+      error maximo er' =   0.9861   error maximo er'' =   1.9655
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0396   error medio  er'' =   0.0077
+      error maximo er' =   0.1192   error maximo er'' =   0.0708
+  Figura guardada: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\chequeo_calibracion_patron3.png
+
+Chequeo de calibracion (Alcohol isopropilico (2-propanol) medido vs. teorico, debe dar ~0 de error)...
+  Metodo simplificado (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2764   error medio  er'' =   0.2621
+      error maximo er' =   1.1793   error maximo er'' =   1.6578
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.4918   error medio  er'' =   0.1949
+      error maximo er' =   0.8125   error maximo er'' =   0.4238
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.2482   error medio  er'' =   0.1556
+      error maximo er' =   0.7515   error maximo er'' =   0.3423
+  Medido (completo, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0103   error medio  er'' =   0.0123
+      error maximo er' =   0.0953   error maximo er'' =   0.1087
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+  Medido (completo, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2764   error medio  er'' =   0.2621
+      error maximo er' =   1.1793   error maximo er'' =   1.6578
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.4903   error medio  er'' =   0.1941
+      error maximo er' =   0.8090   error maximo er'' =   0.4233
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1573   error medio  er'' =   0.0753
+      error maximo er' =   0.7451   error maximo er'' =   0.2618
+  Medido (cuadrados mínimos, 8 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0936   error medio  er'' =   0.1107
+      error maximo er' =   0.4296   error maximo er'' =   0.5713
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1715   error medio  er'' =   0.0690
+      error maximo er' =   0.3214   error maximo er'' =   0.1891
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1055   error medio  er'' =   0.0562
+      error maximo er' =   0.2944   error maximo er'' =   0.1249
+  Medido (cuadrados mínimos, 8 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1674   error medio  er'' =   0.1783
+      error maximo er' =   0.5343   error maximo er'' =   1.0341
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1778   error medio  er'' =   0.0790
+      error maximo er' =   0.3214   error maximo er'' =   0.2270
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1055   error medio  er'' =   0.0562
+      error maximo er' =   0.2944   error maximo er'' =   0.1249
+  Figura guardada: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\chequeo_calibracion_patron4.png
+  Figura guardada: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\chequeo_calibracion_Gn.png
+
+Procesando: etilico  (C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/etilico_sonda_3mm_9oct.s1p)
+  etilico              <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/etilico_sonda_3mm_9oct.s1p  (1280 puntos, 0.001-6.000 GHz)
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0380 GHz (|Gn| ahi = 5.228e-06; el minimo real de |Gn| en todo el barrido es 5.228e-06, en f=0.0380 GHz).
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0290 GHz (|Gn| ahi = 8.555e-07; el minimo real de |Gn| en todo el barrido es 8.555e-07, en f=0.0290 GHz).
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+  Figura guardada: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\er_etilico.png
+  Error absoluto:
+  Medido (simplificado, 3 patrones) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2606   error medio  er'' =   0.2644
+      error maximo er' =   1.1357   error maximo er'' =   1.5718
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1826   error medio  er'' =   0.2686
+      error maximo er' =   0.4722   error maximo er'' =   0.4246
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.3465   error medio  er'' =   0.2509
+      error maximo er' =   0.6802   error maximo er'' =   0.6766
+  Medido (completo, 4 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2052   error medio  er'' =   0.1717
+      error maximo er' =   0.5409   error maximo er'' =   0.7825
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.4654   error medio  er'' =   0.1508
+      error maximo er' =   0.7458   error maximo er'' =   0.3698
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.2027   error medio  er'' =   0.2036
+      error maximo er' =   0.7461   error maximo er'' =   0.4341
+  Medido (completo, 4 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2606   error medio  er'' =   0.2644
+      error maximo er' =   1.1357   error maximo er'' =   1.5717
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1812   error medio  er'' =   0.2655
+      error maximo er' =   0.4659   error maximo er'' =   0.4165
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.2750   error medio  er'' =   0.0926
+      error maximo er' =   0.6490   error maximo er'' =   0.3728
+  Medido (cuadrados mínimos, 8 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1758   error medio  er'' =   0.0953
+      error maximo er' =   0.4788   error maximo er'' =   0.4708
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1842   error medio  er'' =   0.0767
+      error maximo er' =   0.2829   error maximo er'' =   0.2064
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1200   error medio  er'' =   0.0526
+      error maximo er' =   0.2480   error maximo er'' =   0.2289
+  Medido (cuadrados mínimos, 8 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1985   error medio  er'' =   0.1833
+      error maximo er' =   0.7373   error maximo er'' =   1.2221
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1778   error medio  er'' =   0.0765
+      error maximo er' =   0.3134   error maximo er'' =   0.2064
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1200   error medio  er'' =   0.0526
+      error maximo er' =   0.2480   error maximo er'' =   0.2289
+  Tabla resumen (etilico):
+ f (GHz) |            Teorico | Medido (simplificado, 3 patrones) | Medido (completo, 4 patrones, Gn original) | Medido (completo, 4 patrones, Gn acondicionado) | Medido (cuadrados mínimos, 8 patrones, Gn original) | Medido (cuadrados mínimos, 8 patrones, Gn acondicionado)
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+   0.500 |        19.66-9.15j |        20.13-8.77j |        18.95-9.05j |        20.12-8.78j |        19.59-8.96j |        19.59-8.96j
+   0.900 |       14.00-10.33j |       14.66-10.15j |        13.47-9.97j |       14.64-10.18j |       14.14-10.15j |       14.14-10.15j
+   1.800 |         8.14-7.94j |         8.63-7.93j |         7.99-7.61j |         8.55-7.98j |         8.38-7.92j |         8.38-7.92j
+   2.450 |         6.65-6.41j |         7.04-6.35j |         6.55-6.16j |         6.92-6.40j |         6.84-6.44j |         6.84-6.44j
+   3.500 |         5.63-4.83j |         5.87-4.63j |         5.55-4.69j |         5.67-4.71j |         5.75-4.86j |         5.75-4.86j
+   5.800 |         4.94-3.23j |         5.12-2.61j |         4.71-3.11j |         4.71-3.11j |         4.94-3.20j |         4.94-3.20j
+   6.000 |         4.92-3.15j |         5.08-2.51j |         4.70-3.01j |         4.70-3.01j |         4.91-3.08j |         4.91-3.08j
+  CSV guardado: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\tabla_etilico.csv
+
+Procesando: acetona  (C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/acetona_sonda_3mm_9oct.s1p)
+  acetona              <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/acetona_sonda_3mm_9oct.s1p  (1280 puntos, 0.001-6.000 GHz)
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0380 GHz (|Gn| ahi = 5.228e-06; el minimo real de |Gn| en todo el barrido es 5.228e-06, en f=0.0380 GHz).
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0290 GHz (|Gn| ahi = 8.555e-07; el minimo real de |Gn| en todo el barrido es 8.555e-07, en f=0.0290 GHz).
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+  [ADVERTENCIA - modelo teorico 'Acetona (Debye, Zarubina 2020)']
+    Modelo de Debye ARMADO CON DOS FUENTES, no publicado como tal en ningun lado: es(T) sale de la tabla de permitividad estatica del NPL MAT 23 (trazable, ±0.04, 5-50 °C), mientras que e_inf = 5.14 y fr = 46.6 GHz (tau = 3.4 ps) salen de un ajuste propio sobre las curvas de acetona de la figura 5 de Zarubina et al. (2020), medidas con sonda coaxial entre 0.2 y 20 GHz a 23 °C.
+    • fr es el parametro solido del ajuste (46.6 ± 1.0 GHz por bootstrap, y todas las variantes probadas caen en 45-47 GHz). e_inf y es, en cambio, quedan correlacionados entre si porque los datos no pasan de f/fr = 0.43.
+    • fr NO varia con la temperatura en este modelo: el paper mide a una sola T. Lejos de 23 °C, er'' va a tener un error sistematico (er' aguanta mejor, porque en esta banda er' ~ es(T) y eso si sigue la temperatura).
+    • Valido hasta ~20 GHz. Por encima, e_inf = 5.14 no es el limite optico real de la acetona (n^2 ~ 1.85): es un valor EFECTIVO que absorbe los procesos rapidos fuera de rango.
+    • El er' medido por Zarubina entre 2 y 10 GHz queda ~4% por debajo del valor trazable de NPL, y esa caida no puede ser fisica para una relajacion en 46 GHz: es la sonda del paper perdiendo exactitud lejos del centro de su banda. Por eso el modelo toma es de NPL y no del ajuste.
+  Figura guardada: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\er_acetona.png
+  Error absoluto:
+  Medido (simplificado, 3 patrones) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.4184   error medio  er'' =   0.1996
+      error maximo er' =   1.3692   error maximo er'' =   0.7395
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.3531   error medio  er'' =   0.0422
+      error maximo er' =   0.5834   error maximo er'' =   0.2067
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.3321   error medio  er'' =   0.6402
+      error maximo er' =   0.7981   error maximo er'' =   1.9316
+  Medido (completo, 4 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.4506   error medio  er'' =   0.2845
+      error maximo er' =   1.3688   error maximo er'' =   1.1333
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.2599   error medio  er'' =   0.4789
+      error maximo er' =   0.6403   error maximo er'' =   0.7256
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.9815   error medio  er'' =   0.4779
+      error maximo er' =   1.1492   error maximo er'' =   1.2263
+  Medido (completo, 4 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.4184   error medio  er'' =   0.1996
+      error maximo er' =   1.3692   error maximo er'' =   0.7395
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.3524   error medio  er'' =   0.0442
+      error maximo er' =   0.5834   error maximo er'' =   0.2063
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.5319   error medio  er'' =   0.1550
+      error maximo er' =   1.1035   error maximo er'' =   0.4528
+  Medido (cuadrados mínimos, 8 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.3616   error medio  er'' =   0.2086
+      error maximo er' =   1.1396   error maximo er'' =   0.7665
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1001   error medio  er'' =   0.2475
+      error maximo er' =   0.4375   error maximo er'' =   0.3550
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0838   error medio  er'' =   0.0707
+      error maximo er' =   0.1446   error maximo er'' =   0.2913
+  Medido (cuadrados mínimos, 8 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.3384   error medio  er'' =   0.1463
+      error maximo er' =   1.0295   error maximo er'' =   0.5623
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1039   error medio  er'' =   0.2351
+      error maximo er' =   0.3831   error maximo er'' =   0.3550
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0838   error medio  er'' =   0.0707
+      error maximo er' =   0.1446   error maximo er'' =   0.2913
+  Tabla resumen (acetona):
+ f (GHz) |            Teorico | Medido (simplificado, 3 patrones) | Medido (completo, 4 patrones, Gn original) | Medido (completo, 4 patrones, Gn acondicionado) | Medido (cuadrados mínimos, 8 patrones, Gn original) | Medido (cuadrados mínimos, 8 patrones, Gn acondicionado)
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+   0.500 |        21.02-0.17j |        21.33-0.18j |        20.38-0.80j |        21.33-0.19j |        20.93-0.45j |        20.93-0.45j
+   0.900 |        21.02-0.31j |        21.31-0.32j |        20.08-0.84j |        21.30-0.37j |        20.89-0.51j |        20.89-0.51j
+   1.800 |        21.00-0.61j |        21.07-0.55j |        19.91-0.85j |        21.02-0.69j |        20.88-0.70j |        20.88-0.70j
+   2.450 |        20.98-0.83j |        20.87-0.57j |        19.87-0.97j |        20.76-0.83j |        20.87-0.88j |        20.87-0.88j
+   3.500 |        20.93-1.19j |        20.57-0.72j |        20.03-1.35j |        20.31-1.20j |        20.86-1.22j |        20.86-1.22j
+   5.800 |        20.78-1.95j |        20.16-0.07j |        19.78-2.98j |        19.79-2.26j |        20.74-1.98j |        20.74-1.98j
+   6.000 |        20.76-2.01j |        20.22-0.15j |        19.92-3.05j |        19.91-2.33j |        20.73-2.06j |        20.73-2.06j
+  CSV guardado: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\tabla_acetona.csv
+
+Procesando: butanol  (C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/butilico_sonda_3mm_9oct.s1p)
+  butanol              <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/butilico_sonda_3mm_9oct.s1p  (1280 puntos, 0.001-6.000 GHz)
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0380 GHz (|Gn| ahi = 5.228e-06; el minimo real de |Gn| en todo el barrido es 5.228e-06, en f=0.0380 GHz).
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0290 GHz (|Gn| ahi = 8.555e-07; el minimo real de |Gn| en todo el barrido es 8.555e-07, en f=0.0290 GHz).
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+  Figura guardada: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\er_butanol.png
+  Error absoluto:
+  Medido (simplificado, 3 patrones) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2926   error medio  er'' =   0.3189
+      error maximo er' =   1.5625   error maximo er'' =   2.1705
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.4222   error medio  er'' =   0.2103
+      error maximo er' =   0.6906   error maximo er'' =   0.4964
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1739   error medio  er'' =   0.1395
+      error maximo er' =   0.6097   error maximo er'' =   0.3167
+  Medido (completo, 4 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1804   error medio  er'' =   0.1685
+      error maximo er' =   0.6530   error maximo er'' =   0.6288
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0664   error medio  er'' =   0.0647
+      error maximo er' =   0.2257   error maximo er'' =   0.2046
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0253   error medio  er'' =   0.0155
+      error maximo er' =   0.0550   error maximo er'' =   0.0611
+  Medido (completo, 4 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2926   error medio  er'' =   0.3188
+      error maximo er' =   1.5625   error maximo er'' =   2.1705
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.4209   error medio  er'' =   0.2103
+      error maximo er' =   0.6882   error maximo er'' =   0.4960
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1227   error medio  er'' =   0.0662
+      error maximo er' =   0.6050   error maximo er'' =   0.2241
+  Medido (cuadrados mínimos, 8 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1685   error medio  er'' =   0.1442
+      error maximo er' =   0.6260   error maximo er'' =   0.5150
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1472   error medio  er'' =   0.1114
+      error maximo er' =   0.2852   error maximo er'' =   0.2414
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0535   error medio  er'' =   0.0333
+      error maximo er' =   0.2109   error maximo er'' =   0.0987
+  Medido (cuadrados mínimos, 8 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1972   error medio  er'' =   0.2264
+      error maximo er' =   0.9203   error maximo er'' =   1.4918
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1455   error medio  er'' =   0.1180
+      error maximo er' =   0.2852   error maximo er'' =   0.2903
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0535   error medio  er'' =   0.0333
+      error maximo er' =   0.2109   error maximo er'' =   0.0987
+  Tabla resumen (butanol):
+ f (GHz) |            Teorico | Medido (simplificado, 3 patrones) | Medido (completo, 4 patrones, Gn original) | Medido (completo, 4 patrones, Gn acondicionado) | Medido (cuadrados mínimos, 8 patrones, Gn original) | Medido (cuadrados mínimos, 8 patrones, Gn acondicionado)
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+   0.500 |         6.57-6.02j |         7.14-6.14j |         6.60-6.05j |         7.13-6.15j |         6.76-6.09j |         6.76-6.09j
+   0.900 |         4.60-3.97j |         4.99-4.17j |         4.59-4.01j |         4.98-4.17j |         4.70-4.06j |         4.70-4.06j
+   1.800 |         3.75-2.22j |         3.95-2.34j |         3.71-2.24j |         3.93-2.36j |         3.78-2.28j |         3.78-2.28j
+   2.450 |         3.57-1.74j |         3.74-1.79j |         3.54-1.76j |         3.70-1.83j |         3.61-1.78j |         3.61-1.78j
+   3.500 |         3.42-1.34j |         3.52-1.28j |         3.40-1.34j |         3.45-1.34j |         3.46-1.35j |         3.46-1.35j
+   5.800 |         3.23-0.95j |         3.35-0.66j |         3.21-0.96j |         3.21-0.96j |         3.30-0.96j |         3.30-0.96j
+   6.000 |         3.22-0.93j |         3.32-0.64j |         3.21-0.94j |         3.21-0.94j |         3.28-0.95j |         3.28-0.95j
+  CSV guardado: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\tabla_butanol.csv
+
+Procesando: ciclohexano  (C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/ciclohexano2_sonda_3mm_9oct.s1p)
+  ciclohexano          <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/ciclohexano2_sonda_3mm_9oct.s1p  (1280 puntos, 0.001-6.000 GHz)
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0380 GHz (|Gn| ahi = 5.228e-06; el minimo real de |Gn| en todo el barrido es 5.228e-06, en f=0.0380 GHz).
+[aviso] posible salto de rama del polinomio entre 0.001 GHz y 0.002 GHz (cambio relativo 99%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.002 GHz y 0.003 GHz (cambio relativo 156%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.003 GHz y 0.004 GHz (cambio relativo 63%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.004 GHz y 0.005 GHz (cambio relativo 59%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.007 GHz y 0.008 GHz (cambio relativo 78%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.008 GHz y 0.009 GHz (cambio relativo 69%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.010 GHz y 0.011 GHz (cambio relativo 55%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.011 GHz y 0.012 GHz (cambio relativo 84%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.012 GHz y 0.013 GHz (cambio relativo 127%, revisar esa zona)
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+[aviso] posible salto de rama del polinomio entre 0.001 GHz y 0.002 GHz (cambio relativo 100%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.002 GHz y 0.003 GHz (cambio relativo 60%, revisar esa zona)
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0290 GHz (|Gn| ahi = 8.555e-07; el minimo real de |Gn| en todo el barrido es 8.555e-07, en f=0.0290 GHz).
+[aviso] posible salto de rama del polinomio entre 0.001 GHz y 0.002 GHz (cambio relativo 65%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.002 GHz y 0.003 GHz (cambio relativo 76%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.003 GHz y 0.004 GHz (cambio relativo 97%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.004 GHz y 0.005 GHz (cambio relativo 97%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.007 GHz y 0.008 GHz (cambio relativo 56%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.012 GHz y 0.013 GHz (cambio relativo 63%, revisar esa zona)
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+[aviso] posible salto de rama del polinomio entre 0.001 GHz y 0.002 GHz (cambio relativo 115%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.002 GHz y 0.003 GHz (cambio relativo 129%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.003 GHz y 0.004 GHz (cambio relativo 90%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.004 GHz y 0.005 GHz (cambio relativo 55%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.007 GHz y 0.008 GHz (cambio relativo 69%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.008 GHz y 0.009 GHz (cambio relativo 56%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.010 GHz y 0.011 GHz (cambio relativo 70%, revisar esa zona)
+[aviso] posible salto de rama del polinomio entre 0.012 GHz y 0.013 GHz (cambio relativo 54%, revisar esa zona)
+  [ADVERTENCIA - modelo teorico 'Ciclohexano (Kaatze 2007 + Afsar 1980)']
+    El ciclohexano es NO POLAR: no tiene relajacion dipolar, asi que no existe -- ni puede existir -- un modelo de Debye. Aca la permitividad constante NO es una aproximacion de conveniencia, es el comportamiento fisico real.
+    • er'(T) = 2.0565 - 1.620e-3*T[°C], ajustado sobre los 9 puntos del NPL MAT 23 con residuo < 0.001. Reproduce la ecuacion (9) de Kaatze (2007). Validado 10-50 °C (funde a 6.5 °C).
+    • Constante en frecuencia: Afsar et al. (1980) promedian er' = 2.0126 ± 0.0056 entre 1 y 300 GHz sin evidencia de dispersion, y Kaatze lo extiende hasta la region submilimetrica con error < 0.05%.
+    • er''(f) = 1.08e-5*(f/GHz)^0.791, de la curva E de la figura 4 de Afsar (25 °C). Da 4.1e-4 a 100 GHz y recien llega a 1e-3 cerca de 300 GHz: esta MUY por debajo de lo que puede resolver una sonda coaxial, asi que el error relativo de er'' contra esta referencia se informa como n/a.
+    • Como patron de calibracion: Kaatze (2007) lo recomienda explicitamente como uno de los cuatro liquidos de referencia, justamente porque hace falta un patron de BAJA permitividad para medir bien muestras de baja permitividad (la capacidad efectiva de la sonda depende de la permitividad de la muestra). Como 3er patron de una calibracion de solo 3, en cambio, queda mal condicionado frente al aire.
+  Figura guardada: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\er_ciclohexano.png
+  Error absoluto:
+  Medido (simplificado, 3 patrones) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2903   error medio  er'' =     n/a
+      error maximo er' =   1.4144   error maximo er'' =     n/a
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0754   error medio  er'' =     n/a
+      error maximo er' =   0.4079   error maximo er'' =     n/a
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0351   error medio  er'' =     n/a
+      error maximo er' =   0.0830   error maximo er'' =     n/a
+      (er'' = n/a: las perdidas de referencia son menores que la resolucion de la sonda, ver la advertencia de ese modelo)
+  Medido (completo, 4 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2889   error medio  er'' =     n/a
+      error maximo er' =   1.4136   error maximo er'' =     n/a
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0547   error medio  er'' =     n/a
+      error maximo er' =   0.3844   error maximo er'' =     n/a
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0196   error medio  er'' =     n/a
+      error maximo er' =   0.0475   error maximo er'' =     n/a
+      (er'' = n/a: las perdidas de referencia son menores que la resolucion de la sonda, ver la advertencia de ese modelo)
+  Medido (completo, 4 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' = 266822.2022   error medio  er'' =     n/a
+      error maximo er' = 895493.9682   error maximo er'' =     n/a
+    [0.05 - 0.50 GHz]:
+      error medio  er' = 29215.2010   error medio  er'' =     n/a
+      error maximo er' = 93492.6835   error maximo er'' =     n/a
+    [0.50 - 6.00 GHz]:
+      error medio  er' = 652.1027   error medio  er'' =     n/a
+      error maximo er' = 4232.2563   error maximo er'' =     n/a
+      (er'' = n/a: las perdidas de referencia son menores que la resolucion de la sonda, ver la advertencia de ese modelo)
+  Medido (cuadrados mínimos, 8 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1519   error medio  er'' =     n/a
+      error maximo er' =   0.6995   error maximo er'' =     n/a
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0846   error medio  er'' =     n/a
+      error maximo er' =   0.1760   error maximo er'' =     n/a
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0612   error medio  er'' =     n/a
+      error maximo er' =   0.1419   error maximo er'' =     n/a
+      (er'' = n/a: las perdidas de referencia son menores que la resolucion de la sonda, ver la advertencia de ese modelo)
+  Medido (cuadrados mínimos, 8 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2109   error medio  er'' =     n/a
+      error maximo er' =   0.8856   error maximo er'' =     n/a
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0886   error medio  er'' =     n/a
+      error maximo er' =   0.1618   error maximo er'' =     n/a
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0612   error medio  er'' =     n/a
+      error maximo er' =   0.1419   error maximo er'' =     n/a
+      (er'' = n/a: las perdidas de referencia son menores que la resolucion de la sonda, ver la advertencia de ese modelo)
+  Tabla resumen (ciclohexano):
+ f (GHz) |            Teorico | Medido (simplificado, 3 patrones) | Medido (completo, 4 patrones, Gn original) | Medido (completo, 4 patrones, Gn acondicionado) | Medido (cuadrados mínimos, 8 patrones, Gn original) | Medido (cuadrados mínimos, 8 patrones, Gn acondicionado)
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+   0.500 |         2.02-0.00j |         2.06+0.02j |         2.01-0.02j |   4234.28+9563.82j |         1.89+0.10j |         1.89+0.10j
+   0.900 |         2.02-0.00j |         2.09+0.01j |         2.01-0.02j |   1930.76+4362.67j |         1.92+0.11j |         1.92+0.11j
+   1.800 |         2.02-0.00j |         2.08+0.00j |         2.01-0.02j |    764.82+1730.05j |         1.96+0.09j |         1.96+0.09j
+   2.450 |         2.02-0.00j |         2.06+0.02j |         2.00-0.01j |    506.48+1146.69j |         1.96+0.08j |         1.96+0.08j
+   3.500 |         2.02-0.00j |         2.03+0.03j |         2.00-0.01j |     314.25+712.60j |         1.97+0.03j |         1.97+0.03j
+   5.800 |         2.02-0.00j |         1.99+0.13j |         1.99-0.01j |     191.80+216.80j |         1.98+0.01j |         1.98+0.01j
+   6.000 |         2.02-0.00j |         1.98+0.12j |         1.99-0.01j |     199.44+212.52j |         1.98+0.00j |         1.98+0.00j
+  CSV guardado: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\tabla_ciclohexano.csv
+
+Procesando: agua  (C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/agua21grados_sonda_3mm_9oct.s1p)
+  agua                 <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/agua21grados_sonda_3mm_9oct.s1p  (1280 puntos, 0.001-6.000 GHz)
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0380 GHz (|Gn| ahi = 5.228e-06; el minimo real de |Gn| en todo el barrido es 5.228e-06, en f=0.0380 GHz).
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0290 GHz (|Gn| ahi = 8.555e-07; el minimo real de |Gn| en todo el barrido es 8.555e-07, en f=0.0290 GHz).
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+  Figura guardada: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\er_agua.png
+  Error absoluto:
+  Medido (simplificado, 3 patrones) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+  Medido (completo, 4 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+  Medido (completo, 4 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+  Medido (cuadrados mínimos, 8 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0024   error medio  er'' =   0.0025
+      error maximo er' =   0.0116   error maximo er'' =   0.0079
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0081   error medio  er'' =   0.0062
+      error maximo er' =   0.0131   error maximo er'' =   0.0088
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0396   error medio  er'' =   0.0077
+      error maximo er' =   0.1192   error maximo er'' =   0.0708
+  Medido (cuadrados mínimos, 8 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1411   error medio  er'' =   0.2736
+      error maximo er' =   0.2985   error maximo er'' =   0.9073
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1366   error medio  er'' =   0.2543
+      error maximo er' =   0.9861   error maximo er'' =   1.9655
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0396   error medio  er'' =   0.0077
+      error maximo er' =   0.1192   error maximo er'' =   0.0708
+  Tabla resumen (agua):
+ f (GHz) |            Teorico | Medido (simplificado, 3 patrones) | Medido (completo, 4 patrones, Gn original) | Medido (completo, 4 patrones, Gn acondicionado) | Medido (cuadrados mínimos, 8 patrones, Gn original) | Medido (cuadrados mínimos, 8 patrones, Gn acondicionado)
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+   0.500 |        79.65-2.13j |        79.65-2.13j |        79.65-2.13j |        79.65-2.13j |        79.67-2.12j |        79.67-2.12j
+   0.900 |        79.52-3.82j |        79.52-3.82j |        79.52-3.82j |        79.52-3.82j |        79.53-3.82j |        79.53-3.82j
+   1.800 |        78.93-7.59j |        78.93-7.59j |        78.93-7.59j |        78.93-7.59j |        78.95-7.58j |        78.95-7.58j
+   2.450 |       78.28-10.23j |       78.28-10.23j |       78.28-10.23j |       78.28-10.23j |       78.30-10.23j |       78.30-10.23j
+   3.500 |       76.84-14.33j |       76.84-14.33j |       76.84-14.33j |       76.84-14.33j |       76.88-14.33j |       76.88-14.33j
+   5.800 |       72.33-22.25j |       72.33-22.25j |       72.33-22.25j |       72.33-22.25j |       72.41-22.23j |       72.41-22.23j
+   6.000 |       71.87-22.86j |       71.87-22.86j |       71.87-22.86j |       71.87-22.86j |       71.94-22.81j |       71.94-22.81j
+  CSV guardado: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\tabla_agua.csv
+
+Procesando: isopropilico  (C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/isopropilico_sonda_3mm_9oct.s1p)
+  isopropilico         <- C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct/isopropilico_sonda_3mm_9oct.s1p  (1280 puntos, 0.001-6.000 GHz)
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0380 GHz (|Gn| ahi = 5.228e-06; el minimo real de |Gn| en todo el barrido es 5.228e-06, en f=0.0380 GHz).
+  [get_er_DUT_completo] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0290 GHz (|Gn| ahi = 8.555e-07; el minimo real de |Gn| en todo el barrido es 8.555e-07, en f=0.0290 GHz).
+  [minimos_cuadrados] estrategia='minimo_gn': la marcha arranca en f=0.0010 GHz (|Gn| ahi = 0; el minimo real de |Gn| en todo el barrido es 0, en f=0.0010 GHz).
+  Figura guardada: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\er_isopropilico.png
+  Error absoluto:
+  Medido (simplificado, 3 patrones) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2764   error medio  er'' =   0.2621
+      error maximo er' =   1.1793   error maximo er'' =   1.6578
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.4918   error medio  er'' =   0.1949
+      error maximo er' =   0.8125   error maximo er'' =   0.4238
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.2482   error medio  er'' =   0.1556
+      error maximo er' =   0.7515   error maximo er'' =   0.3423
+  Medido (completo, 4 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0103   error medio  er'' =   0.0123
+      error maximo er' =   0.0953   error maximo er'' =   0.1087
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.0000   error medio  er'' =   0.0000
+      error maximo er' =   0.0000   error maximo er'' =   0.0000
+  Medido (completo, 4 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.2764   error medio  er'' =   0.2621
+      error maximo er' =   1.1793   error maximo er'' =   1.6578
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.4903   error medio  er'' =   0.1941
+      error maximo er' =   0.8090   error maximo er'' =   0.4233
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1573   error medio  er'' =   0.0753
+      error maximo er' =   0.7451   error maximo er'' =   0.2618
+  Medido (cuadrados mínimos, 8 patrones, Gn original) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.0936   error medio  er'' =   0.1107
+      error maximo er' =   0.4296   error maximo er'' =   0.5713
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1715   error medio  er'' =   0.0690
+      error maximo er' =   0.3214   error maximo er'' =   0.1891
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1055   error medio  er'' =   0.0562
+      error maximo er' =   0.2944   error maximo er'' =   0.1249
+  Medido (cuadrados mínimos, 8 patrones, Gn acondicionado) (error absoluto por intervalos):
+    [0.01 - 0.05 GHz]:
+      error medio  er' =   0.1674   error medio  er'' =   0.1783
+      error maximo er' =   0.5343   error maximo er'' =   1.0341
+    [0.05 - 0.50 GHz]:
+      error medio  er' =   0.1778   error medio  er'' =   0.0790
+      error maximo er' =   0.3214   error maximo er'' =   0.2270
+    [0.50 - 6.00 GHz]:
+      error medio  er' =   0.1055   error medio  er'' =   0.0562
+      error maximo er' =   0.2944   error maximo er'' =   0.1249
+  Tabla resumen (isopropilico):
+ f (GHz) |            Teorico | Medido (simplificado, 3 patrones) | Medido (completo, 4 patrones, Gn original) | Medido (completo, 4 patrones, Gn acondicionado) | Medido (cuadrados mínimos, 8 patrones, Gn original) | Medido (cuadrados mínimos, 8 patrones, Gn acondicionado)
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+   0.500 |         9.02-7.83j |         9.75-7.91j |         9.02-7.83j |         9.74-7.91j |         9.31-7.89j |         9.31-7.89j
+   0.900 |         5.73-5.68j |         6.27-5.91j |         5.73-5.68j |         6.25-5.92j |         5.93-5.80j |         5.93-5.80j
+   1.800 |         4.12-3.25j |         4.41-3.40j |         4.12-3.25j |         4.37-3.42j |         4.22-3.34j |         4.22-3.34j
+   2.450 |         3.81-2.50j |         4.05-2.57j |         3.81-2.50j |         3.99-2.60j |         3.90-2.57j |         3.90-2.57j
+   3.500 |         3.59-1.87j |         3.74-1.81j |         3.59-1.87j |         3.65-1.87j |         3.66-1.90j |         3.66-1.90j
+   5.800 |         3.36-1.25j |         3.53-0.93j |         3.36-1.25j |         3.36-1.25j |         3.46-1.28j |         3.46-1.28j
+   6.000 |         3.35-1.21j |         3.50-0.90j |         3.35-1.21j |         3.35-1.21j |         3.44-1.23j |         3.44-1.23j
+  CSV guardado: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\tabla_isopropilico.csv
+  Informe PDF guardado: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30\informe_permitividad_v1.pdf
+
+Listo. Figuras, tablas e informe PDF en: C:\Facu\UTN\ME2\Proyecto\codigo\salidas\2026-10-15\21-39-30
+
+=== Analisis terminado con exito ===

@@ -1,0 +1,79 @@
+{
+  "carpeta_datos": "C:/Facu/UTN/ME2/Proyecto/codigo/Sonda_2026_py/mediciones_sonda_3mm_09oct",
+  "archivo_corto": "short_sonda_3mm_9oct.s1p",
+  "archivo_aire": "open_sonda_3mm_9oct.s1p",
+  "f_min_ghz": 0.01,
+  "f_max_ghz": 6.0,
+  "f_err_int1_ghz": 0.01,
+  "f_err_int2_ghz": 0.5,
+  "escala_log_frecuencia": true,
+  "estrategia_gn": "minimo_gn",
+  "metodos_calculo": {
+    "simplificado": false,
+    "completo_sin_acond": true,
+    "completo_con_acond": true,
+    "mc_sin_acond": true,
+    "mc_con_acond": true
+  },
+  "mc_k_liquidos": "todos",
+  "acondicionar_gn": {
+    "tipo": "transicion_polinomica_cero",
+    "modo": "automatico",
+    "umbral_pct": 100.0,
+    "f1_ghz": 0.0,
+    "f2_ghz": 0.5
+  },
+  "carpeta_salida": "..\\salidas",
+  "guardar_subcarpeta_fechayhora": true,
+  "exportar_imagenes_csv": true,
+  "candidatos": [
+    {
+      "nombre": "Agua",
+      "archivo": "agua21grados_sonda_3mm_9oct.s1p",
+      "modelo": "agua",
+      "temperatura": 21.0,
+      "habilitado": true,
+      "alias": "Agu"
+    },
+    {
+      "nombre": "Alcohol etilico",
+      "archivo": "etilico_sonda_3mm_9oct.s1p",
+      "modelo": "alcohol_etilico",
+      "temperatura": 21.0,
+      "habilitado": true,
+      "alias": "Eti"
+    },
+    {
+      "nombre": "Alcohol isopropilico",
+      "archivo": "isopropilico_sonda_3mm_9oct.s1p",
+      "modelo": "alcohol_isopropilico",
+      "temperatura": 21.0,
+      "habilitado": true,
+      "alias": "Iso"
+    },
+    {
+      "nombre": "Butanol",
+      "archivo": "butilico_sonda_3mm_9oct.s1p",
+      "modelo": "butanol",
+      "temperatura": 21.0,
+      "habilitado": true,
+      "alias": "But"
+    },
+    {
+      "nombre": "Ciclohexano",
+      "archivo": "ciclohexano2_sonda_3mm_9oct.s1p",
+      "modelo": "ciclohexano",
+      "temperatura": 21.0,
+      "habilitado": true,
+      "alias": "Cic"
+    },
+    {
+      "nombre": "Acetona",
+      "archivo": "acetona_sonda_3mm_9oct.s1p",
+      "modelo": "acetona",
+      "temperatura": 21.0,
+      "habilitado": true,
+      "alias": "Ace"
+    }
+  ]
+}

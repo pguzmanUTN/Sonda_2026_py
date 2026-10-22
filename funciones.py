@@ -132,7 +132,7 @@ def get_er_DUTm(frecs, S11_medido, S11_patron3, S11_aire, S11_corto,
 # Metodo completo (4 patrones: corto, aire, patron3, patron4)
 # ---------------------------------------------------------------------------
 def calcular_Gn(frecs, S11_patron3, S11_aire, S11_patron4, S11_corto,
-                 Er_patron3, Er_patron4, Er_aire=ER_AIRE):
+                 Er_patron3, Er_patron4, Er_aire=ER_AIRE, verbose=True):
     """
     Calcula la conductancia normalizada Gn(f) del modelo de admitancia
     completo (ecuacion (17) de Higa/Cismondi/Grass 2016 y de Henze et al.
@@ -166,11 +166,15 @@ def calcular_Gn(frecs, S11_patron3, S11_aire, S11_patron4, S11_corto,
         `Patrones.PATRONES_TEORICOS`).
     Er_aire : float
         Permitividad relativa del aire (por defecto 1.0006).
+    verbose : bool
+        Si es True, imprime en consola los valores de los patrones,
+        diferencias dij, numerador, denominador y Gn resultante.
 
     Retorna
     -------
     ndarray complejo: Gn(f), mismo largo que `frecs`.
     """
+    frecs = np.asarray(frecs, dtype=float)
     r_patron3 = np.asarray(S11_patron3, dtype=complex)
     r_aire = np.asarray(S11_aire, dtype=complex)
     r_patron4 = np.asarray(S11_patron4, dtype=complex)
@@ -195,7 +199,50 @@ def calcular_Gn(frecs, S11_patron3, S11_aire, S11_patron4, S11_corto,
     den_Gn = (d41 * d32 * (Er_patron4 ** 2.5)
               + d42 * d13 * (Er_patron3 ** 2.5)
               + d43 * d21 * (Er_aire ** 2.5))
-    return -num_Gn / den_Gn
+    Gn = -num_Gn / den_Gn
+
+    if verbose:
+        print("\n" + "=" * 70)
+        print("[calcular_Gn] VALORES DE ENTRADA Y CALCULO INTERMEDIO DE Gn")
+        print("=" * 70)
+        print(f"r_corto:\n{r_corto}\n")
+        print(f"r_aire:\n{r_aire}\n")
+        print(f"r_patron3:\n{r_patron3}\n")
+        print(f"r_patron4:\n{r_patron4}\n")
+        print("-" * 70)
+        print("Diferencias entre patrones (dij):")
+        print(f"d41 (r_patron4 - r_corto):\n{d41}\n")
+        print(f"d32 (r_patron3 - r_aire):\n{d32}\n")
+        print(f"d42 (r_patron4 - r_aire):\n{d42}\n")
+        print(f"d13 (r_corto - r_patron3):\n{d13}\n")
+        print(f"d43 (r_patron4 - r_patron3):\n{d43}\n")
+        print(f"d21 (r_aire - r_corto):\n{d21}\n")
+        print("-" * 70)
+        print(f"num_Gn (numerador):\n{num_Gn}\n")
+        print(f"den_Gn (denominador):\n{den_Gn}\n")
+        print(f"Gn = -num_Gn / den_Gn:\n{Gn}\n")
+
+        n_pts = len(frecs) if hasattr(frecs, '__len__') else 1
+        indices_rep = list(dict.fromkeys([0, n_pts // 2, n_pts - 1]))
+        print("-" * 70)
+        print(f"Muestra detallada en {len(indices_rep)} frecuencias representativas:")
+        for idx in indices_rep:
+            f_val = frecs[idx] if hasattr(frecs, '__getitem__') else frecs
+            f_ghz = f_val / 1e9
+            print(f"\n  * Frecuencia: {f_ghz:.3f} GHz (punto {idx+1}/{n_pts})")
+            print(f"    r_corto   = {r_corto[idx]:.6f}")
+            print(f"    r_aire    = {r_aire[idx]:.6f}")
+            print(f"    r_patron3 = {r_patron3[idx]:.6f}")
+            print(f"    r_patron4 = {r_patron4[idx]:.6f}")
+            print(f"    d41 = {d41[idx]:.6f} | d32 = {d32[idx]:.6f}")
+            print(f"    d42 = {d42[idx]:.6f} | d13 = {d13[idx]:.6f}")
+            print(f"    d43 = {d43[idx]:.6f} | d21 = {d21[idx]:.6f}")
+            print(f"    num_Gn    = {num_Gn[idx]:.6e}")
+            print(f"    den_Gn    = {den_Gn[idx]:.6e}")
+            print(f"    Gn        = {Gn[idx]:.6e}  -->  Re(Gn) = {Gn[idx].real:.6e}, Im(Gn) = {Gn[idx].imag:.6e}")
+        print("=" * 70 + "\n")
+
+    return Gn
 
 
 def _resolver_raiz_fisica(coeficientes, semilla):
