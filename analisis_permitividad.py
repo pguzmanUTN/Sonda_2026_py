@@ -101,10 +101,15 @@ from matplotlib.ticker import FormatStrFormatter
 
 from Touchstone import (leer_s1p, mismas_frecuencias, resamplear,
                          graficar_s11_mag_fase, graficar_smith)
-from funciones import get_er_DUTm, get_er_DUT_completo, error_relativo_porcentual, calcular_Gn
-from Patrones import (PATRONES_TEORICOS, etiqueta_patron, advertencia_patron,
-                       nivel_advertencia_patron, es_modelo_estatico,
-                       modela_perdidas, perdidas_comparables,
+from funciones import (get_er_DUTm, get_er_DUT_completo, error_absoluto,
+                       error_relativo_porcentual, calcular_Gn, acondicionar_gn,
+                       calibrar_minimos_cuadrados, reajustar_abc_con_gn_fijo,
+                       get_er_DUT_minimos_cuadrados,
+                       validacion_cruzada_minimos_cuadrados, filtrar_s11_savgol,
+                       filtrar_s11_pasabajos)
+from Patrones import (PATRONES_TEORICOS, ER_AIRE, etiqueta_patron,
+                       advertencia_patron, nivel_advertencia_patron,
+                       es_modelo_estatico, modela_perdidas, perdidas_comparables,
                        resumen_corto_patron, etiqueta_curva_teorica)
 from reporte_pdf import generar_reporte_pdf
 
@@ -161,6 +166,21 @@ PATRON3_TEMPERATURA_CAL_C = 25.0
 # analizados con el metodo completo, no solo el del propio patron 4.
 PATRON4_MODELO_CAL = 'alcohol_isopropilico'
 PATRON4_TEMPERATURA_CAL_C = 25.0
+
+# Calibracion redundante por cuadrados minimos (opcional): usa TODOS los
+# patrones disponibles a la vez (corto + aire + patron 3 + patron 4 + los
+# patrones adicionales de abajo) para ajustar los 4 parametros del modelo
+# de la sonda en el sentido de cuadrados minimos sobre S11 medido, en vez
+# de resolver un sistema exacto con solo 3 o 4 patrones. Con >= 5 patrones
+# el sistema queda sobredeterminado: el error de medicion se promedia entre
+# todos y ademas se puede medir el residuo de cada patron para detectar si
+# alguno quedo mal medido.
+USAR_MINIMOS_CUADRADOS = False
+PATRONES_ADICIONALES = [
+    # {'archivo': "sonda4-alc-etilico.s1p", 'modelo': 'alcohol_etilico', 'temperatura_c': 20.0},
+    # {'archivo': "sonda4-acetona.s1p",     'modelo': 'acetona',         'temperatura_c': 25.0},
+    # {'archivo': "sonda4-ciclohexano.s1p", 'modelo': 'ciclohexano',     'temperatura_c': 25.0},
+]
 
 TEMPERATURA_ALC_ETILICO_C = 20.0
 TEMPERATURA_ALC_ISOPROP_C = 25.0
@@ -352,13 +372,14 @@ def cargar_calibracion(carpeta, archivos, cache):
     return datos
 
 
-def _copiar_insumos(carpeta_datos, archivos_calibracion, materiales, carpeta_destino, log):
+def _copiar_insumos(carpeta_datos, archivos_calibracion, materiales, carpeta_destino, log,
+                    patrones_adicionales=()):
     """
-    Copia los .s1p de ENTRADA (los 4 patrones de calibracion + el archivo
-    de cada material) a `carpeta_destino` -- la carpeta del DIA de esta
-    corrida, ver `ejecutar_analisis` -- para dejar un registro de con que
-    mediciones exactas se genero cada informe, sin depender de que la
-    carpeta de datos original no se toque despues.
+    Copia los .s1p de ENTRADA (los patrones de calibracion + patrones
+    adicionales + el archivo de cada material) a `carpeta_destino` -- la
+    carpeta del DIA de esta corrida, ver `ejecutar_analisis` -- para dejar un
+    registro de con que mediciones exactas se genero cada informe, sin
+    depender de que la carpeta de datos original no se toque despues.
 
     Se copian a la carpeta del DIA (compartida entre todas las corridas
     de ese dia) y no a la de la hora (especifica de esta corrida), para
@@ -369,8 +390,9 @@ def _copiar_insumos(carpeta_datos, archivos_calibracion, materiales, carpeta_des
     (p.ej. problema de permisos): lo avisa por `log` y sigue con el resto.
     """
     os.makedirs(carpeta_destino, exist_ok=True)
-    nombres = list(archivos_calibracion.values()) + \
-        [m['archivo'] for m in materiales if m.get('archivo')]
+    nombres = (list(archivos_calibracion.values())
+               + [p['archivo'] for p in patrones_adicionales if p.get('archivo')]
+               + [m['archivo'] for m in materiales if m.get('archivo')])
     copiados = 0
     for nombre in nombres:
         origen = os.path.join(carpeta_datos, nombre)
@@ -389,7 +411,7 @@ def _copiar_insumos(carpeta_datos, archivos_calibracion, materiales, carpeta_des
 
 
 def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_salida=None,
-                          log_x=True, etiqueta_teorico="Teorico (Debye)"):
+                          log_x=True, etiqueta_teorico="Teorico (Debye)", limitar_eje_y=True):
     """
     Grafica parte real e imaginaria: curva medida (una o varias) y, si se
     conoce, la curva teorica de referencia.
@@ -420,6 +442,11 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
         ciclohexano, silicona) no tienen ecuacion de relajacion, asi que
         etiquetarlos como "Debye" seria engañoso. `procesar_material`
         pasa la etiqueta que corresponde a cada modelo.
+    limitar_eje_y : bool, opcional (default True)
+        Si es True, y algun trace de medicion excede el rango
+        [curva_teorica_min - 1, curva_teorica_max + 1], limita el eje Y
+        a dicho intervalo para evitar distorsiones. Si es False, se deja
+        el autoescalado por defecto de matplotlib.
     """
     from matplotlib.figure import Figure
     fig = Figure(figsize=(9, 7))
@@ -447,6 +474,42 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
     ax_im.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
     ax_im.legend()
 
+    # Limitar rango del eje Y si algun trace de las calibraciones excede
+    # el intervalo [curva_teorica_min - 1, curva_teorica_max + 1].
+    # En caso contrario (o si limitar_eje_y es False), se preserva el autoescalado natural de matplotlib.
+    if limitar_eje_y and er_teorico is not None:
+        # 1. Parte real (ax_re)
+        teo_re = np.real(er_teorico)
+        valid_teo_re = teo_re[np.isfinite(teo_re)]
+        if len(valid_teo_re) > 0:
+            lim_inf_re = float(np.min(valid_teo_re)) - 1.0
+            lim_sup_re = float(np.max(valid_teo_re)) + 1.0
+            excede_re = False
+            for er in er_medido_dict.values():
+                v = np.real(er)
+                v_valid = v[np.isfinite(v)]
+                if len(v_valid) > 0 and (np.min(v_valid) < lim_inf_re or np.max(v_valid) > lim_sup_re):
+                    excede_re = True
+                    break
+            if excede_re:
+                ax_re.set_ylim(lim_inf_re, lim_sup_re)
+
+        # 2. Parte imaginaria (ax_im)
+        teo_im = np.imag(er_teorico)
+        valid_teo_im = teo_im[np.isfinite(teo_im)]
+        if len(valid_teo_im) > 0:
+            lim_inf_im = float(np.min(valid_teo_im)) - 1.0
+            lim_sup_im = float(np.max(valid_teo_im)) + 1.0
+            excede_im = False
+            for er in er_medido_dict.values():
+                v = np.imag(er)
+                v_valid = v[np.isfinite(v)]
+                if len(v_valid) > 0 and (np.min(v_valid) < lim_inf_im or np.max(v_valid) > lim_sup_im):
+                    excede_im = True
+                    break
+            if excede_im:
+                ax_im.set_ylim(lim_inf_im, lim_sup_im)
+
     if log_x and frecs.size > 0 and np.all(frecs > 0):
         ax_re.set_xscale('log')
         # sharex=True ya deberia propagar la escala de ax_re a ax_im, pero
@@ -464,7 +527,8 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
     return fig
 
 
-def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True, marcas_inicio=None):
+def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True, marcas_inicio=None,
+                Gn_acondicionado=None, info_acond=None):
     """
     Grafica la conductancia normalizada Gn(f) calculada a partir de los 4
     patrones de calibracion (ver `funciones.calcular_Gn`), en modulo y
@@ -472,6 +536,8 @@ def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True, marcas_inicio=None):
     diagnostico de la CALIBRACION, no de un material en particular: Gn no
     depende del DUT, asi que esta misma curva aplica a todos los
     materiales analizados con el metodo completo en esta corrida.
+    Si se pasa `Gn_acondicionado`, grafica ambas curvas superpuestas para
+    comparar el original con el acondicionado.
 
     Al estar relacionada con G0/(j*w*C0) -- una propiedad fisica continua
     de la sonda -- Gn(f) deberia verse suave tanto en modulo como en
@@ -493,53 +559,72 @@ def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True, marcas_inicio=None):
     """
     from matplotlib.figure import Figure
     fig = Figure(figsize=(9, 6))
-    ax_mag, ax_fase = fig.subplots(2, 1, sharex=True)
+    ax_re, ax_im = fig.subplots(2, 1, sharex=True)
 
-    mag_Gn = np.abs(Gn)
-    # np.angle() sola da la fase "envuelta" en (-180, 180]; con np.unwrap
-    # se corrigen los saltos artificiales de +-360 grados, igual que se
-    # hace con la fase de S11 en Touchstone.graficar_s11_mag_fase.
-    fase_Gn = np.degrees(np.unwrap(np.angle(Gn)))
+    re_Gn = np.real(Gn)
+    im_Gn = np.imag(Gn)
 
     tiene_marcas = bool(marcas_inicio)
-    ax_mag.plot(frecs / 1e9, mag_Gn, linewidth=1.6, color='tab:purple',
-                label="|Gn(f)|" if tiene_marcas else None, zorder=3)
-    ax_mag.set_ylabel("|Gn|")
-    ax_mag.set_title("Conductancia normalizada Gn(f) \u2014 diagnostico de calibracion")
-    ax_mag.minorticks_on()
-    ax_mag.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
-    ax_mag.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    tiene_acond = Gn_acondicionado is not None
 
-    ax_fase.plot(frecs / 1e9, fase_Gn, linewidth=1.6, color='tab:purple',
-                 label="Fase Gn(f)" if tiene_marcas else None, zorder=3)
-    ax_fase.set_xlabel("Frecuencia (GHz)")
-    ax_fase.set_ylabel("Fase Gn (\u00b0)")
-    ax_fase.minorticks_on()
-    # Sin esto, cuando la fase varia muy poco en todo el barrido (queda
-    # casi constante), matplotlib intenta ser "util" agregando una
-    # notacion de offset+escala en la esquina que queda superpuesta y
-    # dificil de leer (p.ej. "1e-11-9e1"). Se fuerza un formato de numero
-    # llano con 2 decimales (de sobra para fase en grados) en vez de
-    # offset automatico o precision de punto flotante completa.
-    ax_fase.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-    ax_fase.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
-    ax_fase.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    if tiene_acond:
+        re_Gn_acond = np.real(Gn_acondicionado)
+        im_Gn_acond = np.imag(Gn_acondicionado)
+
+        ax_re.plot(frecs / 1e9, re_Gn, linewidth=1.4, color='#777777', linestyle='--',
+                   label="Re(Gn) Original", zorder=3)
+        ax_re.plot(frecs / 1e9, re_Gn_acond, linewidth=1.8, color='tab:purple',
+                   label="Re(Gn) Acondicionado", zorder=4)
+
+        ax_im.plot(frecs / 1e9, im_Gn, linewidth=1.4, color='#777777', linestyle='--',
+                   label="Im(Gn) Original", zorder=3)
+        ax_im.plot(frecs / 1e9, im_Gn_acond, linewidth=1.8, color='tab:purple',
+                   label="Im(Gn) Acondicionado", zorder=4)
+    else:
+        ax_re.plot(frecs / 1e9, re_Gn, linewidth=1.6, color='tab:purple',
+                   label="Re(Gn)" if tiene_marcas else None, zorder=3)
+        ax_im.plot(frecs / 1e9, im_Gn, linewidth=1.6, color='tab:purple',
+                   label="Im(Gn)" if tiene_marcas else None, zorder=3)
+
+    ax_re.set_ylabel("Re(Gn)")
+    ax_re.set_title("Conductancia normalizada Gn(f) \u2014 diagnostico de calibracion")
+    ax_re.minorticks_on()
+    ax_re.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_re.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+
+    ax_im.set_xlabel("Frecuencia (GHz)")
+    ax_im.set_ylabel("Im(Gn)")
+    ax_im.minorticks_on()
+    ax_im.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax_im.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
 
     if marcas_inicio:
         colores_marca = ['#d62728', '#2ca02c', '#ff7f0e']
         for i, (etiqueta, f_hz) in enumerate(marcas_inicio.items()):
             color = colores_marca[i % len(colores_marca)]
             f_ghz = f_hz / 1e9
-            ax_mag.axvline(f_ghz, color=color, linestyle='--', linewidth=1.4,
-                            label=f"Arranque: {etiqueta}", zorder=2)
-            ax_fase.axvline(f_ghz, color=color, linestyle='--', linewidth=1.4,
-                             label=f"Arranque: {etiqueta}", zorder=2)
-        ax_mag.legend(fontsize=8)
-        ax_fase.legend(fontsize=8)
+            ax_re.axvline(f_ghz, color=color, linestyle='--', linewidth=1.4,
+                          label=f"Arranque: {etiqueta}", zorder=2)
+            ax_im.axvline(f_ghz, color=color, linestyle='--', linewidth=1.4,
+                          label=f"Arranque: {etiqueta}", zorder=2)
+
+    if info_acond and info_acond.get('disparo_detectado'):
+        f_disp = info_acond.get('f2_aplicada') or info_acond.get('f_corte_aplicada')
+        if f_disp is not None and f_disp > 0:
+            f_disp_ghz = f_disp / 1e9
+            lbl_trans = f"Empalme/Corte: {f_disp_ghz:.3f} GHz"
+            ax_re.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
+                          label=lbl_trans, zorder=2)
+            ax_im.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
+                          label=lbl_trans, zorder=2)
+
+    if tiene_marcas or tiene_acond:
+        ax_re.legend(fontsize=8)
+        ax_im.legend(fontsize=8)
 
     if log_x and frecs.size > 0 and np.all(frecs > 0):
-        ax_mag.set_xscale('log')
-        ax_fase.set_xscale('log')
+        ax_re.set_xscale('log')
+        ax_im.set_xscale('log')
 
     fig.tight_layout()
     if archivo_salida is not None:
@@ -549,32 +634,105 @@ def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True, marcas_inicio=None):
     return fig
 
 
-def calcular_error(er_medido, er_teorico, comparar_imag=True):
-    """Devuelve un dict con el error relativo (%) promedio y maximo de
-    parte real e imaginaria, listo para tablas (consola o PDF).
-
-    Usa nanmean/nanmax porque `error_relativo_porcentual` devuelve NaN
-    donde el error no esta DEFINIDO: cuando la curva teorica tiene er''
-    identicamente 0 (el modelo de la silicona en `Patrones.py`). Si TODOS
-    los puntos de una parte son NaN, el promedio queda en NaN y quien lo
-    muestre debe imprimir "n/a" (ver `reportar_error` y
-    `reporte_pdf._fmt_error`) en lugar de inventar un 0 o un inf.
-
-    `comparar_imag=False` fuerza ese mismo n/a aunque la division se
-    pueda hacer. Hace falta para el ciclohexano: su modelo SI calcula un
-    er'' fisico (~1e-5 a 1e-4 en esta banda, de la curva E de Afsar
-    1980), pero esos valores estan ordenes de magnitud por debajo de lo
-    que resuelve una sonda coaxial, asi que el cociente existiria pero
-    compararia ruido contra un numero minusculo y daria porcentajes
-    gigantescos sin ningun significado. Lo decide
-    `Patrones.perdidas_comparables`.
+def construir_intervalos_error(f_min_ghz, f_max_ghz, f_int1_ghz=None, f_int2_ghz=None):
     """
-    err_re, err_im = error_relativo_porcentual(er_medido, er_teorico)
+    Construye 3 intervalos contiguos de frecuencia [f_a, f_b] en Hz
+    a partir de las 4 frecuencias:
+      f_min_ghz (inicial)
+      f_int1_ghz (intermedia 1 ingresada por el usuario)
+      f_int2_ghz (intermedia 2 ingresada por el usuario)
+      f_max_ghz (final)
+
+    Retorna
+    -------
+    lista de 3 tuplas: [(f0, f1), (f1, f2), (f2, f3)] en Hz.
+    """
+    f_min = min(float(f_min_ghz), float(f_max_ghz)) * 1e9
+    f_max = max(float(f_min_ghz), float(f_max_ghz)) * 1e9
+    span = f_max - f_min
+
+    try:
+        f1_val = float(f_int1_ghz) * 1e9 if f_int1_ghz is not None else None
+    except (ValueError, TypeError):
+        f1_val = None
+
+    try:
+        f2_val = float(f_int2_ghz) * 1e9 if f_int2_ghz is not None else None
+    except (ValueError, TypeError):
+        f2_val = None
+
+    if f1_val is None or f2_val is None:
+        puntos = [f_min + span / 3.0, f_min + 2.0 * span / 3.0]
+    else:
+        puntos = sorted([f1_val, f2_val])
+        if puntos[0] <= f_min or puntos[1] >= f_max or puntos[0] >= puntos[1]:
+            puntos = [f_min + span / 3.0, f_min + 2.0 * span / 3.0]
+
+    return [
+        (f_min, puntos[0]),
+        (puntos[0], puntos[1]),
+        (puntos[1], f_max)
+    ]
+
+
+def calcular_error_intervalos(frecs, er_medido, er_teorico, intervalos, comparar_imag=True):
+    """Calcula el error absoluto medio y maximo (|er_medido - er_teorico|)
+    en cada uno de los intervalos de frecuencia especificados."""
+    frecs = np.asarray(frecs, dtype=float)
+    er_m = np.asarray(er_medido, dtype=complex)
+    er_t = np.asarray(er_teorico, dtype=complex)
+
+    res = []
+    for f_a, f_b in intervalos:
+        mascara = (frecs >= f_a) & (frecs <= f_b)
+
+        f_a_ghz = f_a / 1e9
+        f_b_ghz = f_b / 1e9
+        etiq = f"{f_a_ghz:.2f} - {f_b_ghz:.2f} GHz"
+
+        if not np.any(mascara):
+            res.append({
+                'intervalo_str': etiq,
+                'f_a': f_a, 'f_b': f_b,
+                'err_re_medio': float('nan'), 'err_re_max': float('nan'),
+                'err_im_medio': float('nan'), 'err_im_max': float('nan'),
+            })
+            continue
+
+        err_re, err_im = error_absoluto(er_m[mascara], er_t[mascara])
+        if not comparar_imag:
+            err_im = np.full(np.shape(err_im), np.nan)
+
+        def _resumen(arr):
+            arr = np.asarray(arr, dtype=float)
+            if arr.size == 0 or np.all(np.isnan(arr)):
+                return float('nan'), float('nan')
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                return float(np.nanmean(arr)), float(np.nanmax(arr))
+
+        re_medio, re_max = _resumen(err_re)
+        im_medio, im_max = _resumen(err_im)
+        res.append({
+            'intervalo_str': etiq,
+            'f_a': f_a, 'f_b': f_b,
+            'err_re_medio': re_medio,
+            'err_re_max': re_max,
+            'err_im_medio': im_medio,
+            'err_im_max': im_max,
+        })
+    return res
+
+
+def calcular_error(er_medido, er_teorico, comparar_imag=True):
+    """Devuelve un dict con el error absoluto promedio y maximo de
+    parte real e imaginaria."""
+    err_re, err_im = error_absoluto(er_medido, er_teorico)
     if not comparar_imag:
         err_im = np.full(np.shape(err_im), np.nan)
 
     def _resumen(arr):
-        arr = np.abs(np.asarray(arr, dtype=float))
+        arr = np.asarray(arr, dtype=float)
         if arr.size == 0 or np.all(np.isnan(arr)):
             return float('nan'), float('nan')
         with warnings.catch_warnings():
@@ -591,32 +749,38 @@ def calcular_error(er_medido, er_teorico, comparar_imag=True):
     }
 
 
-def _fmt_pct(valor):
-    """Formatea un porcentaje de error, o 'n/a' si es NaN (error no
-    definido -- ver `calcular_error`)."""
-    return "    n/a" if valor is None or np.isnan(valor) else f"{valor:6.2f}%"
+def _fmt_abs(valor):
+    """Formatea un error absoluto, o 'n/a' si es NaN."""
+    return "    n/a" if valor is None or np.isnan(valor) else f"{valor:8.4f}"
 
 
-def reportar_error(nombre, er_medido, er_teorico, comparar_imag=True):
-    """Imprime el error relativo en consola y lo devuelve (ver `calcular_error`)."""
-    e = calcular_error(er_medido, er_teorico, comparar_imag=comparar_imag)
-    print(f"  {nombre}:")
-    print(f"    error medio  er' = {_fmt_pct(e['err_re_medio'])}   "
-          f"error medio  er'' = {_fmt_pct(e['err_im_medio'])}")
-    print(f"    error maximo er' = {_fmt_pct(e['err_re_max'])}   "
-          f"error maximo er'' = {_fmt_pct(e['err_im_max'])}")
-    if np.isnan(e['err_im_medio']):
-        # Los dos motivos posibles se distinguen mirando la referencia en
-        # si: si su er'' es identicamente 0, el modelo directamente no
-        # modela perdidas (silicona); si no, las modela pero son tan
-        # chicas que compararlas con una medicion de sonda no significa
-        # nada (ciclohexano). Ver Patrones.perdidas_comparables.
+def reportar_error_intervalos(nombre, frecs, er_medido, er_teorico, intervalos, comparar_imag=True):
+    """Imprime el error absoluto por intervalos en consola y devuelve la lista de dicts."""
+    res = calcular_error_intervalos(frecs, er_medido, er_teorico, intervalos, comparar_imag=comparar_imag)
+    print(f"  {nombre} (error absoluto por intervalos):")
+    for r in res:
+        print(f"    [{r['intervalo_str']}]:")
+        print(f"      error medio  er' = {_fmt_abs(r['err_re_medio'])}   "
+              f"error medio  er'' = {_fmt_abs(r['err_im_medio'])}")
+        print(f"      error maximo er' = {_fmt_abs(r['err_re_max'])}   "
+              f"error maximo er'' = {_fmt_abs(r['err_im_max'])}")
+    if any(np.isnan(r['err_im_medio']) for r in res):
         ref_sin_perdidas = bool(np.all(np.imag(np.asarray(er_teorico)) == 0))
         motivo = ("el modelo de referencia no modela perdidas (er'' = 0)"
                   if ref_sin_perdidas else
-                  "las perdidas de referencia son de ordenes de magnitud "
-                  "menores que lo que resuelve una sonda coaxial")
-        print(f"    (er'' = n/a: {motivo}, ver la advertencia de ese modelo)")
+                  "las perdidas de referencia son menores que la resolucion de la sonda")
+        print(f"      (er'' = n/a: {motivo}, ver la advertencia de ese modelo)")
+    return res
+
+
+def reportar_error(nombre, er_medido, er_teorico, comparar_imag=True):
+    """Imprime el error absoluto en consola y lo devuelve (ver `calcular_error`)."""
+    e = calcular_error(er_medido, er_teorico, comparar_imag=comparar_imag)
+    print(f"  {nombre}:")
+    print(f"    error medio  er' = {_fmt_abs(e['err_re_medio'])}   "
+          f"error medio  er'' = {_fmt_abs(e['err_im_medio'])}")
+    print(f"    error maximo er' = {_fmt_abs(e['err_re_max'])}   "
+          f"error maximo er'' = {_fmt_abs(e['err_im_max'])}")
     return e
 
 
@@ -799,6 +963,42 @@ def generar_grilla_frecuencias(f_min_ghz, f_max_ghz, n_puntos, log_x=True):
     return np.linspace(f_min_hz, f_max_hz, n_puntos)
 
 
+def graficar_residuos_minimos_cuadrados(frecs, residuos, archivo_salida=None, log_x=True):
+    """
+    Grafica |S11 medido - S11 predicho por el ajuste| en funcion de la
+    frecuencia para cada patron incluido en la calibracion por cuadrados
+    minimos. Con >= 5 patrones este residuo mide directamente la
+    consistencia entre patrones: una curva mucho mas alta que las demas
+    apunta al patron con peor medicion o modelo teorico menos fiel.
+    """
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(9, 5.2))
+    ax = fig.subplots(1, 1)
+
+    for nombre, res in residuos.items():
+        mag = np.maximum(np.abs(res), 1e-16)
+        ax.plot(frecs / 1e9, mag, linewidth=1.6, label=nombre)
+
+    ax.set_xlabel("Frecuencia (GHz)")
+    ax.set_ylabel("|S11 medido \u2212 S11 modelo|")
+    ax.set_title("Calibraci\u00f3n por cuadrados m\u00ednimos \u2014 residuo de S11 por patr\u00f3n")
+    ax.set_yscale('log')
+    ax.minorticks_on()
+    ax.grid(True, which='major', linestyle='-', linewidth=0.6, alpha=0.6)
+    ax.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.35)
+    ax.legend(fontsize=8)
+
+    if log_x and frecs.size > 0 and np.all(frecs > 0):
+        ax.set_xscale('log')
+
+    fig.tight_layout()
+    if archivo_salida is not None:
+        fig.savefig(archivo_salida, dpi=150)
+        print(f"  Figura guardada: {archivo_salida}")
+        return archivo_salida
+    return fig
+
+
 # Nombres lindos para cada estrategia, usados tanto en etiquetas de
 # graficos/tablas como en metadata del PDF.
 ETIQUETA_ESTRATEGIA_GN = {
@@ -810,38 +1010,107 @@ ETIQUETA_ESTRATEGIA_GN = {
 
 def _calcular_metodo_completo(frecs, s11_dut, s11_patron3, s11_aire, s11_patron4,
                                s11_corto, Er_patron3, Er_patron4, estrategia_gn,
-                               prefijo="Medido (completo", verbose=False):
+                               prefijo="Medido (completo", verbose=False,
+                               gn_original=None, gn_acondicionado=None,
+                               comparar_gn=False):
     """
     Calcula el metodo completo para un DUT (`s11_dut`), respetando
-    `estrategia_gn`:
+    `estrategia_gn` y el posible acondicionamiento de Gn:
 
-    - 'minimo_gn' / 'frecuencia_maxima': una sola corrida con esa
-      estrategia. Devuelve {f"{prefijo})": resultado} (una sola entrada).
-    - 'comparar_ambas': corre LAS DOS estrategias (automatica y clasica)
-      y devuelve las dos, con etiquetas distintas -- para poder ver de
-      un vistazo si la eleccion de estrategia cambia algo con los datos
-      reales, sin tener que correr el analisis dos veces a mano.
-
-    Se usa tanto para el chequeo de calibracion (patron 3 y patron 4,
-    tratados como si fueran un DUT mas) como para cada material en
-    `procesar_material` -- `prefijo` es lo unico que cambia entre esos
-    usos, para que la etiqueta final tenga sentido en cada contexto.
+    - Si `gn_acondicionado` esta activo y `comparar_gn=True`: corre ambos
+      (Gn original y Gn acondicionado) para poder comparar el impacto
+      directamente en el mismo grafico y tablas.
+    - Si `gn_acondicionado` esta activo y `comparar_gn=False`: corre unicamente
+      con el Gn acondicionado.
+    - Si no hay acondicionamiento: comportamiento estandar (o comparacion
+      de estrategias automatico vs clasico si `estrategia_gn == 'comparar_ambas'`).
 
     Retorna un dict {etiqueta: ndarray complejo} con 1 o 2 entradas.
     """
+    semilla = 'minimo_gn' if estrategia_gn == 'comparar_ambas' else estrategia_gn
+
+    if gn_acondicionado is not None and comparar_gn:
+        return {
+            f"{prefijo}, Gn original)": get_er_DUT_completo(
+                frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla=semilla,
+                Gn=gn_original),
+            f"{prefijo}, Gn acondicionado)": get_er_DUT_completo(
+                frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla=semilla,
+                Gn=gn_acondicionado),
+        }
+    elif gn_acondicionado is not None:
+        return {
+            f"{prefijo}, Gn acondicionado)": get_er_DUT_completo(
+                frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla=semilla,
+                Gn=gn_acondicionado),
+        }
+
     if estrategia_gn == 'comparar_ambas':
         return {
             f"{prefijo}, Autom\u00e1tico)": get_er_DUT_completo(
                 frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
-                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='minimo_gn'),
+                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='minimo_gn',
+                Gn=gn_original),
             f"{prefijo}, Cl\u00e1sico)": get_er_DUT_completo(
                 frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
-                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='frecuencia_maxima'),
+                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='frecuencia_maxima',
+                Gn=gn_original),
         }
     return {
         f"{prefijo})": get_er_DUT_completo(
             frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
-            Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla=estrategia_gn),
+            Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla=estrategia_gn,
+            Gn=gn_original),
+    }
+
+
+def _calcular_metodo_mc(frecs, s11_dut, estrategia_gn, calibracion_mc,
+                        calibracion_mc_acond=None, comparar_gn=False,
+                        prefijo=None, verbose=False):
+    """
+    Calcula el metodo de cuadrados minimos para un DUT (`s11_dut`),
+    respetando `estrategia_gn` y el posible acondicionamiento de Gn (con
+    reajuste de (a, b, c) en `calibracion_mc_acond`).
+
+    Retorna un dict {etiqueta: ndarray complejo} con 1 o 2 entradas.
+    """
+    n_pat = len(calibracion_mc.get('nombres', []))
+    if prefijo is None:
+        prefijo = f"Medido (cuadrados m\u00ednimos, {n_pat} patrones"
+    semilla = 'minimo_gn' if estrategia_gn == 'comparar_ambas' else estrategia_gn
+
+    if calibracion_mc_acond is not None and comparar_gn:
+        return {
+            f"{prefijo}, Gn original)": get_er_DUT_minimos_cuadrados(
+                frecs, s11_dut, calibracion_mc, verbose=verbose,
+                estrategia_semilla=semilla),
+            f"{prefijo}, Gn acondicionado)": get_er_DUT_minimos_cuadrados(
+                frecs, s11_dut, calibracion_mc_acond, verbose=verbose,
+                estrategia_semilla=semilla),
+        }
+    elif calibracion_mc_acond is not None:
+        return {
+            f"{prefijo}, Gn acondicionado)": get_er_DUT_minimos_cuadrados(
+                frecs, s11_dut, calibracion_mc_acond, verbose=verbose,
+                estrategia_semilla=semilla),
+        }
+
+    if estrategia_gn == 'comparar_ambas':
+        return {
+            f"{prefijo}, Autom\u00e1tico)": get_er_DUT_minimos_cuadrados(
+                frecs, s11_dut, calibracion_mc, verbose=verbose,
+                estrategia_semilla='minimo_gn'),
+            f"{prefijo}, Cl\u00e1sico)": get_er_DUT_minimos_cuadrados(
+                frecs, s11_dut, calibracion_mc, verbose=verbose,
+                estrategia_semilla='frecuencia_maxima'),
+        }
+    return {
+        f"{prefijo})": get_er_DUT_minimos_cuadrados(
+            frecs, s11_dut, calibracion_mc, verbose=verbose,
+            estrategia_semilla=estrategia_gn),
     }
 
 
@@ -849,7 +1118,13 @@ def procesar_material(material, carpeta_datos, cache, frecs,
                        s11_corto, s11_aire, s11_patron3, s11_patron4,
                        Er_patron3, Er_patron4, carpeta_salida=None,
                        f_min_ghz=None, f_max_ghz=None, log_x=None,
-                       estrategia_gn='minimo_gn'):
+                       estrategia_gn='minimo_gn',
+                       gn_original=None, gn_acondicionado=None,
+                       comparar_gn=False,
+                       intervalos_error=None,
+                       calibracion_mc=None,
+                       calibracion_mc_acond=None,
+                       limitar_eje_y=True):
     """Procesa una entrada de MATERIALES: lee su .s1p, calcula la
     permitividad con los metodos indicados, grafica (contra la curva
     teorica si se conoce, o solo lo medido si no), exporta CSV y devuelve
@@ -869,11 +1144,20 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     explicitamente para poder usar valores distintos (p.ej. los que cargo
     la GUI) sin tocar esas constantes.
     `estrategia_gn`: se pasa tal cual a `funciones.get_er_DUT_completo`
-    (parametro `estrategia_semilla`) -- ver su docstring."""
+    (parametro `estrategia_semilla`) -- ver su docstring.
+    `gn_original`, `gn_acondicionado`, `comparar_gn`: si estan presentes,
+    permiten calcular y comparar el metodo completo con ambos Gn.
+    `intervalos_error`: lista de tuplas [(f_a, f_b), ...] en Hz para
+    evaluar error absoluto.
+    `calibracion_mc`, `calibracion_mc_acond`: si estan presentes y el
+    material incluye 'minimos_cuadrados' en sus metodos, calcula la
+    permitividad por cuadrados minimos (original y/o Gn acondicionado)."""
     carpeta_salida = CARPETA_SALIDA if carpeta_salida is None else carpeta_salida
     f_min_ghz = F_MIN_GHZ if f_min_ghz is None else f_min_ghz
     f_max_ghz = F_MAX_GHZ if f_max_ghz is None else f_max_ghz
     log_x = ESCALA_LOG_FRECUENCIA if log_x is None else log_x
+    if intervalos_error is None:
+        intervalos_error = construir_intervalos_error(f_min_ghz, f_max_ghz)
 
     nombre = material['nombre']
     ruta = os.path.join(carpeta_datos, material['archivo'])
@@ -896,8 +1180,26 @@ def procesar_material(material, carpeta_datos, cache, frecs,
               f"frecuencias de calibracion: remuestreando.")
         datos = resamplear(frecs, datos)
     s11_dut = datos['Complex']
+    s11_dut_orig = s11_dut.copy()
 
-    metodos = material.get('metodos', ['simplificado', 'completo'])
+    filtrar_s11 = bool(material.get('filtrar_s11') or material.get('filtrar_sg', False))
+    tipo_filtro = material.get('tipo_filtro', 'savitzky_golay')
+    if filtrar_s11:
+        if tipo_filtro == 'pasabajos':
+            pb_ord = int(material.get('pb_orden', 2) or 2)
+            pb_fc = float(material.get('pb_fcorte', 0.10) or 0.10)
+            s11_dut = filtrar_s11_pasabajos(s11_dut, orden=pb_ord, f_corte=pb_fc)
+            print(f"  [info] Filtro Pasabajos Butterworth aplicado a S11 de '{nombre}' (orden={pb_ord}, corte={pb_fc:.3f}).")
+        else:
+            sg_w = int(material.get('sg_window', 15) or 15)
+            sg_p = int(material.get('sg_polyorder', 3) or 3)
+            s11_dut = filtrar_s11_savgol(s11_dut, window_length=sg_w, polyorder=sg_p)
+            print(f"  [info] Filtro Savitzky-Golay aplicado a S11 de '{nombre}' (ventana={sg_w}, orden={sg_p}).")
+
+    default_metodos = ['simplificado', 'completo']
+    if calibracion_mc is not None:
+        default_metodos.append('minimos_cuadrados')
+    metodos = material.get('metodos', default_metodos)
     resultados = {}
     if 'simplificado' in metodos:
         resultados['Medido (simplificado, 3 patrones)'] = get_er_DUTm(
@@ -911,7 +1213,14 @@ def procesar_material(material, carpeta_datos, cache, frecs,
             resultados.update(_calcular_metodo_completo(
                 frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
                 Er_patron3, Er_patron4, estrategia_gn,
-                prefijo="Medido (completo, 4 patrones", verbose=True))
+                prefijo="Medido (completo, 4 patrones", verbose=True,
+                gn_original=gn_original, gn_acondicionado=gn_acondicionado,
+                comparar_gn=comparar_gn))
+    if 'minimos_cuadrados' in metodos and calibracion_mc is not None:
+        resultados.update(_calcular_metodo_mc(
+            frecs, s11_dut, estrategia_gn, calibracion_mc,
+            calibracion_mc_acond=calibracion_mc_acond,
+            comparar_gn=comparar_gn, verbose=True))
 
     modelo = material.get('modelo') or None
     temperatura_material = float(material.get('temperatura', 25.0)) if modelo else None
@@ -943,7 +1252,8 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     etiq_teorico = etiqueta_curva_teorica(modelo)
 
     graficar_comparacion(f_r, resultados_r, er_teo_r, titulo, ruta_figura,
-                          log_x=log_x, etiqueta_teorico=etiq_teorico)
+                          log_x=log_x, etiqueta_teorico=etiq_teorico,
+                          limitar_eje_y=limitar_eje_y)
 
     # S11 medido (crudo, previo a la conversion a permitividad): modulo+fase
     # y diagrama de Smith, en el mismo recorte de frecuencias y la misma
@@ -951,7 +1261,15 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     # cualquier anomalia de er'/er'' con lo que se ve directamente en S11
     # (p.ej. una resonancia de la sonda o un problema de contacto).
     s11_dut_r = s11_dut[mascara]
-    datos_s11_r = {nombre: {'Frec': f_r, 'Complex': s11_dut_r}}
+    if filtrar_s11:
+        s11_orig_r = s11_dut_orig[mascara]
+        et_filt = f"{nombre} (filtrado PB)" if tipo_filtro == 'pasabajos' else f"{nombre} (filtrado SG)"
+        datos_s11_r = {
+            f"{nombre} (original)": {'Frec': f_r, 'Complex': s11_orig_r},
+            et_filt: {'Frec': f_r, 'Complex': s11_dut_r},
+        }
+    else:
+        datos_s11_r = {nombre: {'Frec': f_r, 'Complex': s11_dut_r}}
 
     ruta_figura_s11 = os.path.join(carpeta_salida, f"s11_{slug}.png")
     graficar_s11_mag_fase(datos_s11_r, titulo=f"{nombre}: S11 medido (modulo y fase)",
@@ -965,12 +1283,13 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     tabla_frecs_ghz = tabla_columnas = None
     nota = None
     if er_teo_r is not None:
-        print(f"  Error relativo:")
+        print(f"  Error absoluto:")
         errores = {}
         comparar_im = perdidas_comparables(modelo)
         for etiqueta, er in resultados_r.items():
-            errores[etiqueta] = reportar_error(etiqueta, er, er_teo_r,
-                                                comparar_imag=comparar_im)
+            errores[etiqueta] = reportar_error_intervalos(etiqueta, f_r, er, er_teo_r,
+                                                          intervalos_error,
+                                                          comparar_imag=comparar_im)
         print(f"  Tabla resumen ({nombre}):")
         columnas_tabla = {"Teorico": er_teo, **resultados}
         imprimir_tabla_resumen(frecs, columnas_tabla)
@@ -1025,11 +1344,11 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     }
 
 
-def _advertencias_calibracion(modelo_patron3, modelo_patron4):
+def _advertencias_calibracion(modelo_patron3, modelo_patron4, adicionales=()):
     """
-    Junta las advertencias de los modelos teoricos usados como patron 3 y
-    patron 4 de la calibracion, en una lista de dicts listos para mostrar
-    (consola, GUI o caja destacada del informe PDF).
+    Junta las advertencias de los modelos teoricos usados como patron 3,
+    patron 4 y patrones adicionales de la calibracion, en una lista de
+    dicts listos para mostrar (consola, GUI o caja destacada del informe PDF).
 
     Cada entrada: {'rol', 'modelo', 'etiqueta', 'nivel', 'texto'}.
 
@@ -1042,7 +1361,10 @@ def _advertencias_calibracion(modelo_patron3, modelo_patron4):
     materiales analizados con esa calibracion.
     """
     advertencias = []
-    for rol, modelo in (("Patron 3", modelo_patron3), ("Patron 4", modelo_patron4)):
+    pares = [("Patron 3", modelo_patron3), ("Patron 4", modelo_patron4)]
+    for idx_ad, ad in enumerate(adicionales or (), start=5):
+        pares.append((f"Patron {idx_ad} (cuadrados minimos)", ad.get('modelo')))
+    for rol, modelo in pares:
         if not modelo:
             continue
         texto = advertencia_patron(modelo)
@@ -1083,98 +1405,6 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     script, con las constantes definidas arriba en este archivo) como la
     GUI (gui_permitividad.py / gui_funciones.py) llaman a esta misma
     funcion, para no duplicar logica en dos lugares.
-
-    Parametros
-    ----------
-    config : dict
-        'carpeta_datos'        : str, carpeta base para .s1p con ruta
-                                  relativa (puede ser "" si las rutas de
-                                  archivo ya son absolutas).
-        'archivos_calibracion' : dict con las 4 claves fijas 'corto',
-                                  'aire', 'patron3', 'patron4'.
-        'patron3_modelo'       : clave de Patrones.PATRONES_TEORICOS para
-                                  el 3er patron de calibracion (default:
-                                  'agua', el par tradicional de la
-                                  catedra -- pero puede ser cualquier
-                                  liquido con modelo conocido).
-        'patron3_temperatura_c': float, temperatura real de ese liquido
-                                  durante la calibracion.
-        'patron4_modelo'       : idem para el 4to patron (default:
-                                  'alcohol_isopropilico'), solo usado por
-                                  el metodo completo. Se ignora por
-                                  completo si 'usar_metodo_completo' es
-                                  False.
-        'patron4_temperatura_c': float, temperatura real de ese liquido.
-        'usar_metodo_completo' : bool, opcional (default True). Si es
-                                  False, no hace falta el patron 4 para
-                                  nada (ni archivo, ni modelo/temperatura):
-                                  todos los materiales se procesan
-                                  UNICAMENTE con el metodo simplificado,
-                                  sin calcular Gn ni el diagnostico
-                                  correspondiente. Util si solo interesan
-                                  materiales de bajas perdidas y no se
-                                  quiere medir/calibrar un 4to patron.
-        'estrategia_gn'        : 'minimo_gn' (default) o
-                                  'frecuencia_maxima' -- se pasa tal cual
-                                  a `funciones.get_er_DUT_completo` (ver
-                                  su parametro `estrategia_semilla`). Sin
-                                  efecto si 'usar_metodo_completo' es
-                                  False.
-        'materiales'           : lista de dicts {nombre, archivo, modelo,
-                                  temperatura, metodos} (ver formato de
-                                  MATERIALES mas arriba).
-        'carpeta_salida'       : str, carpeta BASE de salida. Los
-                                  archivos de esta corrida en particular
-                                  van en un subdirectorio
-                                  '<carpeta_salida>/<AAAA-MM-DD>/<HH-MM-SS>/'
-                                  (ver mas abajo), no directamente aca.
-        'nombre_informe_pdf'   : str, nombre del PDF final.
-        'f_min_ghz', 'f_max_ghz' : float, rango de frecuencias de interes.
-        'escala_log_frecuencia' : bool, opcional (default True). Eje de
-                                frecuencias en escala logaritmica en los
-                                graficos generados. Recomendado cuando el
-                                barrido cubre varias decadas (p.ej. 1 MHz
-                                a 2 GHz); en lineal, todo lo que pasa por
-                                debajo de un par de cientos de MHz queda
-                                invisible contra el borde izquierdo.
-    log : funcion(str) -> None
-        Para reportar progreso textual (default: print). La GUI pasa una
-        funcion que escribe en su consola en vez de la terminal.
-    progreso : funcion(paso_actual, total_pasos, etiqueta=None) -> None,
-        opcional. Se llama al empezar la calibracion, al terminarla, antes
-        y despues de procesar cada material, y antes/despues de generar
-        el PDF, para que la GUI pueda actualizar una barra de progreso Y
-        mostrar que paso esta corriendo en ese momento (`etiqueta`, un
-        string descriptivo, o None si no hay nada nuevo que mostrar). Si
-        es None, no se reporta nada (no rompe el uso desde consola).
-    cancelado : funcion() -> bool, opcional
-        Si se pasa y en algun momento devuelve True, el analisis se
-        interrumpe apenas termina de procesar el material actual (nunca a
-        mitad de un calculo) y se genera igual un informe PDF PARCIAL con
-        lo que ya se alcanzo a calcular. Pensado para conectarse a un
-        `threading.Event().is_set` desde el boton "Cancelar" de la GUI.
-        Si es None (default), el analisis nunca se cancela solo --
-        comportamiento identico al de antes de que existiera este
-        parametro.
-
-    Carpeta de salida de esta corrida
-    ----------------------------------
-    Todo lo que genera esta corrida (figuras, CSVs, informe PDF) se
-    guarda en '<carpeta_salida>/<AAAA-MM-DD>/<HH-MM-SS>/', no directamente
-    en 'carpeta_salida': asi, corridas de dias o momentos distintos nunca
-    se pisan entre si, y queda un historial ordenado sin tener que
-    cambiar a mano el nombre de la carpeta de salida cada vez. Ademas, los
-    .s1p de ENTRADA (calibracion + cada material) se copian a la carpeta
-    del DIA -- '<carpeta_salida>/<AAAA-MM-DD>/', compartida entre todas
-    las corridas de ese dia -- para dejar registro de con que mediciones
-    exactas se genero cada informe.
-
-    Retorna
-    -------
-    dict con 'chequeo_calibracion', 'resultados_materiales',
-    'ruta_informe_pdf', 'carpeta_salida_run' (la carpeta real, con fecha y
-    hora, donde quedo todo lo de ESTA corrida) y 'cancelado' (bool: True
-    si se interrumpio a mitad de camino por el motivo de arriba).
     """
     if progreso is None:
         progreso = lambda paso, total, etiqueta=None: None
@@ -1189,18 +1419,19 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     T_patron3 = float(config.get('patron3_temperatura_c', PATRON3_TEMPERATURA_CAL_C))
     modelo_patron4 = config.get('patron4_modelo') or PATRON4_MODELO_CAL
     T_patron4 = float(config.get('patron4_temperatura_c', PATRON4_TEMPERATURA_CAL_C))
-    # Si esta en False, no hace falta el patron 4 en absoluto: ni el
-    # archivo, ni el modelo/temperatura, ni Gn. Util cuando solo interesa
-    # el metodo simplificado (p.ej. materiales de bajas perdidas) y no se
-    # quiere tener que medir/calibrar un 4to patron para nada.
     usar_metodo_completo = bool(config.get('usar_metodo_completo', True))
-    # Donde arranca la "marcha" en frecuencia del metodo completo -- ver
-    # el parametro homonimo de `funciones.get_er_DUT_completo`. Sin efecto
-    # si usar_metodo_completo es False.
+    usar_mc = bool(config.get('usar_minimos_cuadrados', False))
+    adicionales = [p for p in (config.get('patrones_adicionales') or []) if p.get('archivo')]
     estrategia_gn = config.get('estrategia_gn', 'minimo_gn')
     f_min_ghz = config['f_min_ghz']
     f_max_ghz = config['f_max_ghz']
+    f_int1_ghz = config.get('f_err_int1_ghz')
+    f_int2_ghz = config.get('f_err_int2_ghz')
+    intervalos_error = construir_intervalos_error(f_min_ghz, f_max_ghz, f_int1_ghz, f_int2_ghz)
+    log(f"  Intervalos de error para el informe: " +
+        ", ".join([f"[{fa/1e9:.2f} - {fb/1e9:.2f}] GHz" for fa, fb in intervalos_error]))
     log_x = config.get('escala_log_frecuencia', ESCALA_LOG_FRECUENCIA)
+    limitar_eje_y = bool(config.get('limitar_eje_y', True))
     materiales = config['materiales']
     archivos_cal = dict(config['archivos_calibracion'])
     if not usar_metodo_completo:
@@ -1213,10 +1444,6 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
                 'ruta_informe_pdf': None, 'carpeta_salida_run': None,
                 'cancelado': True}
 
-    # -----------------------------------------------------------------
-    # Carpeta de salida de ESTA corrida: <carpeta_salida>/<fecha>/<hora>/.
-    # Ver docstring de arriba para el porque de esta estructura.
-    # -----------------------------------------------------------------
     ahora = datetime.now()
     carpeta_dia = os.path.join(carpeta_salida_base, ahora.strftime("%Y-%m-%d"))
     carpeta_salida = os.path.join(carpeta_dia, ahora.strftime("%H-%M-%S"))
@@ -1245,50 +1472,257 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     else:
         etiqueta_p4 = None
         Er_patron4 = None
-        log("  Metodo completo deshabilitado: no se usa Patron 4 ni se calcula Gn "
-            "(todos los materiales se procesan solo con el metodo simplificado).")
+        log("  Metodo completo deshabilitado: no se usa Patron 4 ni se calcula Gn de 4 patrones.")
 
-    _copiar_insumos(carpeta_datos, archivos_cal, materiales, carpeta_dia, log)
+    cfg_filtro_pat = config.get('filtrar_patrones_sg') or config.get('filtrar_patrones') or {}
+    _filtrar_pat = None
+    if cfg_filtro_pat.get('habilitado', False):
+        tipo_filtro_pat = cfg_filtro_pat.get('tipo', cfg_filtro_pat.get('tipo_filtro', 'savitzky_golay'))
+        sg_w_pat = int(cfg_filtro_pat.get('sg_window', 15) or 15)
+        sg_p_pat = int(cfg_filtro_pat.get('sg_polyorder', 3) or 3)
+        pb_ord_pat = int(cfg_filtro_pat.get('pb_orden', 2) or 2)
+        pb_fc_pat = float(cfg_filtro_pat.get('pb_fcorte', 0.10) or 0.10)
+        aplicar_en = cfg_filtro_pat.get('aplicar_en', ['corto', 'aire', 'patron3', 'patron4', 'adicionales'])
 
-    # Advertencias de los modelos usados como patron de calibracion (p.ej.
-    # un modelo de permitividad ESTATICA como ciclohexano o silicona). Se
-    # loguean aca, apenas se resuelve la calibracion y ANTES de procesar
-    # ningun material, porque afectan el resultado de todos ellos.
+        def _filtrar_pat_fn(s11_arr, nombre_pat):
+            if tipo_filtro_pat == 'pasabajos':
+                s11_f = filtrar_s11_pasabajos(s11_arr, orden=pb_ord_pat, f_corte=pb_fc_pat)
+                log(f"  [info] Filtro Pasabajos aplicado a '{nombre_pat}' (orden={pb_ord_pat}, f_corte={pb_fc_pat:.2f}).")
+            else:
+                s11_f = filtrar_s11_savgol(s11_arr, window_length=sg_w_pat, polyorder=sg_p_pat)
+                log(f"  [info] Filtro Savitzky-Golay aplicado a '{nombre_pat}' (ventana={sg_w_pat}, orden={sg_p_pat}).")
+            return s11_f
+        _filtrar_pat = _filtrar_pat_fn
+
+        if 'corto' in aplicar_en:
+            s11_corto = _filtrar_pat(s11_corto, 'corto')
+        if 'aire' in aplicar_en:
+            s11_aire = _filtrar_pat(s11_aire, 'aire')
+        if 'patron3' in aplicar_en:
+            s11_patron3 = _filtrar_pat(s11_patron3, f"patron3 ({etiqueta_p3})")
+        if s11_patron4 is not None and 'patron4' in aplicar_en:
+            s11_patron4 = _filtrar_pat(s11_patron4, f"patron4 ({etiqueta_p4})")
+
+    _copiar_insumos(carpeta_datos, archivos_cal, materiales, carpeta_dia, log,
+                    patrones_adicionales=adicionales if usar_mc else ())
+
     for adv in _advertencias_calibracion(
-            modelo_patron3, modelo_patron4 if usar_metodo_completo else None):
+            modelo_patron3,
+            modelo_patron4 if usar_metodo_completo else None,
+            adicionales=adicionales if usar_mc else ()):
         log(f"\n  [ADVERTENCIA - {adv['rol']}: {adv['etiqueta']}]")
         for linea in adv['texto'].splitlines():
             if linea.strip():
                 log(f"    {linea.strip()}")
 
     # -----------------------------------------------------------------
+    # Configuracion de acondicionamiento de Gn(f)
+    # -----------------------------------------------------------------
+    cfg_acond = config.get('acondicionar_gn') or {}
+    acond_habilitado = bool(cfg_acond.get('habilitado', False))
+    tipo_acond = cfg_acond.get('tipo', 'transicion_polinomica_cero')
+    modo_acond = cfg_acond.get('modo', 'automatico')
+    f1_acond = float(cfg_acond.get('f1_ghz', 0.0) or 0.0) * 1e9
+    f2_acond = float(cfg_acond.get('f2_ghz', 0.5) or 0.5) * 1e9
+    umbral_acond = float(cfg_acond.get('umbral_pct', 30.0) or 30.0)
+    sg_w_acond = int(cfg_acond.get('sg_window', 15) or 15)
+    sg_p_acond = int(cfg_acond.get('sg_polyorder', 3) or 3)
+    pb_ord_acond = int(cfg_acond.get('pb_orden', 2) or 2)
+    pb_fc_acond = float(cfg_acond.get('pb_fcorte', 0.10) or 0.10)
+    comparar_gn = bool(cfg_acond.get('comparar_original', True)) if acond_habilitado else False
+
+    # -----------------------------------------------------------------
+    # Diagnostico y acondicionamiento de Gn(f) (si el metodo completo
+    # esta habilitado)
+    # -----------------------------------------------------------------
+    gn_original = None
+    gn_acondicionado = None
+    info_acond = None
+    Gn_cal = None
+
+    if usar_metodo_completo:
+        log("Calculando conductancia normalizada Gn(f) (diagnostico de calibracion)...")
+        Gn_cal = calcular_Gn(frecs, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                              Er_patron3, Er_patron4)
+        gn_original = Gn_cal
+
+        if acond_habilitado:
+            log(f"  Acondicionando Gn(f) (4 patrones): tipo='{tipo_acond}', modo='{modo_acond}'...")
+            gn_acondicionado, info_acond = acondicionar_gn(
+                frecs, Gn_cal, modo=modo_acond, tipo=tipo_acond,
+                f1=f1_acond, f2=f2_acond, umbral_pct=umbral_acond,
+                sg_window=sg_w_acond, sg_polyorder=sg_p_acond,
+                pb_orden=pb_ord_acond, pb_fcorte=pb_fc_acond)
+            if info_acond.get('aviso'):
+                log(f"    {info_acond['aviso']}")
+            if info_acond.get('disparo_detectado'):
+                if info_acond.get('f_corte_aplicada'):
+                    log(f"    Corte aplicado en: {info_acond['f_corte_aplicada']/1e9:.3f} GHz")
+                if info_acond.get('f2_aplicada'):
+                    log(f"    Transicion aplicada entre {info_acond['f1_aplicada']/1e9:.3f} GHz y {info_acond['f2_aplicada']/1e9:.3f} GHz")
+
+    # -----------------------------------------------------------------
+    # Calibracion redundante por cuadrados minimos (opcional):
+    # ajusta (a, b, c, Gn) usando todos los patrones disponibles a la vez.
+    # Si `acondicionar_gn` esta activo, acondiciona el Gn obtenido por
+    # cuadrados minimos y reajusta (a, b, c) con ese Gn fijo.
+    # -----------------------------------------------------------------
+    mascara = (frecs >= f_min_ghz * 1e9) & (frecs <= f_max_ghz * 1e9)
+    calibracion_mc = None
+    calibracion_mc_acond = None
+    chequeo_mc = None
+    if usar_mc:
+        patrones_mc = [
+            {'nombre': "Corto", 'S11': s11_corto, 'er': None},
+            {'nombre': "Aire", 'S11': s11_aire,
+             'er': np.full(len(frecs), ER_AIRE, dtype=complex), 'es_aire': True},
+            {'nombre': f"{etiqueta_p3} ({T_patron3:.0f}\u00b0C)",
+             'S11': s11_patron3, 'er': Er_patron3, 'modelo': modelo_patron3},
+        ]
+        if usar_metodo_completo and s11_patron4 is not None:
+            patrones_mc.append({
+                'nombre': f"{etiqueta_p4} ({T_patron4:.0f}\u00b0C)",
+                'S11': s11_patron4, 'er': Er_patron4, 'modelo': modelo_patron4,
+            })
+        for idx_ad, ad in enumerate(adicionales, start=len(patrones_mc) + 1):
+            ruta_ad = os.path.join(carpeta_datos, ad['archivo'])
+            datos_ad = _cargar_cache(ruta_ad, cache)
+            frec_ad = np.asarray(datos_ad['Frec'], dtype=float)
+            if not (len(frec_ad) == len(frecs) and np.allclose(frec_ad, frecs, atol=1.0)):
+                log(f"  [info] patron adicional '{ad['archivo']}' remuestreado a la grilla de calibracion.")
+                datos_ad = resamplear(frecs, datos_ad)
+            s11_ad = datos_ad['Complex']
+            if _filtrar_pat is not None and 'adicionales' in cfg_filtro_pat.get('aplicar_en', []):
+                s11_ad = _filtrar_pat(s11_ad, f"adicional ({ad['archivo']})")
+            modelo_ad = ad['modelo']
+            T_ad = float(ad.get('temperatura_c', 25.0))
+            etiq_ad = etiqueta_patron(modelo_ad) or modelo_ad
+            er_ad = PATRONES_TEORICOS[modelo_ad](frecs, T=T_ad)
+            log(f"  Patron {idx_ad} (cuadrados minimos) = {etiq_ad} a {T_ad:.1f}\u00b0C <- {ad['archivo']}")
+            patrones_mc.append({
+                'nombre': f"{etiq_ad} ({T_ad:.0f}\u00b0C)",
+                'S11': s11_ad,
+                'er': er_ad,
+                'modelo': modelo_ad,
+            })
+
+        if len(patrones_mc) < 4:
+            log("  [aviso] cuadrados minimos requiere al menos 4 patrones "
+                "(corto + aire + 2 liquidos): se desactiva en esta corrida.")
+        else:
+            log(f"\nCalibrando por cuadrados minimos con {len(patrones_mc)} patrones "
+                f"({2 * len(patrones_mc) - 8} grados de libertad reales por frecuencia)...")
+            calibracion_mc = calibrar_minimos_cuadrados(frecs, patrones_mc)
+            for nom, res_arr in calibracion_mc['residuos'].items():
+                rms = float(np.sqrt(np.mean(np.abs(res_arr[mascara]) ** 2)))
+                log(f"  residuo rms S11 [{nom:28s}] = {rms:.4e}")
+
+            info_acond_mc = None
+            gn_mc_acond = None
+            if acond_habilitado:
+                log(f"  Acondicionando Gn(f) de cuadrados minimos y reajustando (a, b, c)...")
+                gn_mc_acond, info_acond_mc = acondicionar_gn(
+                    frecs, calibracion_mc['Gn'], modo=modo_acond, tipo=tipo_acond,
+                    f1=f1_acond, f2=f2_acond, umbral_pct=umbral_acond,
+                    sg_window=sg_w_acond, sg_polyorder=sg_p_acond,
+                    pb_orden=pb_ord_acond, pb_fcorte=pb_fc_acond)
+                calibracion_mc_acond = reajustar_abc_con_gn_fijo(
+                    frecs, patrones_mc, gn_mc_acond, calibracion_base=calibracion_mc)
+                if info_acond_mc.get('aviso'):
+                    log(f"    {info_acond_mc['aviso']}")
+                # Si el metodo de 4 patrones estaba deshabilitado, usamos el Gn de
+                # cuadrados minimos para el grafico de diagnostico de Gn(f).
+                if Gn_cal is None:
+                    Gn_cal = calibracion_mc['Gn']
+                    gn_original = Gn_cal
+                    gn_acondicionado = gn_mc_acond
+                    info_acond = info_acond_mc
+
+            validacion = validacion_cruzada_minimos_cuadrados(
+                frecs, patrones_mc, cfg_acond=cfg_acond if acond_habilitado else None)
+            errores_vc = {}
+            if validacion:
+                log("  Validacion cruzada (sacando 1 patron liquido por vez y midiendo su er):")
+                for nom, v in validacion.items():
+                    comp_im = perdidas_comparables(v.get('modelo')) if v.get('modelo') else True
+                    etiq_vc = f"Al excluir {nom}"
+                    err_int = reportar_error_intervalos(
+                        etiq_vc,
+                        frecs[mascara],
+                        v['er_predicho'][mascara],
+                        v['er_teorico'][mascara],
+                        intervalos_error,
+                        comparar_imag=comp_im,
+                    )
+                    v['errores_intervalos'] = err_int
+                    errores_vc[nom] = err_int
+
+            residuos_recortados = {
+                nom: res[mascara] for nom, res in calibracion_mc['residuos'].items()
+            }
+            residuo_rms_recortado = {
+                nom: float(np.sqrt(np.mean(np.abs(res) ** 2)))
+                for nom, res in residuos_recortados.items()
+            }
+            ruta_fig_mc = os.path.join(
+                carpeta_salida, "calibracion_minimos_cuadrados_residuos.png")
+            graficar_residuos_minimos_cuadrados(
+                frecs[mascara], residuos_recortados, ruta_fig_mc, log_x=log_x)
+            chequeo_mc = {
+                'n_patrones': len(patrones_mc),
+                'grados_libertad': calibracion_mc['grados_libertad'],
+                'nombres': calibracion_mc['nombres'],
+                'residuo_rms': residuo_rms_recortado,
+                'validacion_cruzada': validacion,
+                'errores_validacion_cruzada': errores_vc,
+                'acondicionado': calibracion_mc_acond is not None,
+                'info_acond_mc': info_acond_mc,
+                'figura_residuos': ruta_fig_mc,
+                'datos_grafico_residuos': {
+                    'frecs': frecs[mascara],
+                    'residuos': residuos_recortados,
+                    'log_x': log_x,
+                },
+            }
+
+    # -----------------------------------------------------------------
     # Chequeo de calibracion: el patron 3 ES uno de los patrones, asi que
     # si se lo "mide" como si fuera un DUT mas, el resultado tiene que
-    # coincidir casi exactamente con su propio modelo teorico. Si esto no
-    # da ~0% de error, hay un problema de lectura/calibracion antes de
-    # analizar cualquier material real.
+    # coincidir casi exactamente con su propio modelo teorico.
     # -----------------------------------------------------------------
-    log(f"\nChequeo de calibracion ({etiqueta_p3} medido vs. teorico, debe dar ~0% de error)...")
+    log(f"\nChequeo de calibracion ({etiqueta_p3} medido vs. teorico, debe dar ~0 de error)...")
     er_p3_teo = Er_patron3
     er_p3_simpl = get_er_DUTm(frecs, s11_patron3, s11_patron3, s11_aire, s11_corto,
                                Er_patron3)
 
-    mascara = (frecs >= f_min_ghz * 1e9) & (frecs <= f_max_ghz * 1e9)
     medido_p3 = {"Medido (simplificado)": er_p3_simpl[mascara]}
     comparar_im_p3 = perdidas_comparables(modelo_patron3)
     errores_p3 = {
-        "Metodo simplificado": reportar_error(
-            "Metodo simplificado", er_p3_simpl[mascara], er_p3_teo[mascara],
-            comparar_imag=comparar_im_p3),
+        "Metodo simplificado": reportar_error_intervalos(
+            "Metodo simplificado", frecs[mascara], er_p3_simpl[mascara], er_p3_teo[mascara],
+            intervalos_error, comparar_imag=comparar_im_p3),
     }
     if usar_metodo_completo:
         resultados_p3_completo = _calcular_metodo_completo(
             frecs, s11_patron3, s11_patron3, s11_aire, s11_patron4, s11_corto,
-            Er_patron3, Er_patron4, estrategia_gn, prefijo="Medido (completo")
+            Er_patron3, Er_patron4, estrategia_gn, prefijo="Medido (completo",
+            gn_original=gn_original, gn_acondicionado=gn_acondicionado,
+            comparar_gn=comparar_gn)
         for etiqueta, arr in resultados_p3_completo.items():
             medido_p3[etiqueta] = arr[mascara]
-            errores_p3[etiqueta] = reportar_error(etiqueta, arr[mascara], er_p3_teo[mascara],
-                                                   comparar_imag=comparar_im_p3)
+            errores_p3[etiqueta] = reportar_error_intervalos(
+                etiqueta, frecs[mascara], arr[mascara], er_p3_teo[mascara],
+                intervalos_error, comparar_imag=comparar_im_p3)
+    if calibracion_mc is not None:
+        resultados_p3_mc = _calcular_metodo_mc(
+            frecs, s11_patron3, estrategia_gn, calibracion_mc,
+            calibracion_mc_acond=calibracion_mc_acond,
+            comparar_gn=comparar_gn)
+        for etiqueta, arr in resultados_p3_mc.items():
+            medido_p3[etiqueta] = arr[mascara]
+            errores_p3[etiqueta] = reportar_error_intervalos(
+                etiqueta, frecs[mascara], arr[mascara], er_p3_teo[mascara],
+                intervalos_error, comparar_imag=comparar_im_p3)
 
     ruta_figura_p3 = os.path.join(carpeta_salida, "chequeo_calibracion_patron3.png")
     etiq_teorico_p3 = etiqueta_curva_teorica(modelo_patron3)
@@ -1300,14 +1734,13 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         ruta_figura_p3,
         log_x=log_x,
         etiqueta_teorico=etiq_teorico_p3,
+        limitar_eje_y=limitar_eje_y,
     )
     chequeo_calibracion = {
         'figura': ruta_figura_p3,
         'etiqueta_patron3': etiqueta_p3,
         'etiqueta_patron4': etiqueta_p4,
         'errores': errores_p3,
-        # Datos crudos para reconstruir la figura en vivo en la GUI -- ver
-        # `procesar_material` (misma idea) y gui_permitividad.VisorFigura.
         'datos_grafico': {
             'frecs': frecs[mascara],
             'medido': medido_p3,
@@ -1315,38 +1748,45 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             'titulo': f"{etiqueta_p3}: chequeo de calibracion (medido vs. teorico)",
             'log_x': log_x,
             'etiqueta_teorico': etiq_teorico_p3,
+            'limitar_eje_y': limitar_eje_y,
         },
     }
 
     # -----------------------------------------------------------------
-    # Chequeo de calibracion ANALOGO para el patron 4 (si esta habilitado):
-    # mismo principio que el de arriba para el patron 3 -- se lo "mide"
-    # como si fuera un DUT mas y se compara contra su propio modelo
-    # teorico. Da una segunda validacion independiente de la calibracion,
-    # gratis: si el patron 3 da ~0% de error pero el patron 4 no, el
-    # problema esta especificamente en la medicion/modelo de ese 4to
-    # patron (y viceversa), algo que el chequeo del patron 3 solo no
-    # puede detectar por si mismo.
+    # Chequeo de calibracion ANALOGO para el patron 4 (si esta habilitado)
     # -----------------------------------------------------------------
     if usar_metodo_completo:
-        log(f"\nChequeo de calibracion ({etiqueta_p4} medido vs. teorico, debe dar ~0% de error)...")
+        log(f"\nChequeo de calibracion ({etiqueta_p4} medido vs. teorico, debe dar ~0 de error)...")
         er_p4_teo = Er_patron4
         er_p4_simpl = get_er_DUTm(frecs, s11_patron4, s11_patron3, s11_aire, s11_corto,
                                    Er_patron3)
         medido_p4 = {"Medido (simplificado)": er_p4_simpl[mascara]}
         comparar_im_p4 = perdidas_comparables(modelo_patron4)
         errores_p4 = {
-            "Metodo simplificado": reportar_error(
-                "Metodo simplificado", er_p4_simpl[mascara], er_p4_teo[mascara],
-                comparar_imag=comparar_im_p4),
+            "Metodo simplificado": reportar_error_intervalos(
+                "Metodo simplificado", frecs[mascara], er_p4_simpl[mascara], er_p4_teo[mascara],
+                intervalos_error, comparar_imag=comparar_im_p4),
         }
         resultados_p4_completo = _calcular_metodo_completo(
             frecs, s11_patron4, s11_patron3, s11_aire, s11_patron4, s11_corto,
-            Er_patron3, Er_patron4, estrategia_gn, prefijo="Medido (completo")
+            Er_patron3, Er_patron4, estrategia_gn, prefijo="Medido (completo",
+            gn_original=gn_original, gn_acondicionado=gn_acondicionado,
+            comparar_gn=comparar_gn)
         for etiqueta, arr in resultados_p4_completo.items():
             medido_p4[etiqueta] = arr[mascara]
-            errores_p4[etiqueta] = reportar_error(etiqueta, arr[mascara], er_p4_teo[mascara],
-                                                   comparar_imag=comparar_im_p4)
+            errores_p4[etiqueta] = reportar_error_intervalos(
+                etiqueta, frecs[mascara], arr[mascara], er_p4_teo[mascara],
+                intervalos_error, comparar_imag=comparar_im_p4)
+        if calibracion_mc is not None:
+            resultados_p4_mc = _calcular_metodo_mc(
+                frecs, s11_patron4, estrategia_gn, calibracion_mc,
+                calibracion_mc_acond=calibracion_mc_acond,
+                comparar_gn=comparar_gn)
+            for etiqueta, arr in resultados_p4_mc.items():
+                medido_p4[etiqueta] = arr[mascara]
+                errores_p4[etiqueta] = reportar_error_intervalos(
+                    etiqueta, frecs[mascara], arr[mascara], er_p4_teo[mascara],
+                    intervalos_error, comparar_imag=comparar_im_p4)
 
         ruta_figura_p4 = os.path.join(carpeta_salida, "chequeo_calibracion_patron4.png")
         etiq_teorico_p4 = etiqueta_curva_teorica(modelo_patron4)
@@ -1358,6 +1798,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             ruta_figura_p4,
             log_x=log_x,
             etiqueta_teorico=etiq_teorico_p4,
+            limitar_eje_y=limitar_eje_y,
         )
         chequeo_calibracion['patron4'] = {
             'figura': ruta_figura_p4,
@@ -1369,32 +1810,18 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
                 'titulo': f"{etiqueta_p4}: chequeo de calibracion (medido vs. teorico)",
                 'log_x': log_x,
                 'etiqueta_teorico': etiq_teorico_p4,
+                'limitar_eje_y': limitar_eje_y,
             },
         }
 
     # -----------------------------------------------------------------
-    # Diagnostico adicional: conductancia normalizada Gn(f), calculada
-    # UNICAMENTE a partir de los 4 patrones de calibracion (no depende de
-    # ningun material analizado). Tiene que verse suave; un salto brusco
-    # o un pico aislado suele delatar un problema con la medicion de
-    # alguno de los patrones (sobre todo el patron 4, el unico que
-    # interviene en este calculo). Ver funciones.calcular_Gn.
+    # Grafico de diagnostico de Gn(f) (original y/o acondicionado)
     # -----------------------------------------------------------------
-    if usar_metodo_completo:
-        log("Calculando conductancia normalizada Gn(f) (diagnostico de calibracion)...")
-        Gn_cal = calcular_Gn(frecs, s11_patron3, s11_aire, s11_patron4, s11_corto,
-                              Er_patron3, Er_patron4)
-
-        # Donde arrancaria la "marcha en frecuencia" con cada estrategia
-        # -- se calcula aca (no adentro de get_er_DUT_completo) porque
-        # solo depende de Gn y de la estrategia, no del DUT en si, asi
-        # que es la misma para todos los materiales de esta corrida. Se
-        # marca en el grafico de Gn(f) para ver de un vistazo si el
-        # punto de arranque cae en una zona con |Gn| chico (deseable) o
-        # no, sin tener que ir a leer el log de texto.
+    if (usar_metodo_completo or usar_mc) and Gn_cal is not None:
         marcas_inicio_gn = {}
         if estrategia_gn in ('minimo_gn', 'comparar_ambas'):
-            idx_auto = int(np.argmin(np.abs(Gn_cal)))
+            gn_referencia_marcas = gn_acondicionado if gn_acondicionado is not None else Gn_cal
+            idx_auto = int(np.argmin(np.abs(gn_referencia_marcas)))
             marcas_inicio_gn[ETIQUETA_ESTRATEGIA_GN['minimo_gn']] = frecs[idx_auto]
         if estrategia_gn in ('frecuencia_maxima', 'comparar_ambas'):
             idx_clasico = int(np.argmax(frecs))
@@ -1402,12 +1829,20 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
 
         ruta_figura_Gn = os.path.join(carpeta_salida, "chequeo_calibracion_Gn.png")
         graficar_Gn(frecs[mascara], Gn_cal[mascara], ruta_figura_Gn, log_x=log_x,
-                    marcas_inicio=marcas_inicio_gn)
+                    marcas_inicio=marcas_inicio_gn,
+                    Gn_acondicionado=(gn_acondicionado[mascara] if gn_acondicionado is not None else None),
+                    info_acond=info_acond)
         chequeo_calibracion['figura_Gn'] = ruta_figura_Gn
+        chequeo_calibracion['info_acond_Gn'] = info_acond
         chequeo_calibracion['datos_grafico_Gn'] = {
-            'frecs': frecs[mascara], 'Gn': Gn_cal[mascara], 'log_x': log_x,
-            'marcas_inicio': marcas_inicio_gn,
+            'frecs': frecs[mascara], 'Gn': Gn_cal[mascara],
+            'Gn_acondicionado': (gn_acondicionado[mascara] if gn_acondicionado is not None else None),
+            'log_x': log_x, 'marcas_inicio': marcas_inicio_gn,
+            'info_acond': info_acond,
         }
+
+    if chequeo_mc is not None:
+        chequeo_calibracion['minimos_cuadrados'] = chequeo_mc
 
     progreso(1, total_pasos, "Calibraci\u00f3n completa")
 
@@ -1433,6 +1868,12 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             Er_patron3, Er_patron4, carpeta_salida=carpeta_salida,
             f_min_ghz=f_min_ghz, f_max_ghz=f_max_ghz, log_x=log_x,
             estrategia_gn=estrategia_gn,
+            gn_original=gn_original, gn_acondicionado=gn_acondicionado,
+            comparar_gn=comparar_gn,
+            intervalos_error=intervalos_error,
+            calibracion_mc=calibracion_mc,
+            calibracion_mc_acond=calibracion_mc_acond,
+            limitar_eje_y=limitar_eje_y,
         )
         if resultado is not None:
             resultados_materiales.append(resultado)
@@ -1452,20 +1893,21 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         'patron4_modelo': modelo_patron4 if usar_metodo_completo else None,
         'patron4_etiqueta': etiqueta_p4 if usar_metodo_completo else None,
         'patron4_temperatura': T_patron4 if usar_metodo_completo else None,
-        'estrategia_gn': estrategia_gn if usar_metodo_completo else None,
+        'estrategia_gn': estrategia_gn if (usar_metodo_completo or usar_mc) else None,
+        'filtrar_patrones_sg': cfg_filtro_pat,
+        'acondicionar_gn': cfg_acond,
+        'info_acond_Gn': info_acond,
+        'usar_minimos_cuadrados': usar_mc and chequeo_mc is not None,
+        'minimos_cuadrados': chequeo_mc,
         'f_min_ghz': f_min_ghz,
         'f_max_ghz': f_max_ghz,
+        'intervalos_error': intervalos_error,
         'archivos_calibracion': archivos_cal,
         'cancelado': interrumpido,
-        # Advertencias de los modelos usados como PATRON DE CALIBRACION.
-        # Aca importan aun mas que en un material cualquiera: la
-        # permitividad del patron entra directo en las formulas de
-        # conversion de funciones.py, asi que un modelo que no modela
-        # perdidas (o cuya permitividad esta demasiado cerca de la del
-        # aire, como el ciclohexano o la silicona) degrada el resultado de
-        # TODOS los materiales, no solo el suyo.
         'advertencias_calibracion': _advertencias_calibracion(
-            modelo_patron3, modelo_patron4 if usar_metodo_completo else None),
+            modelo_patron3,
+            modelo_patron4 if usar_metodo_completo else None,
+            adicionales=adicionales if usar_mc else ()),
     }
     progreso(1 + len(resultados_materiales), total_pasos, "Generando informe PDF")
     ruta_pdf = os.path.join(carpeta_salida, config['nombre_informe_pdf'])
@@ -1500,6 +1942,8 @@ def config_desde_constantes():
         'patron3_temperatura_c': PATRON3_TEMPERATURA_CAL_C,
         'patron4_modelo': PATRON4_MODELO_CAL,
         'patron4_temperatura_c': PATRON4_TEMPERATURA_CAL_C,
+        'usar_minimos_cuadrados': USAR_MINIMOS_CUADRADOS,
+        'patrones_adicionales': list(PATRONES_ADICIONALES),
         'materiales': MATERIALES,
         'carpeta_salida': CARPETA_SALIDA,
         'nombre_informe_pdf': NOMBRE_INFORME_PDF,

@@ -83,22 +83,14 @@ _ESTILOS.add(ParagraphStyle(name='TextoAdvertencia', parent=_ESTILOS['Normal'],
 
 
 def _fmt_error(valor):
-    """Formatea un error relativo en %, o 'n/a' si es NaN.
-
-    Un NaN aca no es un fallo de calculo: significa que el error relativo
-    no esta DEFINIDO o no significa nada en ese caso. Pasa en dos
-    situaciones (ver `Patrones.perdidas_comparables` y
-    `analisis_permitividad.calcular_error`):
-      - la curva teorica tiene er'' identicamente 0 (fluido de silicona);
-      - la curva teorica tiene un er'' fisico pero minusculo comparado
-        con lo que resuelve una sonda coaxial (ciclohexano, er'' ~ 1e-5).
+    """Formatea un error absoluto (adimensional), o 'n/a' si es NaN.
     """
     if valor is None:
         return "n/a"
     try:
         if valor != valor:  # NaN != NaN, sin necesidad de importar math
             return "n/a"
-        return f"{valor:.2f}%"
+        return f"{valor:.4f}"
     except (TypeError, ValueError):
         return "n/a"
 
@@ -183,26 +175,78 @@ def _estilo_tabla(colorear_filas=True):
     return TableStyle(estilo)
 
 
-def _tabla_errores(errores):
+def _tabla_errores(errores, titulo_col0="Metodo"):
     """
-    errores: dict {etiqueta: {'err_re_medio','err_re_max','err_im_medio','err_im_max'}}
-    (valores en %, ya calculados con funciones.error_relativo_porcentual).
+    errores: dict {etiqueta: list of dicts o dict}
+    donde cada entrada en la lista de intervalos contiene:
+      'intervalo_str', 'err_re_medio', 'err_re_max', 'err_im_medio', 'err_im_max'
     """
-    encabezado = ["Metodo", "Error medio\ner'", "Error max\ner'", "Error medio\ner''", "Error max\ner''"]
+    encabezado = [
+        titulo_col0,
+        "Intervalo",
+        "Error medio\ner'",
+        "Error max\ner'",
+        "Error medio\ner''",
+        "Error max\ner''"
+    ]
     datos = [[Paragraph(h, _ESTILOS['CeldaTablaEncabezado']) for h in encabezado]]
-    for etiqueta, e in errores.items():
-        datos.append([
-            Paragraph(str(etiqueta), _ESTILOS['CeldaTabla']),
-            Paragraph(_fmt_error(e['err_re_medio']), _ESTILOS['CeldaTabla']),
-            Paragraph(_fmt_error(e['err_re_max']), _ESTILOS['CeldaTabla']),
-            Paragraph(_fmt_error(e['err_im_medio']), _ESTILOS['CeldaTabla']),
-            Paragraph(_fmt_error(e['err_im_max']), _ESTILOS['CeldaTabla']),
-        ])
-    ancho_primera = 6.5 * cm
-    ancho_resto = (_ANCHO_PAGINA_UTIL - ancho_primera) / 4
-    t = Table(datos, hAlign='LEFT',
-              colWidths=[ancho_primera] + [ancho_resto] * 4)
-    t.setStyle(_estilo_tabla())
+
+    estilo_extra = []
+    fila_idx = 1
+    colores_bloque = [colors.white, _COLOR_FILA_PAR]
+    idx_metodo = 0
+
+    for etiqueta, items in errores.items():
+        if isinstance(items, dict):
+            items = [{'intervalo_str': "Banda completa", **items}]
+
+        num_ints = len(items)
+        fila_inicio_metodo = fila_idx
+        color_fondo = colores_bloque[idx_metodo % 2]
+        idx_metodo += 1
+
+        for i, e in enumerate(items):
+            interv_str = e.get('intervalo_str', '')
+            texto_metodo = str(etiqueta) if i == 0 else ""
+            datos.append([
+                Paragraph(texto_metodo, _ESTILOS['CeldaTabla']),
+                Paragraph(interv_str, _ESTILOS['CeldaTabla']),
+                Paragraph(_fmt_error(e.get('err_re_medio')), _ESTILOS['CeldaTabla']),
+                Paragraph(_fmt_error(e.get('err_re_max')), _ESTILOS['CeldaTabla']),
+                Paragraph(_fmt_error(e.get('err_im_medio')), _ESTILOS['CeldaTabla']),
+                Paragraph(_fmt_error(e.get('err_im_max')), _ESTILOS['CeldaTabla']),
+            ])
+            fila_idx += 1
+
+        # Fondo del metodo agrupado
+        estilo_extra.append(('BACKGROUND', (0, fila_inicio_metodo), (-1, fila_idx - 1), color_fondo))
+
+        if num_ints > 1:
+            estilo_extra.append(('SPAN', (0, fila_inicio_metodo), (0, fila_inicio_metodo + num_ints - 1)))
+            estilo_extra.append(('VALIGN', (0, fila_inicio_metodo), (0, fila_inicio_metodo + num_ints - 1), 'MIDDLE'))
+
+        # Linea divisoria inferior para separar metodos
+        estilo_extra.append(('LINEBELOW', (0, fila_idx - 1), (-1, fila_idx - 1), 0.7, colors.HexColor('#9aa0a6')))
+
+    ancho_metodo = 4.8 * cm
+    ancho_intervalo = 3.2 * cm
+    ancho_col_err = (_ANCHO_PAGINA_UTIL - ancho_metodo - ancho_intervalo) / 4  # ~2.3 cm cada una
+    col_widths = [ancho_metodo, ancho_intervalo] + [ancho_col_err] * 4
+
+    estilo_base = [
+        ('BACKGROUND', (0, 0), (-1, 0), _COLOR_ENCABEZADO),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]
+
+    t = Table(datos, hAlign='LEFT', colWidths=col_widths)
+    t.setStyle(TableStyle(estilo_base + estilo_extra))
     return t
 
 
@@ -258,6 +302,67 @@ def _fila_temperatura(etiqueta, valor):
     return [etiqueta, texto]
 
 
+def _formatear_info_acond_pdf(info_acond):
+    """Genera el parrafo explicativo de las frecuencias de transicion / corte
+    para ubicar debajo del grafico de Gn(f) en el informe PDF."""
+    if not info_acond:
+        return ""
+    tipo = info_acond.get('tipo', '')
+    modo = info_acond.get('modo', '')
+    disparo = info_acond.get('disparo_detectado')
+
+    nombres_tipo = {
+        'cero_clamping': "anulaci\u00f3n a cero (cero clamping)",
+        'transicion_polinomica_cero': "transici\u00f3n cuadr\u00e1tica (f\u00b2) hacia cero",
+        'tapering': "tapering con ventana de coseno alzado",
+    }
+    tipo_str = nombres_tipo.get(tipo, tipo)
+
+    if modo == 'automatico':
+        if disparo is False:
+            aviso = info_acond.get('aviso') or "No se detect\u00f3 variaci\u00f3n mayor al umbral. Curva intacta."
+            return f"<b>Acondicionamiento de Gn (autom\u00e1tico):</b> {aviso}"
+
+        if tipo == 'cero_clamping':
+            fc = info_acond.get('f_corte_aplicada', 0.0) or 0.0
+            fc_str = f"{fc/1e9:.4f} GHz ({fc/1e6:.2f} MHz)" if fc < 1e9 else f"{fc/1e9:.4f} GHz"
+            return (
+                f"<b>Acondicionamiento de Gn:</b> Se aplic\u00f3 {tipo_str} en modo autom\u00e1tico. "
+                f"Frecuencia de corte calculada autom\u00e1ticamente: "
+                f"<b>f<sub>corte</sub> = {fc_str}</b> (valores de Gn anulados a cero por debajo de esta frecuencia)."
+            )
+        else:
+            f1 = info_acond.get('f1_aplicada', 0.0) or 0.0
+            f2 = info_acond.get('f2_aplicada', 0.0) or 0.0
+            f1_str = f"{f1/1e9:.4f} GHz ({f1/1e6:.2f} MHz)" if (0 < f1 < 1e9) else f"{f1/1e9:.4f} GHz"
+            f2_str = f"{f2/1e9:.4f} GHz ({f2/1e6:.2f} MHz)" if f2 < 1e9 else f"{f2/1e9:.4f} GHz"
+            return (
+                f"<b>Acondicionamiento de Gn:</b> Se aplic\u00f3 {tipo_str} en modo autom\u00e1tico. "
+                f"Frecuencias de transici\u00f3n calculadas autom\u00e1ticamente: "
+                f"<b>f<sub>1</sub> = {f1_str}</b> (Gn = 0) y "
+                f"<b>f<sub>2</sub> = {f2_str}</b> (empalme continuo con la curva original calculada)."
+            )
+    else:
+        # Modo manual
+        if tipo == 'cero_clamping':
+            fc = info_acond.get('f_corte_aplicada', 0.0) or 0.0
+            fc_str = f"{fc/1e9:.4f} GHz ({fc/1e6:.2f} MHz)" if fc < 1e9 else f"{fc/1e9:.4f} GHz"
+            return (
+                f"<b>Acondicionamiento de Gn:</b> Se aplic\u00f3 {tipo_str} en modo manual con "
+                f"frecuencia de corte <b>f<sub>corte</sub> = {fc_str}</b>."
+            )
+        else:
+            f1 = info_acond.get('f1_aplicada', 0.0) or 0.0
+            f2 = info_acond.get('f2_aplicada', 0.0) or 0.0
+            f1_str = f"{f1/1e9:.4f} GHz"
+            f2_str = f"{f2/1e9:.4f} GHz ({f2/1e6:.2f} MHz)" if f2 < 1e9 else f"{f2/1e9:.4f} GHz"
+            return (
+                f"<b>Acondicionamiento de Gn:</b> Se aplic\u00f3 {tipo_str} en modo manual con "
+                f"frecuencias de transici\u00f3n <b>f<sub>1</sub> = {f1_str}</b> y "
+                f"<b>f<sub>2</sub> = {f2_str}</b>."
+            )
+
+
 def _tabla_metadata(metadata):
     fecha = metadata.get('fecha') or datetime.now().strftime("%d/%m/%Y %H:%M")
     usar_completo = metadata.get('usar_metodo_completo', True)
@@ -279,28 +384,55 @@ def _tabla_metadata(metadata):
         }
         etiqueta_estrategia = etiquetas_estrategia.get(estrategia, estrategia)
         filas.append(["Arranque de Gn (m\u00e9todo completo)", etiqueta_estrategia])
+
+        cfg_acond = metadata.get('acondicionar_gn') or {}
+        if cfg_acond.get('habilitado'):
+            modo_ac = cfg_acond.get('modo', 'automatico')
+            tipo_ac = cfg_acond.get('tipo', 'transicion_polinomica_cero')
+            detalle_ac = f"{tipo_ac}, {modo_ac}"
+            if tipo_ac in ('pasabajos', 'transicion_pasabajos'):
+                detalle_ac += f", ord={cfg_acond.get('pb_orden', 2)}, fc={cfg_acond.get('pb_fcorte', 0.10)}"
+            filas.append(["Acondicionamiento de Gn", f"Habilitado ({detalle_ac})"])
     else:
         filas.append(["M\u00e9todo completo", "No usado (solo m\u00e9todo simplificado)"])
+        cfg_acond = metadata.get('acondicionar_gn') or {}
+        if cfg_acond.get('habilitado') and metadata.get('minimos_cuadrados'):
+            modo_ac = cfg_acond.get('modo', 'automatico')
+            tipo_ac = cfg_acond.get('tipo', 'transicion_polinomica_cero')
+            detalle_ac = f"{tipo_ac}, {modo_ac}"
+            if tipo_ac in ('pasabajos', 'transicion_pasabajos'):
+                detalle_ac += f", ord={cfg_acond.get('pb_orden', 2)}, fc={cfg_acond.get('pb_fcorte', 0.10)}"
+            filas.append(["Acondicionamiento de Gn", f"Habilitado ({detalle_ac})"])
+
+    mc = metadata.get('minimos_cuadrados')
+    if mc:
+        nombres_mc = ", ".join(mc.get('nombres', []))
+        filas.append([
+            "Calibraci\u00f3n por cuadrados m\u00ednimos",
+            f"{mc.get('n_patrones')} patrones ({nombres_mc})",
+        ])
+
+    cfg_filtro_pat = metadata.get('filtrar_patrones_sg') or metadata.get('filtrar_patrones') or {}
+    if cfg_filtro_pat.get('habilitado'):
+        tipo_f_pat = cfg_filtro_pat.get('tipo', cfg_filtro_pat.get('tipo_filtro', 'savitzky_golay'))
+        en_pat = ", ".join(cfg_filtro_pat.get('aplicar_en', []))
+        if tipo_f_pat == 'pasabajos':
+            ord_pat = cfg_filtro_pat.get('pb_orden', 2)
+            fc_pat = cfg_filtro_pat.get('pb_fcorte', 0.10)
+            filas.append(["Filtro en patrones", f"Pasabajos Butterworth (orden={ord_pat}, fc={fc_pat:.2f}) en: {en_pat}"])
+        else:
+            w_pat = cfg_filtro_pat.get('sg_window', 15)
+            p_pat = cfg_filtro_pat.get('sg_polyorder', 3)
+            filas.append(["Filtro en patrones", f"Savitzky-Golay (N={w_pat}, p={p_pat}) en: {en_pat}"])
+
     filas.append(["Banda analizada", f"{metadata['f_min_ghz']} - {metadata['f_max_ghz']} GHz"])
+    if metadata.get('intervalos_error'):
+        ints_str = ", ".join([f"[{fa/1e9:.2f} - {fb/1e9:.2f}] GHz" for fa, fb in metadata['intervalos_error']])
+        filas.append(["Intervalos de error", ints_str])
     for clave, archivo in metadata.get('archivos_calibracion', {}).items():
-        # Solo el nombre de archivo, no la ruta completa: una ruta larga
-        # (tipica en Windows, con varias carpetas anidadas) no aporta
-        # nada util aca y se ve mal si no entra en el ancho de columna.
-        # La ruta completa de cada .s1p usado sigue quedando disponible
-        # igual en la carpeta de salida (se copian ahi -- ver
-        # `analisis_permitividad._copiar_insumos`), asi que no se pierde
-        # informacion, solo se saca del PDF lo que no hace falta mostrar.
         nombre_archivo = os.path.basename(archivo) if archivo else archivo
         filas.append([f"Patron de calibracion: {clave}", nombre_archivo])
 
-    # Un Paragraph SI hace salto de linea automatico si el texto no entra
-    # en el ancho de columna disponible -- a diferencia de un string
-    # plano (lo que se usaba antes), que en ese caso no se recorta ni
-    # ajusta: se dibuja igual, se sale de su celda y queda superpuesto
-    # con el texto de al lado (se ve roto aunque el dato en si este bien;
-    # pasaba sobre todo con nombres de modelo largos como "Agua
-    # (Liebe-Hufford-Manabe)" en la etiqueta, o con rutas de archivo
-    # largas antes de este cambio).
     filas_wrap = [
         [Paragraph(str(etiqueta), _ESTILOS['CeldaMetadataLabel']),
          Paragraph(str(valor), _ESTILOS['CeldaMetadata'])]
@@ -320,51 +452,102 @@ def _tabla_metadata(metadata):
     return t
 
 
+def _seccion_minimos_cuadrados(chequeo_mc):
+    """
+    Arma los elementos de ReportLab (lista para envolver o agregar al story) con el
+    diagnostico de la calibracion redundante por cuadrados minimos:
+    explicacion breve, grafico de residuo por patron, tabla resumen de residuo
+    de S11 y tabla de validacion cruzada con error absoluto desglosado en los
+    3 intervalos de frecuencia.
+    """
+    n_pat = chequeo_mc.get('n_patrones', 0)
+    dof = chequeo_mc.get('grados_libertad', 0)
+    residuo_rms = chequeo_mc.get('residuo_rms', {})
+    validacion = chequeo_mc.get('validacion_cruzada') or {}
+    errores_vc = chequeo_mc.get('errores_validacion_cruzada') or {}
+
+    elementos = [
+        Paragraph(f"Calibraci\u00f3n redundante por cuadrados m\u00ednimos ({n_pat} patrones)",
+                  _ESTILOS['NombreMaterial']),
+        Paragraph(
+            f"Ajuste conjunto de los 4 par\u00e1metros del modelo de la sonda "
+            f"(3 de la red bilineal + Gn de radiaci\u00f3n) sobre los {n_pat} patrones "
+            f"de calibraci\u00f3n a la vez ({dof} grados de libertad reales por "
+            f"frecuencia). Cuando hay 5 o m\u00e1s patrones el sistema queda "
+            f"sobredeterminado: el error de medici\u00f3n se promedia entre todos y el "
+            f"residuo de cada patr\u00f3n mide qu\u00e9 tan consistente es con los dem\u00e1s.",
+            _ESTILOS['Normal']),
+        Spacer(1, 0.25 * cm),
+    ]
+    fig_res = chequeo_mc.get('figura_residuos')
+    if fig_res and os.path.isfile(fig_res):
+        elementos.append(_imagen_ajustada(fig_res))
+        elementos.append(Spacer(1, 0.2 * cm))
+
+    info_acond_mc = chequeo_mc.get('info_acond_mc')
+    if chequeo_mc.get('acondicionado') and info_acond_mc and info_acond_mc.get('tipo'):
+        texto_acond_mc = _formatear_info_acond_pdf(info_acond_mc)
+        if texto_acond_mc:
+            elementos.append(Paragraph(
+                texto_acond_mc + " <i>(Posteriormente se reajustaron los par\u00e1metros a, b, c "
+                "fijando el Gn acondicionado).</i>",
+                _ESTILOS['Normal']))
+            elementos.append(Spacer(1, 0.2 * cm))
+
+    if residuo_rms:
+        tiene_vc = bool(validacion) and dof > 0
+        if tiene_vc:
+            encabezado = [
+                "Patr\u00f3n",
+                "Residuo rms (S11)",
+                "Residuo de los dem\u00e1s sin \u00e9l",
+            ]
+            anchos = [6.6 * cm, 5.2 * cm, 5.2 * cm]
+        else:
+            encabezado = ["Patr\u00f3n", "Residuo rms (S11)"]
+            anchos = [9.0 * cm, 8.0 * cm]
+
+        datos = [[Paragraph(h, _ESTILOS['CeldaTablaEncabezado']) for h in encabezado]]
+        for nom, rms in residuo_rms.items():
+            fila = [
+                Paragraph(str(nom), _ESTILOS['CeldaTabla']),
+                Paragraph(f"{rms:.4e}", _ESTILOS['CeldaTabla']),
+            ]
+            if tiene_vc:
+                v = validacion.get(nom)
+                if v is not None:
+                    fila.append(Paragraph(f"{v['residuo_resto']:.4e}", _ESTILOS['CeldaTabla']))
+                else:
+                    fila.append(Paragraph("fijo (corto/aire)", _ESTILOS['CeldaTabla']))
+            datos.append(fila)
+
+        t = Table(datos, hAlign='LEFT', colWidths=anchos)
+        t.setStyle(_estilo_tabla())
+        elementos.append(Paragraph("Consistencia en S11 entre patrones:", _ESTILOS['Normal']))
+        elementos.append(Spacer(1, 0.12 * cm))
+        elementos.append(t)
+        if tiene_vc:
+            elementos.append(Spacer(1, 0.15 * cm))
+            elementos.append(Paragraph(
+                "Residuo de los dem\u00e1s sin \u00e9l: residuo de S11 al recalibrar excluyendo ese "
+                "l\u00edquido. Si al sacar un patr\u00f3n el residuo de los dem\u00e1s baja mucho, ese "
+                "patr\u00f3n es el que estaba introduciendo tensi\u00f3n en el ajuste.",
+                _ESTILOS['Nota']))
+        elif dof == 0:
+            elementos.append(Spacer(1, 0.15 * cm))
+            elementos.append(Paragraph(
+                "Nota: con exactamente 4 patrones el ajuste es exacto (0 grados de "
+                "libertad) y equivale al m\u00e9todo completo de 4 patrones. Agregue un 5to "
+                "patr\u00f3n en la configuraci\u00f3n para aprovechar la redundancia y la "
+                "validaci\u00f3n cruzada.",
+                _ESTILOS['Nota']))
+
+    return elementos
+
+
 def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
     """
     Arma el informe PDF final.
-
-    Parametros
-    ----------
-    ruta_salida : str
-        Path del PDF a generar (por ejemplo "./salidas/informe.pdf").
-    metadata : dict
-        'patron3_modelo', 'patron3_etiqueta', 'patron3_temperatura' y los
-        mismos 3 para 'patron4' (los 2 liquidos usados como patron de
-        calibracion, con su clave interna, su nombre lindo para mostrar y
-        su temperatura real durante la calibracion; cualquiera puede
-        faltar -- p.ej. en un informe armado con datos mas viejos -- y se
-        muestra "no especificada" en vez de romper),
-        'f_min_ghz', 'f_max_ghz', 'archivos_calibracion' (dict
-        {clave: nombre_archivo}), 'fecha' (opcional, string),
-        'cancelado' (opcional, bool: si True, se muestra un aviso en la
-        portada indicando que el analisis se corto antes de terminar
-        todos los materiales -- ver `analisis_permitividad.ejecutar_
-        analisis` y su parametro `cancelado`).
-    chequeo_calibracion : dict o None
-        'figura' (path al .png) y 'errores' (dict como en `_tabla_errores`,
-        con una sola entrada por metodo), o None si no se hizo ese chequeo.
-    materiales : list[dict]
-        Uno por material analizado, con las claves:
-        'nombre', 'archivo', 'figura' (path .png),
-        'tiene_teorico' (bool), 'errores' (dict o None),
-        'tabla_frecs_ghz' (list[float] o None),
-        'tabla_columnas' (dict {titulo: ndarray} o None),
-        'nota' (str opcional), y opcionalmente 'modelo_etiqueta' (nombre
-        del modelo teorico usado, o None si no tiene) junto con
-        'temperatura' (la temperatura de ESE material durante el
-        ensayo, distinta de las de calibracion de arriba; solo tiene
-        sentido si 'modelo_etiqueta' no es None). Si faltan estas dos
-        ultimas claves (informe armado con una version anterior de
-        analisis_permitividad.py) simplemente no se muestra esa linea.
-        Tambien opcionales: 'figura_s11' (path .png del S11 medido en
-        modulo/fase) y 'figura_smith' (path .png del diagrama de Smith
-        de ese S11); si faltan o el archivo no existe, esas figuras
-        simplemente no aparecen (no rompe nada).
-
-    Retorna
-    -------
-    La ruta del PDF generado (mismo valor que `ruta_salida`).
     """
     os.makedirs(os.path.dirname(ruta_salida) or ".", exist_ok=True)
     doc = SimpleDocTemplate(ruta_salida, pagesize=A4,
@@ -389,11 +572,6 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
             "procesar todos los materiales configurados.",
             _ESTILOS['AvisoCancelado']))
 
-    # Advertencias de los modelos usados como PATRON DE CALIBRACION (p.ej.
-    # un modelo de permitividad estatica, sin ecuacion de relajacion). Van
-    # en la portada, junto a la metadata de calibracion, porque afectan el
-    # resultado de TODOS los materiales del informe -- no solo el de un
-    # material puntual, que es el caso de las cajas de mas abajo.
     for adv in metadata.get('advertencias_calibracion', []) or []:
         rol = adv.get('rol') or "Patr\u00f3n de calibraci\u00f3n"
         etiqueta_adv = adv.get('etiqueta', '')
@@ -405,10 +583,6 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
     story.append(PageBreak())
 
     # ---- Chequeo de calibracion ----
-    # Todo el bloque (titulo + texto + grafico + tabla) va en un unico
-    # KeepTogether: como junto mide bastante menos que una pagina, entra
-    # entero sin problema, y asi nunca queda el titulo/grafico separado de
-    # su tabla por un salto de pagina en el medio.
     if chequeo_calibracion is not None:
         etiqueta_p3 = chequeo_calibracion.get('etiqueta_patron3') or "patron 3"
         etiqueta_p4 = chequeo_calibracion.get('etiqueta_patron4') or "patron 4"
@@ -426,15 +600,13 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
         if chequeo_calibracion.get('figura') and os.path.isfile(chequeo_calibracion['figura']):
             bloque.append(_imagen_ajustada(chequeo_calibracion['figura']))
         if chequeo_calibracion.get('errores'):
-            bloque.append(Spacer(1, 0.3 * cm))
+            bloque.append(Spacer(1, 0.25 * cm))
+            bloque.append(Paragraph("Error absoluto respecto del modelo te\u00f3rico (por intervalos de frecuencia):",
+                                    _ESTILOS['Normal']))
+            bloque.append(Spacer(1, 0.15 * cm))
             bloque.append(_tabla_errores(chequeo_calibracion['errores']))
         story.append(KeepTogether(bloque))
 
-        # Chequeo ANALOGO para el patron 4 (solo si el metodo completo
-        # esta habilitado -- ver analisis_permitividad.ejecutar_analisis).
-        # Da una segunda validacion independiente de la calibracion: si
-        # el patron 3 pasa pero el patron 4 no (o al reves), el problema
-        # esta especificamente en la medicion/modelo de ese patron.
         chequeo_p4 = chequeo_calibracion.get('patron4')
         if chequeo_p4 is not None:
             bloque_p4 = [
@@ -452,31 +624,60 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
             if chequeo_p4.get('figura') and os.path.isfile(chequeo_p4['figura']):
                 bloque_p4.append(_imagen_ajustada(chequeo_p4['figura']))
             if chequeo_p4.get('errores'):
-                bloque_p4.append(Spacer(1, 0.3 * cm))
+                bloque_p4.append(Spacer(1, 0.25 * cm))
+                bloque_p4.append(Paragraph("Error absoluto respecto del modelo te\u00f3rico (por intervalos de frecuencia):",
+                                           _ESTILOS['Normal']))
+                bloque_p4.append(Spacer(1, 0.15 * cm))
                 bloque_p4.append(_tabla_errores(chequeo_p4['errores']))
             story.append(Spacer(1, 0.3 * cm))
             story.append(KeepTogether(bloque_p4))
 
-        # Diagnostico aparte: Gn(f) no depende del patron 3 en particular
-        # sino de los 4 patrones de calibracion en conjunto, asi que va en
-        # su propio KeepTogether (no forzado a entrar junto con el bloque
-        # de arriba, que ya puede ser largo).
         if chequeo_calibracion.get('figura_Gn') and os.path.isfile(chequeo_calibracion['figura_Gn']):
-            story.append(Spacer(1, 0.3 * cm))
-            story.append(KeepTogether([
+            elementos_gn = [
                 Paragraph("Diagn\u00f3stico: conductancia normalizada Gn(f)",
                           _ESTILOS['NombreMaterial']),
                 Paragraph(
-                    "Gn se calcula a partir de los 4 patrones de calibraci\u00f3n (no "
+                    "Gn se calcula a partir de los patrones de calibraci\u00f3n (no "
                     "depende del material bajo ensayo), por lo que deber\u00eda variar "
                     "en forma suave con la frecuencia. Un salto brusco o un pico "
                     "aislado suele indicar un problema con la medici\u00f3n de alguno de "
                     f"los patrones, t\u00edpicamente {etiqueta_p4} (el \u00fanico "
-                    "que interviene en este c\u00e1lculo).",
+                    "que interviene en este c\u00e1lculo en el m\u00e9todo de 4 patrones).",
                     _ESTILOS['Normal']),
                 Spacer(1, 0.2 * cm),
                 _imagen_ajustada(chequeo_calibracion['figura_Gn']),
-            ]))
+            ]
+            info_acond = chequeo_calibracion.get('info_acond_Gn')
+            if info_acond and info_acond.get('tipo'):
+                texto_acond = _formatear_info_acond_pdf(info_acond)
+                if texto_acond:
+                    elementos_gn.append(Spacer(1, 0.2 * cm))
+                    elementos_gn.append(Paragraph(texto_acond, _ESTILOS['Normal']))
+            story.append(Spacer(1, 0.3 * cm))
+            story.append(KeepTogether(elementos_gn))
+
+        chequeo_mc = chequeo_calibracion.get('minimos_cuadrados')
+        if chequeo_mc is not None:
+            story.append(Spacer(1, 0.3 * cm))
+            story.append(KeepTogether(_seccion_minimos_cuadrados(chequeo_mc)))
+            errores_vc = chequeo_mc.get('errores_validacion_cruzada')
+            if errores_vc and chequeo_mc.get('grados_libertad', 0) > 0:
+                story.append(Spacer(1, 0.25 * cm))
+                bloque_vc_err = [
+                    Paragraph(
+                        "Error al medirlo sin \u00e9l (validaci\u00f3n cruzada, error absoluto por intervalos de frecuencia):",
+                        _ESTILOS['Normal']),
+                    Spacer(1, 0.12 * cm),
+                    _tabla_errores(errores_vc, titulo_col0="Patr\u00f3n medido (sin \u00e9l)"),
+                    Spacer(1, 0.12 * cm),
+                    Paragraph(
+                        "Error al medirlo sin \u00e9l: se recalibra excluyendo ese patr\u00f3n l\u00edquido "
+                        "(respetando el acondicionamiento de Gn si est\u00e1 activo) y se lo mide "
+                        "como si fuera una muestra desconocida, desglosando su error absoluto "
+                        "en los 3 intervalos de frecuencia.",
+                        _ESTILOS['Nota']),
+                ]
+                story.append(KeepTogether(bloque_vc_err))
 
         if materiales:
             story.append(_separador())
@@ -511,6 +712,16 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
                 Paragraph(f"Modelo te\u00f3rico: {modelo_etiqueta}{texto_temp}"
                           f"{texto_resumen}",
                           _ESTILOS['Nota']))
+        if mat.get('filtrar_s11') or mat.get('filtrar_sg'):
+            t_f = mat.get('tipo_filtro', 'savitzky_golay')
+            if t_f == 'pasabajos':
+                encabezado.append(Paragraph(
+                    f"Filtro aplicado sobre S11: Pasabajos Butterworth (orden={mat.get('pb_orden', 2)}, fc={mat.get('pb_fcorte', 0.10):.2f})",
+                    _ESTILOS['Nota']))
+            else:
+                encabezado.append(Paragraph(
+                    f"Filtro aplicado sobre S11: Savitzky-Golay (ventana={mat.get('sg_window', 15)}, orden={mat.get('sg_polyorder', 3)})",
+                    _ESTILOS['Nota']))
         encabezado.append(Spacer(1, 0.2 * cm))
         if mat.get('figura') and os.path.isfile(mat['figura']):
             encabezado.append(_imagen_ajustada(mat['figura']))
@@ -550,7 +761,7 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
 
         if mat.get('tiene_teorico') and mat.get('errores'):
             bloque_err = [
-                Paragraph("Error relativo respecto del modelo te\u00f3rico:",
+                Paragraph("Error absoluto respecto del modelo te\u00f3rico (por intervalos de frecuencia):",
                           _ESTILOS['Normal']),
                 Spacer(1, 0.15 * cm),
                 _tabla_errores(mat['errores']),
@@ -563,13 +774,10 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
                 # no modela perdidas, o las modela pero son minusculas.
                 if mat.get('modelo_modela_perdidas') is False:
                     motivo = ("el modelo te\u00f3rico de referencia no modela "
-                              "p\u00e9rdidas (devuelve er'' = 0), y el error relativo "
-                              "contra cero no est\u00e1 definido")
+                              "p\u00e9rdidas (er'' = 0)")
                 else:
                     motivo = ("las p\u00e9rdidas de referencia son de \u00f3rdenes de "
-                              "magnitud menores que lo que puede resolver una sonda "
-                              "coaxial open-ended, as\u00ed que el cociente comparar\u00eda "
-                              "ruido de medici\u00f3n contra un n\u00famero min\u00fasculo")
+                              "magnitud menores que la resoluci\u00f3n de la sonda coaxial")
                 bloque_err.append(Spacer(1, 0.15 * cm))
                 bloque_err.append(Paragraph(
                     f"Las columnas de er'' figuran como <b>n/a</b> porque {motivo}. "
