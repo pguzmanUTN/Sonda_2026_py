@@ -389,14 +389,20 @@ def _tabla_metadata(metadata):
         if cfg_acond.get('habilitado'):
             modo_ac = cfg_acond.get('modo', 'automatico')
             tipo_ac = cfg_acond.get('tipo', 'transicion_polinomica_cero')
-            filas.append(["Acondicionamiento de Gn", f"Habilitado ({tipo_ac}, {modo_ac})"])
+            detalle_ac = f"{tipo_ac}, {modo_ac}"
+            if tipo_ac in ('pasabajos', 'transicion_pasabajos'):
+                detalle_ac += f", ord={cfg_acond.get('pb_orden', 2)}, fc={cfg_acond.get('pb_fcorte', 0.10)}"
+            filas.append(["Acondicionamiento de Gn", f"Habilitado ({detalle_ac})"])
     else:
         filas.append(["M\u00e9todo completo", "No usado (solo m\u00e9todo simplificado)"])
         cfg_acond = metadata.get('acondicionar_gn') or {}
         if cfg_acond.get('habilitado') and metadata.get('minimos_cuadrados'):
             modo_ac = cfg_acond.get('modo', 'automatico')
             tipo_ac = cfg_acond.get('tipo', 'transicion_polinomica_cero')
-            filas.append(["Acondicionamiento de Gn", f"Habilitado ({tipo_ac}, {modo_ac})"])
+            detalle_ac = f"{tipo_ac}, {modo_ac}"
+            if tipo_ac in ('pasabajos', 'transicion_pasabajos'):
+                detalle_ac += f", ord={cfg_acond.get('pb_orden', 2)}, fc={cfg_acond.get('pb_fcorte', 0.10)}"
+            filas.append(["Acondicionamiento de Gn", f"Habilitado ({detalle_ac})"])
 
     mc = metadata.get('minimos_cuadrados')
     if mc:
@@ -405,6 +411,19 @@ def _tabla_metadata(metadata):
             "Calibraci\u00f3n por cuadrados m\u00ednimos",
             f"{mc.get('n_patrones')} patrones ({nombres_mc})",
         ])
+
+    cfg_filtro_pat = metadata.get('filtrar_patrones_sg') or metadata.get('filtrar_patrones') or {}
+    if cfg_filtro_pat.get('habilitado'):
+        tipo_f_pat = cfg_filtro_pat.get('tipo', cfg_filtro_pat.get('tipo_filtro', 'savitzky_golay'))
+        en_pat = ", ".join(cfg_filtro_pat.get('aplicar_en', []))
+        if tipo_f_pat == 'pasabajos':
+            ord_pat = cfg_filtro_pat.get('pb_orden', 2)
+            fc_pat = cfg_filtro_pat.get('pb_fcorte', 0.10)
+            filas.append(["Filtro en patrones", f"Pasabajos Butterworth (orden={ord_pat}, fc={fc_pat:.2f}) en: {en_pat}"])
+        else:
+            w_pat = cfg_filtro_pat.get('sg_window', 15)
+            p_pat = cfg_filtro_pat.get('sg_polyorder', 3)
+            filas.append(["Filtro en patrones", f"Savitzky-Golay (N={w_pat}, p={p_pat}) en: {en_pat}"])
 
     filas.append(["Banda analizada", f"{metadata['f_min_ghz']} - {metadata['f_max_ghz']} GHz"])
     if metadata.get('intervalos_error'):
@@ -693,6 +712,16 @@ def generar_reporte_pdf(ruta_salida, metadata, chequeo_calibracion, materiales):
                 Paragraph(f"Modelo te\u00f3rico: {modelo_etiqueta}{texto_temp}"
                           f"{texto_resumen}",
                           _ESTILOS['Nota']))
+        if mat.get('filtrar_s11') or mat.get('filtrar_sg'):
+            t_f = mat.get('tipo_filtro', 'savitzky_golay')
+            if t_f == 'pasabajos':
+                encabezado.append(Paragraph(
+                    f"Filtro aplicado sobre S11: Pasabajos Butterworth (orden={mat.get('pb_orden', 2)}, fc={mat.get('pb_fcorte', 0.10):.2f})",
+                    _ESTILOS['Nota']))
+            else:
+                encabezado.append(Paragraph(
+                    f"Filtro aplicado sobre S11: Savitzky-Golay (ventana={mat.get('sg_window', 15)}, orden={mat.get('sg_polyorder', 3)})",
+                    _ESTILOS['Nota']))
         encabezado.append(Spacer(1, 0.2 * cm))
         if mat.get('figura') and os.path.isfile(mat['figura']):
             encabezado.append(_imagen_ajustada(mat['figura']))

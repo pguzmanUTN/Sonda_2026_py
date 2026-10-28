@@ -105,7 +105,8 @@ from funciones import (get_er_DUTm, get_er_DUT_completo, error_absoluto,
                        error_relativo_porcentual, calcular_Gn, acondicionar_gn,
                        calibrar_minimos_cuadrados, reajustar_abc_con_gn_fijo,
                        get_er_DUT_minimos_cuadrados,
-                       validacion_cruzada_minimos_cuadrados)
+                       validacion_cruzada_minimos_cuadrados, filtrar_s11_savgol,
+                       filtrar_s11_pasabajos)
 from Patrones import (PATRONES_TEORICOS, ER_AIRE, etiqueta_patron,
                        advertencia_patron, nivel_advertencia_patron,
                        es_modelo_estatico, modela_perdidas, perdidas_comparables,
@@ -1179,6 +1180,21 @@ def procesar_material(material, carpeta_datos, cache, frecs,
               f"frecuencias de calibracion: remuestreando.")
         datos = resamplear(frecs, datos)
     s11_dut = datos['Complex']
+    s11_dut_orig = s11_dut.copy()
+
+    filtrar_s11 = bool(material.get('filtrar_s11') or material.get('filtrar_sg', False))
+    tipo_filtro = material.get('tipo_filtro', 'savitzky_golay')
+    if filtrar_s11:
+        if tipo_filtro == 'pasabajos':
+            pb_ord = int(material.get('pb_orden', 2) or 2)
+            pb_fc = float(material.get('pb_fcorte', 0.10) or 0.10)
+            s11_dut = filtrar_s11_pasabajos(s11_dut, orden=pb_ord, f_corte=pb_fc)
+            print(f"  [info] Filtro Pasabajos Butterworth aplicado a S11 de '{nombre}' (orden={pb_ord}, corte={pb_fc:.3f}).")
+        else:
+            sg_w = int(material.get('sg_window', 15) or 15)
+            sg_p = int(material.get('sg_polyorder', 3) or 3)
+            s11_dut = filtrar_s11_savgol(s11_dut, window_length=sg_w, polyorder=sg_p)
+            print(f"  [info] Filtro Savitzky-Golay aplicado a S11 de '{nombre}' (ventana={sg_w}, orden={sg_p}).")
 
     default_metodos = ['simplificado', 'completo']
     if calibracion_mc is not None:
@@ -1245,7 +1261,15 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     # cualquier anomalia de er'/er'' con lo que se ve directamente en S11
     # (p.ej. una resonancia de la sonda o un problema de contacto).
     s11_dut_r = s11_dut[mascara]
-    datos_s11_r = {nombre: {'Frec': f_r, 'Complex': s11_dut_r}}
+    if filtrar_s11:
+        s11_orig_r = s11_dut_orig[mascara]
+        et_filt = f"{nombre} (filtrado PB)" if tipo_filtro == 'pasabajos' else f"{nombre} (filtrado SG)"
+        datos_s11_r = {
+            f"{nombre} (original)": {'Frec': f_r, 'Complex': s11_orig_r},
+            et_filt: {'Frec': f_r, 'Complex': s11_dut_r},
+        }
+    else:
+        datos_s11_r = {nombre: {'Frec': f_r, 'Complex': s11_dut_r}}
 
     ruta_figura_s11 = os.path.join(carpeta_salida, f"s11_{slug}.png")
     graficar_s11_mag_fase(datos_s11_r, titulo=f"{nombre}: S11 medido (modulo y fase)",
@@ -1450,6 +1474,35 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         Er_patron4 = None
         log("  Metodo completo deshabilitado: no se usa Patron 4 ni se calcula Gn de 4 patrones.")
 
+    cfg_filtro_pat = config.get('filtrar_patrones_sg') or config.get('filtrar_patrones') or {}
+    _filtrar_pat = None
+    if cfg_filtro_pat.get('habilitado', False):
+        tipo_filtro_pat = cfg_filtro_pat.get('tipo', cfg_filtro_pat.get('tipo_filtro', 'savitzky_golay'))
+        sg_w_pat = int(cfg_filtro_pat.get('sg_window', 15) or 15)
+        sg_p_pat = int(cfg_filtro_pat.get('sg_polyorder', 3) or 3)
+        pb_ord_pat = int(cfg_filtro_pat.get('pb_orden', 2) or 2)
+        pb_fc_pat = float(cfg_filtro_pat.get('pb_fcorte', 0.10) or 0.10)
+        aplicar_en = cfg_filtro_pat.get('aplicar_en', ['corto', 'aire', 'patron3', 'patron4', 'adicionales'])
+
+        def _filtrar_pat_fn(s11_arr, nombre_pat):
+            if tipo_filtro_pat == 'pasabajos':
+                s11_f = filtrar_s11_pasabajos(s11_arr, orden=pb_ord_pat, f_corte=pb_fc_pat)
+                log(f"  [info] Filtro Pasabajos aplicado a '{nombre_pat}' (orden={pb_ord_pat}, f_corte={pb_fc_pat:.2f}).")
+            else:
+                s11_f = filtrar_s11_savgol(s11_arr, window_length=sg_w_pat, polyorder=sg_p_pat)
+                log(f"  [info] Filtro Savitzky-Golay aplicado a '{nombre_pat}' (ventana={sg_w_pat}, orden={sg_p_pat}).")
+            return s11_f
+        _filtrar_pat = _filtrar_pat_fn
+
+        if 'corto' in aplicar_en:
+            s11_corto = _filtrar_pat(s11_corto, 'corto')
+        if 'aire' in aplicar_en:
+            s11_aire = _filtrar_pat(s11_aire, 'aire')
+        if 'patron3' in aplicar_en:
+            s11_patron3 = _filtrar_pat(s11_patron3, f"patron3 ({etiqueta_p3})")
+        if s11_patron4 is not None and 'patron4' in aplicar_en:
+            s11_patron4 = _filtrar_pat(s11_patron4, f"patron4 ({etiqueta_p4})")
+
     _copiar_insumos(carpeta_datos, archivos_cal, materiales, carpeta_dia, log,
                     patrones_adicionales=adicionales if usar_mc else ())
 
@@ -1472,6 +1525,10 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     f1_acond = float(cfg_acond.get('f1_ghz', 0.0) or 0.0) * 1e9
     f2_acond = float(cfg_acond.get('f2_ghz', 0.5) or 0.5) * 1e9
     umbral_acond = float(cfg_acond.get('umbral_pct', 30.0) or 30.0)
+    sg_w_acond = int(cfg_acond.get('sg_window', 15) or 15)
+    sg_p_acond = int(cfg_acond.get('sg_polyorder', 3) or 3)
+    pb_ord_acond = int(cfg_acond.get('pb_orden', 2) or 2)
+    pb_fc_acond = float(cfg_acond.get('pb_fcorte', 0.10) or 0.10)
     comparar_gn = bool(cfg_acond.get('comparar_original', True)) if acond_habilitado else False
 
     # -----------------------------------------------------------------
@@ -1493,7 +1550,9 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             log(f"  Acondicionando Gn(f) (4 patrones): tipo='{tipo_acond}', modo='{modo_acond}'...")
             gn_acondicionado, info_acond = acondicionar_gn(
                 frecs, Gn_cal, modo=modo_acond, tipo=tipo_acond,
-                f1=f1_acond, f2=f2_acond, umbral_pct=umbral_acond)
+                f1=f1_acond, f2=f2_acond, umbral_pct=umbral_acond,
+                sg_window=sg_w_acond, sg_polyorder=sg_p_acond,
+                pb_orden=pb_ord_acond, pb_fcorte=pb_fc_acond)
             if info_acond.get('aviso'):
                 log(f"    {info_acond['aviso']}")
             if info_acond.get('disparo_detectado'):
@@ -1532,6 +1591,9 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             if not (len(frec_ad) == len(frecs) and np.allclose(frec_ad, frecs, atol=1.0)):
                 log(f"  [info] patron adicional '{ad['archivo']}' remuestreado a la grilla de calibracion.")
                 datos_ad = resamplear(frecs, datos_ad)
+            s11_ad = datos_ad['Complex']
+            if _filtrar_pat is not None and 'adicionales' in cfg_filtro_pat.get('aplicar_en', []):
+                s11_ad = _filtrar_pat(s11_ad, f"adicional ({ad['archivo']})")
             modelo_ad = ad['modelo']
             T_ad = float(ad.get('temperatura_c', 25.0))
             etiq_ad = etiqueta_patron(modelo_ad) or modelo_ad
@@ -1539,7 +1601,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             log(f"  Patron {idx_ad} (cuadrados minimos) = {etiq_ad} a {T_ad:.1f}\u00b0C <- {ad['archivo']}")
             patrones_mc.append({
                 'nombre': f"{etiq_ad} ({T_ad:.0f}\u00b0C)",
-                'S11': datos_ad['Complex'],
+                'S11': s11_ad,
                 'er': er_ad,
                 'modelo': modelo_ad,
             })
@@ -1561,7 +1623,9 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
                 log(f"  Acondicionando Gn(f) de cuadrados minimos y reajustando (a, b, c)...")
                 gn_mc_acond, info_acond_mc = acondicionar_gn(
                     frecs, calibracion_mc['Gn'], modo=modo_acond, tipo=tipo_acond,
-                    f1=f1_acond, f2=f2_acond, umbral_pct=umbral_acond)
+                    f1=f1_acond, f2=f2_acond, umbral_pct=umbral_acond,
+                    sg_window=sg_w_acond, sg_polyorder=sg_p_acond,
+                    pb_orden=pb_ord_acond, pb_fcorte=pb_fc_acond)
                 calibracion_mc_acond = reajustar_abc_con_gn_fijo(
                     frecs, patrones_mc, gn_mc_acond, calibracion_base=calibracion_mc)
                 if info_acond_mc.get('aviso'):
@@ -1830,6 +1894,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         'patron4_etiqueta': etiqueta_p4 if usar_metodo_completo else None,
         'patron4_temperatura': T_patron4 if usar_metodo_completo else None,
         'estrategia_gn': estrategia_gn if (usar_metodo_completo or usar_mc) else None,
+        'filtrar_patrones_sg': cfg_filtro_pat,
         'acondicionar_gn': cfg_acond,
         'info_acond_Gn': info_acond,
         'usar_minimos_cuadrados': usar_mc and chequeo_mc is not None,

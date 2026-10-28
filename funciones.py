@@ -1005,17 +1005,17 @@ def _aplicar_cero_clamping(frecs, gn, f_corte):
     return gn_re + 1j * gn_im
 
 
-def _aplicar_transicion_polinomica_cero(frecs, gn, f1, f2):
+def _aplicar_transicion_polinomica_cero(frecs, gn, f1, f2, orden=5):
     """
     Reemplaza la parte real e imaginaria de Gn en el intervalo [f1, f2] por una
-    ley de potencia cuadratica (polinomio de grado 2, proporcional a f^2),
+    ley de potencia polinomica de orden 5 (proporcional a ((f - f1)/(f2 - f1))^5),
     modelando el comportamiento asintotico de la radiacion de la apertura coaxial
-    a baja frecuencia:
+    a baja frecuencia con fuerte atenuacion del ruido:
       - En f <= f1 : Re(Gn) = 0, Im(Gn) = 0 (cero absoluto)
       - En f1 < f < f2 :
-          Re(Gn)(f) = Re(Gn(f2)) * ((f - f1)/(f2 - f1))^2
-          Im(Gn)(f) = Im(Gn(f2)) * ((f - f1)/(f2 - f1))^2
-        (crecimiento cuadratico monotono, derivada cero en f1, sin sobrepicos)
+          Re(Gn)(f) = Re(Gn(f2)) * ((f - f1)/(f2 - f1))^5
+          Im(Gn)(f) = Im(Gn(f2)) * ((f - f1)/(f2 - f1))^5
+        (crecimiento suave monotono, derivadas de orden 1 a 4 nulas en f1, sin sobrepicos)
       - En f >= f2 : Re(Gn) e Im(Gn) originales
     """
     frecs = np.asarray(frecs, dtype=float)
@@ -1034,12 +1034,12 @@ def _aplicar_transicion_polinomica_cero(frecs, gn, f1, f2):
     re_f2 = float(gn_re[idx2])
     im_f2 = float(gn_im[idx2])
 
-    # 3. Transicion cuadratica suave (proporcional a f^2) en (f1, f2)
+    # 3. Transicion polinomica suave de orden 5 en (f1, f2)
     mascara_transicion = (frecs > f1) & (frecs < f2)
     if np.any(mascara_transicion):
         delta_f = f2 - f1
         tau = (frecs[mascara_transicion] - f1) / delta_f  # Normalizado en (0, 1)
-        factor = tau ** 2
+        factor = tau ** orden
         gn_re[mascara_transicion] = re_f2 * factor
         gn_im[mascara_transicion] = im_f2 * factor
 
@@ -1075,8 +1075,102 @@ def _aplicar_tapering(frecs, gn, f1, f2):
     return gn_re + 1j * gn_im
 
 
+def filtrar_s11_savgol(s11, window_length=15, polyorder=3):
+    """
+    Aplica el filtro Savitzky-Golay a un vector complejo S11(f) o Gn(f).
+    Filtra por separado la parte real y la parte imaginaria para evitar
+    discontinuidades de fase (evita saltos entre -pi y +pi).
+
+    Parametros
+    ----------
+    s11 : array_like complejo
+        Vector complejo (S11 o Gn).
+    window_length : int, opcional (default 15)
+        Longitud de la ventana del filtro (debe ser impar).
+    polyorder : int, opcional (default 3)
+        Orden del polinomio de ajuste local.
+
+    Retorna
+    -------
+    ndarray complejo
+        Vector filtrado con fase cero y sin retardo de grupo.
+    """
+    from scipy.signal import savgol_filter
+    s11 = np.asarray(s11, dtype=complex)
+    n = len(s11)
+    if n <= 3:
+        return np.copy(s11)
+    w = int(window_length)
+    p = int(polyorder)
+    if w >= n:
+        w = n - 1 if (n % 2 == 0) else n
+    if w % 2 == 0:
+        w += 1
+    if p >= w:
+        p = max(1, w - 1)
+    if w <= p:
+        w = p + 2 if (p + 2) % 2 != 0 else p + 3
+    if w >= n:
+        w = n if (n % 2 != 0) else max(3, n - 1)
+        p = min(p, max(1, w - 1))
+
+    re_f = savgol_filter(np.real(s11), window_length=w, polyorder=p)
+    im_f = savgol_filter(np.imag(s11), window_length=w, polyorder=p)
+    return re_f + 1j * im_f
+
+
+def filtrar_s11_pasabajos(s11, orden=2, f_corte=0.10):
+    """
+    Aplica un filtro digital pasabajos Butterworth de fase cero (zero-phase sosfiltfilt)
+    sobre las partes real e imaginaria de un vector complejo S11(f) o Gn(f).
+
+    A diferencia del filtro Savitzky-Golay (que ajusta polinomios locales), este filtro
+    IIR pasabajos ofrece una atenuacion drástica y configurable de las oscilaciones y
+    ruido de alta frecuencia (especialmente util para materiales de baja perdida como
+    el ciclohexano).
+
+    Al procesar mediante filtrado bidireccional (forward-backward con sosfiltfilt),
+    posee retardo de grupo cero exacto y no altera la fase ni la longitud electrica.
+
+    Parametros
+    ----------
+    s11 : array_like complejo o real
+        Vector de datos en frecuencia (S11 o Gn).
+    orden : int, opcional (default 2)
+        Orden del filtro Butterworth (recomendado entre 1 y 4).
+    f_corte : float, opcional (default 0.10)
+        Frecuencia de corte normalizada respecto a Nyquist (0 < f_corte < 1).
+        Por ejemplo, 0.10 permite conservar variaciones hasta el 10% del ancho de banda
+        de Nyquist mientras atenua fuertemente el ruido y rizado rapido por encima.
+
+    Retorna
+    -------
+    ndarray complejo
+        Vector filtrado con fase cero.
+    """
+    from scipy.signal import butter, sosfiltfilt
+    s11 = np.asarray(s11, dtype=complex)
+    n = len(s11)
+    if n <= 4:
+        return np.copy(s11)
+
+    ord_f = max(1, min(int(orden), 8))
+    fc = max(0.001, min(float(f_corte), 0.999))
+
+    sos = butter(ord_f, fc, btype='low', output='sos')
+    padlen = 3 * (2 * ord_f + 1)
+    if n <= padlen:
+        padlen = max(1, n - 2)
+
+    re_f = sosfiltfilt(sos, np.real(s11), padlen=padlen)
+    im_f = sosfiltfilt(sos, np.imag(s11), padlen=padlen)
+    return re_f + 1j * im_f
+
+
 def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_cero',
-                     f1=None, f2=None, umbral_pct=30.0):
+                     f1=None, f2=None, umbral_pct=30.0,
+                     sg_window=15, sg_polyorder=3,
+                     pb_orden=2, pb_fcorte=0.10):
     """
     Acondiciona el vector de conductancia normalizada Gn(f) segun el metodo
     y modo seleccionados.
@@ -1093,12 +1187,14 @@ def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_ce
           frecuencia de corte/empalme. En metodos de transicion, toma
           f1 como la frecuencia minima del archivo (frecs[0]).
         - 'manual': utiliza las frecuencias explicitas pasadas en `f1` y `f2`.
-    tipo : {'cero_clamping', 'transicion_polinomica_cero', 'tapering'}, opcional
+    tipo : {'cero_clamping', 'transicion_polinomica_cero', 'tapering', 'savitzky_golay', 'transicion_savgol'}, opcional
         - 'cero_clamping': anula Gn = 0 por debajo de la frecuencia de corte.
         - 'transicion_polinomica_cero': sustituye el tramo [f1, f2] por una
-          ley de potencia cuadratica (proporcional a f^2), suave y monotona.
+          ley de potencia polinomica de orden 5 (proporcional a f^5), suave y monotona.
         - 'tapering': modula suavemente el Gn existente mediante ventana de
           coseno alzado hacia 0 en [f1, f2].
+        - 'savitzky_golay': aplica filtro Savitzky-Golay de fase cero sobre todo el espectro de Gn.
+        - 'transicion_savgol': aplica transicion orden 5 en [f1, f2] y luego filtro Savitzky-Golay.
     f1 : float, opcional
         Frecuencia inicial donde Gn=0 (Hz). En automatico se fija en la frecuencia minima del archivo.
     f2 : float, opcional
@@ -1106,6 +1202,10 @@ def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_ce
         para 'cero_clamping'.
     umbral_pct : float, opcional (default 30.0)
         Porcentaje de variacion relativa para el detector automatico de disparo.
+    sg_window : int, opcional (default 15)
+        Ancho de ventana para el filtro Savitzky-Golay (debe ser impar).
+    sg_polyorder : int, opcional (default 3)
+        Orden polinómico para el filtro Savitzky-Golay.
 
     Retorna
     -------
@@ -1113,18 +1213,28 @@ def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_ce
         Vector de Gn acondicionado.
     info : dict
         Metadatos de la operacion ('tipo', 'modo', 'disparo_detectado',
-        'f1_aplicada', 'f2_aplicada', 'f_corte_aplicada', 'aviso').
+        'f1_aplicada', 'f2_aplicada', 'f_corte_aplicada', 'aviso',
+        'sg_window', 'sg_polyorder').
     """
     frecs = np.asarray(frecs, dtype=float)
     gn = np.asarray(gn, dtype=complex)
 
-    tipos_validos = ('cero_clamping', 'transicion_polinomica_cero', 'tapering')
+    tipos_validos = (
+        'cero_clamping', 'transicion_polinomica_cero', 'tapering',
+        'savitzky_golay', 'transicion_savgol',
+        'pasabajos', 'transicion_pasabajos'
+    )
     if tipo not in tipos_validos:
         raise ValueError(f"Tipo '{tipo}' no valido. Debe ser uno de {tipos_validos}.")
 
     modos_validos = ('automatico', 'manual')
     if modo not in modos_validos:
         raise ValueError(f"Modo '{modo}' no valido. Debe ser uno de {modos_validos}.")
+
+    w_sg = int(sg_window if sg_window is not None else 15)
+    p_sg = int(sg_polyorder if sg_polyorder is not None else 3)
+    ord_pb = max(1, min(int(pb_orden if pb_orden is not None else 2), 8))
+    fc_pb = max(0.001, min(float(pb_fcorte if pb_fcorte is not None else 0.10), 0.999))
 
     info = {
         'tipo': tipo,
@@ -1134,7 +1244,23 @@ def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_ce
         'f2_aplicada': None,
         'f_corte_aplicada': None,
         'aviso': None,
+        'sg_window': w_sg if ('sav' in tipo) else None,
+        'sg_polyorder': p_sg if ('sav' in tipo) else None,
+        'pb_orden': ord_pb if ('pasabajos' in tipo) else None,
+        'pb_fcorte': fc_pb if ('pasabajos' in tipo) else None,
     }
+
+    if tipo == 'savitzky_golay':
+        gn_out = filtrar_s11_savgol(gn, window_length=w_sg, polyorder=p_sg)
+        info['disparo_detectado'] = True
+        info['aviso'] = f"[info] Filtro Savitzky-Golay aplicado a Gn(f) (ventana={w_sg}, orden={p_sg})."
+        return gn_out, info
+
+    if tipo == 'pasabajos':
+        gn_out = filtrar_s11_pasabajos(gn, orden=ord_pb, f_corte=fc_pb)
+        info['disparo_detectado'] = True
+        info['aviso'] = f"[info] Filtro Pasabajos Butterworth aplicado a Gn(f) (orden={ord_pb}, corte={fc_pb:.3f})."
+        return gn_out, info
 
     if modo == 'automatico':
         f_disp, idx_disp = _detectar_frecuencia_disparo(frecs, gn, umbral_pct=umbral_pct)
@@ -1160,10 +1286,15 @@ def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_ce
             f2_eff = f_disp
             info['f1_aplicada'] = f1_eff
             info['f2_aplicada'] = f2_eff
-            if tipo == 'transicion_polinomica_cero':
+            if tipo in ('transicion_polinomica_cero', 'transicion_savgol', 'transicion_pasabajos'):
                 gn_out = _aplicar_transicion_polinomica_cero(frecs, gn, f1_eff, f2_eff)
             else:
                 gn_out = _aplicar_tapering(frecs, gn, f1_eff, f2_eff)
+
+        if tipo == 'transicion_savgol':
+            gn_out = filtrar_s11_savgol(gn_out, window_length=w_sg, polyorder=p_sg)
+        elif tipo == 'transicion_pasabajos':
+            gn_out = filtrar_s11_pasabajos(gn_out, orden=ord_pb, f_corte=fc_pb)
 
         return gn_out, info
 
@@ -1187,9 +1318,14 @@ def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_ce
 
             info['f1_aplicada'] = f1_eff
             info['f2_aplicada'] = f2_eff
-            if tipo == 'transicion_polinomica_cero':
+            if tipo in ('transicion_polinomica_cero', 'transicion_savgol', 'transicion_pasabajos'):
                 gn_out = _aplicar_transicion_polinomica_cero(frecs, gn, f1_eff, f2_eff)
             else:
                 gn_out = _aplicar_tapering(frecs, gn, f1_eff, f2_eff)
+
+        if tipo == 'transicion_savgol':
+            gn_out = filtrar_s11_savgol(gn_out, window_length=w_sg, polyorder=p_sg)
+        elif tipo == 'transicion_pasabajos':
+            gn_out = filtrar_s11_pasabajos(gn_out, orden=ord_pb, f_corte=fc_pb)
 
         return gn_out, info

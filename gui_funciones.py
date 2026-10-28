@@ -218,6 +218,12 @@ def config_default():
         ],
         'usar_metodo_completo': True,
         'estrategia_gn': 'minimo_gn',
+        'filtrar_patrones_sg': {
+            'habilitado': False,
+            'sg_window': 15,
+            'sg_polyorder': 3,
+            'aplicar_en': ['corto', 'aire', 'patron3', 'patron4', 'adicionales'],
+        },
         'acondicionar_gn': {
             'habilitado': False,
             'tipo': 'transicion_polinomica_cero',
