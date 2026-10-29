@@ -372,6 +372,20 @@ def _tabla_metadata(metadata):
         _fila_temperatura(f"Patron 3 ({etiqueta_p3}) - T (CAL)",
                            metadata.get('patron3_temperatura')),
     ]
+    filtro_sal = metadata.get('filtro_salida') or {}
+    if filtro_sal.get('habilitado'):
+        tipo_fs = filtro_sal.get('tipo', 'savitzky_golay')
+        map_nomb = {
+            'pasabajos': f"Pasabajos (orden={filtro_sal.get('pb_orden', 2)}, fc={filtro_sal.get('pb_fcorte', 0.1):.2f})",
+            'savitzky_golay': f"Savitzky-Golay (ventana={filtro_sal.get('sg_window', 15)}, orden={filtro_sal.get('sg_polyorder', 3)})",
+            'mediana_movil': f"Mediana m\u00f3vil (ventana={filtro_sal.get('med_window', 15)})",
+            'splines': f"Splines (s={filtro_sal.get('spline_s', 0.10):.3f})",
+        }
+        nom_det = map_nomb.get(tipo_fs, tipo_fs)
+        if filtro_sal.get('modo_rango') == 'rango':
+            nom_det += f" [{filtro_sal.get('f1_ghz', 0.5):.2f} - {filtro_sal.get('f2_ghz', 6.0):.2f} GHz]"
+        filas.append(["Filtro en salida (er', er'')", nom_det])
+
     if usar_completo:
         etiqueta_p4 = metadata.get('patron4_etiqueta') or metadata.get('patron4_modelo') or "Patron 4"
         filas.append(_fila_temperatura(f"Patron 4 ({etiqueta_p4}) - T (CAL)",

@@ -1167,10 +1167,142 @@ def filtrar_s11_pasabajos(s11, orden=2, f_corte=0.10):
     return re_f + 1j * im_f
 
 
+def filtrar_s11_mediana(s11, window_length=15):
+    """
+    Aplica un filtro de mediana móvil a la parte real e imaginaria de un vector complejo
+    (S11, Gn o permitividad). Especialmente robusto para eliminar picos aislados,
+    singularidades y saltos espurios sin ensanchar bordes ni distorsionar la fase.
+    """
+    from scipy.signal import medfilt
+    s11 = np.asarray(s11, dtype=complex)
+    n = len(s11)
+    if n <= 2:
+        return np.copy(s11)
+    w = int(window_length if window_length is not None else 15)
+    if w % 2 == 0:
+        w += 1
+    if w >= n:
+        w = n - 1 if (n % 2 == 0) else n
+    w = max(3, w)
+
+    re_f = medfilt(np.real(s11), kernel_size=w)
+    im_f = medfilt(np.imag(s11), kernel_size=w)
+    return re_f + 1j * im_f
+
+
+def filtrar_s11_splines(frecs, s11, s=0.10):
+    """
+    Aplica un suavizado por splines cúbicos con regularización (UnivariateSpline)
+    a la parte real e imaginaria. Normaliza las frecuencias para que el parámetro
+    de suavizado 's' sea consistente independientemente de la unidad (Hz/GHz).
+    """
+    from scipy.interpolate import UnivariateSpline
+    frecs = np.asarray(frecs, dtype=float)
+    s11 = np.asarray(s11, dtype=complex)
+    n = len(s11)
+    if n <= 3:
+        return np.copy(s11)
+
+    fn = frecs / 1e9 if np.max(frecs) > 1e6 else frecs
+    s_val = float(max(0.0, s)) if s is not None else 0.10
+
+    spl_re = UnivariateSpline(fn, np.real(s11), s=s_val)
+    spl_im = UnivariateSpline(fn, np.imag(s11), s=s_val)
+    return spl_re(fn) + 1j * spl_im(fn)
+
+
+def aplicar_filtro_por_rango(frecs, y, y_filtrado, f1=None, f2=None):
+    """
+    Aplica la señal filtrada preferentemente en el rango [f1, f2] con empalme suave
+    (ventana semi-Hann) en los bordes para evitar escalones o discontinuidades.
+    """
+    frecs = np.asarray(frecs, dtype=float)
+    y = np.asarray(y, dtype=complex)
+    y_filtrado = np.asarray(y_filtrado, dtype=complex)
+    n = len(frecs)
+    if n == 0:
+        return np.copy(y)
+
+    f_min = float(frecs[0])
+    f_max = float(frecs[-1])
+    f1_eff = f_min if (f1 is None or f1 <= f_min) else float(f1)
+    f2_eff = f_max if (f2 is None or f2 >= f_max) else float(f2)
+
+    if f2_eff <= f1_eff:
+        return np.copy(y)
+
+    if f1_eff <= f_min and f2_eff >= f_max:
+        return np.copy(y_filtrado)
+
+    delta = f2_eff - f1_eff
+    df_step = (frecs[1] - frecs[0]) if n > 1 else 1.0
+    t_margin = max(delta * 0.04, df_step * 2)
+
+    w = np.zeros(n, dtype=float)
+    for i, f in enumerate(frecs):
+        if f < f1_eff - t_margin or f > f2_eff + t_margin:
+            w[i] = 0.0
+        elif f1_eff <= f <= f2_eff:
+            w[i] = 1.0
+        elif f < f1_eff:
+            tau = (f - (f1_eff - t_margin)) / t_margin
+            w[i] = 0.5 * (1.0 - np.cos(np.pi * tau))
+        else:  # f > f2_eff
+            tau = ((f2_eff + t_margin) - f) / t_margin
+            w[i] = 0.5 * (1.0 - np.cos(np.pi * tau))
+
+    return y * (1.0 - w) + y_filtrado * w
+
+
+def aplicar_filtro_s11(frecs, s11, cfg_filtro):
+    """
+    Aplica el filtro digital configurado (Pasabajos Butterworth, Savitzky-Golay,
+    Mediana móvil o Splines de suavizado) a un vector de S11 complejo o Touchstone,
+    con soporte opcional de rango [f1, f2].
+    """
+    if not cfg_filtro:
+        return np.asarray(s11, dtype=complex)
+
+    tipo = cfg_filtro.get('tipo', cfg_filtro.get('tipo_filtro', 'savitzky_golay'))
+    if tipo == 'pasabajos':
+        ord_pb = int(cfg_filtro.get('pb_orden', 2) or 2)
+        fc_pb = float(cfg_filtro.get('pb_fcorte', 0.10) or 0.10)
+        s11_filt = filtrar_s11_pasabajos(s11, orden=ord_pb, f_corte=fc_pb)
+    elif tipo == 'mediana_movil':
+        w_med = int(cfg_filtro.get('med_window', 15) or 15)
+        s11_filt = filtrar_s11_mediana(s11, window_length=w_med)
+    elif tipo == 'splines':
+        s_val = float(cfg_filtro.get('spline_s', 0.10) or 0.10)
+        s11_filt = filtrar_s11_splines(frecs, s11, s=s_val)
+    else:  # savitzky_golay
+        w_sg = int(cfg_filtro.get('sg_window', 15) or 15)
+        p_sg = int(cfg_filtro.get('sg_polyorder', 3) or 3)
+        s11_filt = filtrar_s11_savgol(s11, window_length=w_sg, polyorder=p_sg)
+
+    modo_rango = cfg_filtro.get('modo_rango', 'todo')
+    if modo_rango == 'rango':
+        f1 = float(cfg_filtro.get('f1_ghz', 0.0) or 0.0) * 1e9
+        f2 = float(cfg_filtro.get('f2_ghz', 6.0) or 6.0) * 1e9
+        s11_filt = aplicar_filtro_por_rango(frecs, s11, s11_filt, f1=f1, f2=f2)
+
+    return s11_filt
+
+
+def aplicar_filtro_permitividad(frecs, er, cfg_filtro):
+    """
+    Aplica el filtro configurado a un vector complejo de permitividad er(f).
+    Permite suavizar er' y er'' en la salida (Tab 4).
+    """
+    if not cfg_filtro or not cfg_filtro.get('habilitado', False):
+        return np.asarray(er, dtype=complex)
+    return aplicar_filtro_s11(frecs, er, cfg_filtro)
+
+
 def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_cero',
                      f1=None, f2=None, umbral_pct=30.0,
                      sg_window=15, sg_polyorder=3,
-                     pb_orden=2, pb_fcorte=0.10):
+                     pb_orden=2, pb_fcorte=0.10,
+                     med_window=15, spline_s=0.10):
     """
     Acondiciona el vector de conductancia normalizada Gn(f) segun el metodo
     y modo seleccionados.
@@ -1222,7 +1354,8 @@ def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_ce
     tipos_validos = (
         'cero_clamping', 'transicion_polinomica_cero', 'tapering',
         'savitzky_golay', 'transicion_savgol',
-        'pasabajos', 'transicion_pasabajos'
+        'pasabajos', 'transicion_pasabajos',
+        'mediana_movil', 'splines'
     )
     if tipo not in tipos_validos:
         raise ValueError(f"Tipo '{tipo}' no valido. Debe ser uno de {tipos_validos}.")
@@ -1235,6 +1368,8 @@ def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_ce
     p_sg = int(sg_polyorder if sg_polyorder is not None else 3)
     ord_pb = max(1, min(int(pb_orden if pb_orden is not None else 2), 8))
     fc_pb = max(0.001, min(float(pb_fcorte if pb_fcorte is not None else 0.10), 0.999))
+    w_med = int(med_window if med_window is not None else 15)
+    s_spline = float(spline_s if spline_s is not None else 0.10)
 
     info = {
         'tipo': tipo,
@@ -1248,18 +1383,45 @@ def acondicionar_gn(frecs, gn, modo='automatico', tipo='transicion_polinomica_ce
         'sg_polyorder': p_sg if ('sav' in tipo) else None,
         'pb_orden': ord_pb if ('pasabajos' in tipo) else None,
         'pb_fcorte': fc_pb if ('pasabajos' in tipo) else None,
+        'med_window': w_med if ('mediana' in tipo) else None,
+        'spline_s': s_spline if ('spline' in tipo) else None,
     }
 
-    if tipo == 'savitzky_golay':
-        gn_out = filtrar_s11_savgol(gn, window_length=w_sg, polyorder=p_sg)
-        info['disparo_detectado'] = True
-        info['aviso'] = f"[info] Filtro Savitzky-Golay aplicado a Gn(f) (ventana={w_sg}, orden={p_sg})."
-        return gn_out, info
+    if tipo in ('savitzky_golay', 'pasabajos', 'mediana_movil', 'splines'):
+        if tipo == 'savitzky_golay':
+            gn_raw_filt = filtrar_s11_savgol(gn, window_length=w_sg, polyorder=p_sg)
+            desc = f"Savitzky-Golay (ventana={w_sg}, orden={p_sg})"
+        elif tipo == 'pasabajos':
+            gn_raw_filt = filtrar_s11_pasabajos(gn, orden=ord_pb, f_corte=fc_pb)
+            desc = f"Pasabajos Butterworth (orden={ord_pb}, corte={fc_pb:.3f})"
+        elif tipo == 'mediana_movil':
+            gn_raw_filt = filtrar_s11_mediana(gn, window_length=w_med)
+            desc = f"Mediana móvil (ventana={w_med})"
+        elif tipo == 'splines':
+            gn_raw_filt = filtrar_s11_splines(frecs, gn, s=s_spline)
+            desc = f"Splines de suavizado (s={s_spline:.4f})"
 
-    if tipo == 'pasabajos':
-        gn_out = filtrar_s11_pasabajos(gn, orden=ord_pb, f_corte=fc_pb)
-        info['disparo_detectado'] = True
-        info['aviso'] = f"[info] Filtro Pasabajos Butterworth aplicado a Gn(f) (orden={ord_pb}, corte={fc_pb:.3f})."
+        if modo == 'manual':
+            f1_eff = float(f1) if f1 is not None else float(frecs[0])
+            f2_eff = float(f2) if f2 is not None else float(frecs[-1])
+            gn_out = aplicar_filtro_por_rango(frecs, gn, gn_raw_filt, f1=f1_eff, f2=f2_eff)
+            info['f1_aplicada'] = f1_eff
+            info['f2_aplicada'] = f2_eff
+            info['disparo_detectado'] = True
+            rango_str = f"en [{f1_eff/1e9:.2f}, {f2_eff/1e9:.2f}] GHz" if (f1 is not None or f2 is not None) else "en todo el espectro"
+            info['aviso'] = f"[info] Filtro {desc} aplicado a Gn(f) {rango_str}."
+        else:  # modo automatico
+            f_disp, _ = _detectar_frecuencia_disparo(frecs, gn, umbral_pct=umbral_pct)
+            if f_disp is not None:
+                gn_out = aplicar_filtro_por_rango(frecs, gn, gn_raw_filt, f1=frecs[0], f2=f_disp)
+                info['f1_aplicada'] = float(frecs[0])
+                info['f2_aplicada'] = float(f_disp)
+                info['disparo_detectado'] = True
+                info['aviso'] = f"[info] Filtro {desc} aplicado a Gn(f) hasta {f_disp/1e9:.3f} GHz (salto detectado)."
+            else:
+                gn_out = gn_raw_filt
+                info['disparo_detectado'] = True
+                info['aviso'] = f"[info] Filtro {desc} aplicado a Gn(f) en todo el espectro."
         return gn_out, info
 
     if modo == 'automatico':

@@ -352,6 +352,21 @@ def graficar_smith(datos_dict, titulo="Diagrama de Smith - S11", archivo_salida=
     return fig
 
 
+def filtrar_touchstone(datos, cfg_filtro):
+    """
+    Aplica el filtro digital configurado (Pasabajos Butterworth, Savitzky-Golay,
+    Mediana móvil o Splines de suavizado) al S11 de un archivo Touchstone .s1p
+    (leído previamente con leer_s1p). Devuelve una copia de 'datos' con 'Complex' filtrado.
+    """
+    from funciones import aplicar_filtro_s11
+    frecs = datos['Frec']
+    s11 = datos['Complex']
+    s11_filt = aplicar_filtro_s11(frecs, s11, cfg_filtro)
+    res = dict(datos)
+    res['Complex'] = s11_filt
+    return res
+
+
 if __name__ == "__main__":
     # Ejemplo rapido de uso (ajustar nombres de archivo segun corresponda)
     import matplotlib.pyplot as plt

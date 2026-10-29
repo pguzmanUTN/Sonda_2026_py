@@ -35,7 +35,7 @@ import Patrones as P
 # propias figuras con pyplot/Agg por su lado, sin que se pisen entre si.
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from Touchstone import leer_s1p, graficar_s11_mag_fase, graficar_smith
-from funciones import filtrar_s11_savgol, filtrar_s11_pasabajos
+from funciones import filtrar_s11_savgol, filtrar_s11_pasabajos, filtrar_s11_mediana, filtrar_s11_splines, aplicar_filtro_s11
 
 
 TITULO_APP = "Analizador de Permitividad - Sonda Coaxial (NPL MAT 23)"
@@ -55,6 +55,8 @@ _TIPOS_ACOND_MAP = {
     "Transicion orden 5 (f^5)": "transicion_polinomica_cero",
     "Filtro Pasabajos (Butterworth)": "pasabajos",
     "Filtro Savitzky-Golay": "savitzky_golay",
+    "Filtro Mediana móvil": "mediana_movil",
+    "Splines de suavizado": "splines",
     "Transicion orden 5 + Pasabajos": "transicion_pasabajos",
     "Transicion orden 5 + Savitzky-Golay": "transicion_savgol",
     "Transicion cuadratica (f^2)": "transicion_polinomica_cero",  # retrocompatibilidad
@@ -66,6 +68,8 @@ _TIPOS_ACOND_INV = {
     "transicion_polinomica_cero": "Transicion orden 5 (f^5)",
     "pasabajos": "Filtro Pasabajos (Butterworth)",
     "savitzky_golay": "Filtro Savitzky-Golay",
+    "mediana_movil": "Filtro Mediana móvil",
+    "splines": "Splines de suavizado",
     "transicion_pasabajos": "Transicion orden 5 + Pasabajos",
     "transicion_savgol": "Transicion orden 5 + Savitzky-Golay",
     "cero_clamping": "Cero clamping (corte duro)",
@@ -75,13 +79,13 @@ _TIPOS_ACOND_INV = {
 
 def _generar_preview_s11(ruta_s1p, log_x=True, filtrar_s11=False, tipo_filtro='savitzky_golay',
                          sg_window=15, sg_polyorder=3, pb_orden=2, pb_fcorte=0.10,
+                         med_window=15, spline_s=0.10, modo_rango='todo', f1_ghz=0.5, f2_ghz=6.0,
                          filtrar_sg=None):
     """
     Lee un archivo .s1p y arma dos Figures de matplotlib EN VIVO (para
     embeber con VisorFigura, sin guardar ningun .png a disco) con el S11
     medido: modulo/fase y diagrama de Smith. Si `filtrar_s11` (o `filtrar_sg`) es True,
-    grafica superpuestas la curva original y la curva con el filtro configurado (Pasabajos
-    Butterworth o Savitzky-Golay).
+    grafica superpuestas la curva original y la curva con el filtro configurado.
 
     Devuelve (fig_modulo_fase, fig_smith, datos).
     """
@@ -93,19 +97,34 @@ def _generar_preview_s11(ruta_s1p, log_x=True, filtrar_s11=False, tipo_filtro='s
 
     if filtrar_s11:
         s11_orig = datos['Complex']
-        if tipo_filtro == 'pasabajos':
-            s11_filt = filtrar_s11_pasabajos(s11_orig, orden=pb_orden, f_corte=pb_fcorte)
-            etiqueta_filt = f"{nombre} (filtrado PB)"
-            titulo_mf = f"{nombre}: S11 original vs filtrado Pasabajos (modulo y fase)"
-            titulo_sm = f"{nombre}: S11 original vs filtrado Pasabajos (diagrama de Smith)"
-        else:
-            s11_filt = filtrar_s11_savgol(s11_orig, window_length=sg_window, polyorder=sg_polyorder)
-            etiqueta_filt = f"{nombre} (filtrado SG)"
-            titulo_mf = f"{nombre}: S11 original vs filtrado Savitzky-Golay (modulo y fase)"
-            titulo_sm = f"{nombre}: S11 original vs filtrado Savitzky-Golay (diagrama de Smith)"
+        frecs = datos['Frec']
+        cfg_f = {
+            'tipo_filtro': tipo_filtro,
+            'pb_orden': pb_orden,
+            'pb_fcorte': pb_fcorte,
+            'sg_window': sg_window,
+            'sg_polyorder': sg_polyorder,
+            'med_window': med_window,
+            'spline_s': spline_s,
+            'modo_rango': modo_rango,
+            'f1_ghz': f1_ghz,
+            'f2_ghz': f2_ghz,
+        }
+        s11_filt = aplicar_filtro_s11(frecs, s11_orig, cfg_f)
 
-        datos_orig = {'Frec': datos['Frec'], 'Complex': s11_orig}
-        datos_filt = {'Frec': datos['Frec'], 'Complex': s11_filt}
+        nombres_tipo = {
+            'pasabajos': "Pasabajos",
+            'savitzky_golay': "Savitzky-Golay",
+            'mediana_movil': "Mediana móvil",
+            'splines': "Splines",
+        }
+        nom_f = nombres_tipo.get(tipo_filtro, tipo_filtro)
+        etiqueta_filt = f"{nombre} (filtrado {nom_f})"
+        titulo_mf = f"{nombre}: S11 original vs filtrado {nom_f} (modulo y fase)"
+        titulo_sm = f"{nombre}: S11 original vs filtrado {nom_f} (diagrama de Smith)"
+
+        datos_orig = {'Frec': frecs, 'Complex': s11_orig}
+        datos_filt = {'Frec': frecs, 'Complex': s11_filt}
         datos_dict = {
             f"{nombre} (original)": datos_orig,
             etiqueta_filt: datos_filt,
@@ -119,7 +138,6 @@ def _generar_preview_s11(ruta_s1p, log_x=True, filtrar_s11=False, tipo_filtro='s
             datos_dict, titulo=f"{nombre}: S11 medido (modulo y fase)", log_x=log_x)
         fig_sm = graficar_smith(datos_dict, titulo=f"{nombre}: S11 medido (diagrama de Smith)")
         return fig_mf, fig_sm, datos
-
 
 def _generar_preview_gn(frecs, Gn, Gn_acondicionado=None, log_x=True, info_acond=None):
     """
@@ -914,7 +932,13 @@ class DialogoMaterial(tk.Toplevel):
 
         filtrar_init = bool(material.get('filtrar_s11') or material.get('filtrar_sg', False))
         tipo_init = material.get('tipo_filtro', 'pasabajos' if material.get('pb_fcorte') else 'savitzky_golay')
-        tipo_combo_val = "Pasabajos (Butterworth)" if tipo_init == 'pasabajos' else "Savitzky-Golay"
+        tipo_combo_map = {
+            'pasabajos': "Pasabajos (Butterworth)",
+            'savitzky_golay': "Savitzky-Golay",
+            'mediana_movil': "Mediana móvil",
+            'splines': "Splines de suavizado",
+        }
+        tipo_combo_val = tipo_combo_map.get(tipo_init, "Savitzky-Golay")
 
         self.var_filtrar_s11 = tk.BooleanVar(value=filtrar_init)
         self.var_filtrar_sg = self.var_filtrar_s11  # retrocompatibilidad
@@ -929,7 +953,7 @@ class DialogoMaterial(tk.Toplevel):
         self.var_filtro_tipo = tk.StringVar(value=tipo_combo_val)
         self.combo_filtro_tipo = ttk.Combobox(
             frm_filtro_f1, textvariable=self.var_filtro_tipo, state="readonly", width=22,
-            values=["Pasabajos (Butterworth)", "Savitzky-Golay"])
+            values=["Pasabajos (Butterworth)", "Savitzky-Golay", "Mediana móvil", "Splines de suavizado"])
         self.combo_filtro_tipo.pack(side="left", padx=(4, 6))
         self.combo_filtro_tipo.bind("<<ComboboxSelected>>", lambda _e: self._al_cambiar_filtrar_s11())
 
@@ -965,6 +989,40 @@ class DialogoMaterial(tk.Toplevel):
         self.spin_sg_ord = ttk.Spinbox(
             frm_filtro_f2, from_=1, to=5, increment=1, textvariable=self.var_sg_ord, width=3)
         self.spin_sg_ord.pack(side="left", padx=(2, 6))
+
+        # Parametros Mediana móvil
+        self.lbl_med_win = ttk.Label(frm_filtro_f2, text="   Ventana Med:")
+        self.var_med_win = tk.IntVar(value=int(material.get('med_window', 15) or 15))
+        self.spin_med_win = ttk.Spinbox(
+            frm_filtro_f2, from_=3, to=101, increment=2, textvariable=self.var_med_win, width=4)
+
+        # Parametros Splines
+        self.lbl_spline_s = ttk.Label(frm_filtro_f2, text="   Factor s:")
+        self.var_spline_s = tk.DoubleVar(value=float(material.get('spline_s', 0.10) or 0.10))
+        self.spin_spline_s = ttk.Spinbox(
+            frm_filtro_f2, from_=0.0001, to=50.0, increment=0.01, textvariable=self.var_spline_s, width=6)
+
+        # Rango
+        self.lbl_mat_rango = ttk.Label(frm_filtro_f2, text="   Rango:")
+        self.lbl_mat_rango.pack(side="left")
+        self.var_mat_rango = tk.StringVar(value=material.get('modo_rango', 'todo'))
+        self.radio_mat_rango_todo = ttk.Radiobutton(
+            frm_filtro_f2, text="Todo", value="todo", variable=self.var_mat_rango,
+            command=self._al_cambiar_filtrar_s11)
+        self.radio_mat_rango_todo.pack(side="left", padx=(2, 4))
+        self.radio_mat_rango_sub = ttk.Radiobutton(
+            frm_filtro_f2, text="[f1, f2]:", value="rango", variable=self.var_mat_rango,
+            command=self._al_cambiar_filtrar_s11)
+        self.radio_mat_rango_sub.pack(side="left", padx=(2, 6))
+
+        self.lbl_mat_f1 = ttk.Label(frm_filtro_f2, text="f1 (GHz):")
+        self.var_mat_f1 = tk.DoubleVar(value=float(material.get('f1_ghz', 0.5) or 0.5))
+        self.spin_mat_f1 = ttk.Spinbox(
+            frm_filtro_f2, from_=0.0, to=100.0, increment=0.05, textvariable=self.var_mat_f1, width=6)
+        self.lbl_mat_f2 = ttk.Label(frm_filtro_f2, text="f2 (GHz):")
+        self.var_mat_f2 = tk.DoubleVar(value=float(material.get('f2_ghz', 6.0) or 6.0))
+        self.spin_mat_f2 = ttk.Spinbox(
+            frm_filtro_f2, from_=0.0, to=100.0, increment=0.05, textvariable=self.var_mat_f2, width=6)
 
         _tooltip(frm_filtro_box,
                  "Aplica un filtro digital (Pasabajos Butterworth o Savitzky-Golay) de fase cero\n"
@@ -1076,40 +1134,45 @@ class DialogoMaterial(tk.Toplevel):
         self.lbl_filtro_tipo.configure(state=estado)
         self.combo_filtro_tipo.configure(state=("readonly" if activo else "disabled"))
 
-        es_pb = (self.var_filtro_tipo.get() == "Pasabajos (Butterworth)")
-        if activo and es_pb:
-            self.lbl_pb_ord.pack(side="left")
-            self.spin_pb_ord.pack(side="left", padx=(2, 6))
-            self.spin_pb_ord.configure(state="normal")
-            self.lbl_pb_fc.pack(side="left")
-            self.spin_pb_fc.pack(side="left", padx=(2, 6))
-            self.spin_pb_fc.configure(state="normal")
+        tipo = self.var_filtro_tipo.get()
+        for w in (self.lbl_pb_ord, self.spin_pb_ord, self.lbl_pb_fc, self.spin_pb_fc,
+                  self.lbl_sg_win, self.spin_sg_win, self.lbl_sg_ord, self.spin_sg_ord,
+                  self.lbl_med_win, self.spin_med_win, self.lbl_spline_s, self.spin_spline_s):
+            w.pack_forget()
 
-            self.lbl_sg_win.pack_forget()
-            self.spin_sg_win.pack_forget()
-            self.lbl_sg_ord.pack_forget()
-            self.spin_sg_ord.pack_forget()
-        elif activo and not es_pb:
-            self.lbl_pb_ord.pack_forget()
-            self.spin_pb_ord.pack_forget()
-            self.lbl_pb_fc.pack_forget()
-            self.spin_pb_fc.pack_forget()
+        if activo:
+            if tipo == "Pasabajos (Butterworth)":
+                self.lbl_pb_ord.pack(side="left", before=self.lbl_mat_rango)
+                self.spin_pb_ord.pack(side="left", padx=(2, 6), before=self.lbl_mat_rango)
+                self.lbl_pb_fc.pack(side="left", before=self.lbl_mat_rango)
+                self.spin_pb_fc.pack(side="left", padx=(2, 6), before=self.lbl_mat_rango)
+            elif tipo == "Mediana móvil":
+                self.lbl_med_win.pack(side="left", before=self.lbl_mat_rango)
+                self.spin_med_win.pack(side="left", padx=(2, 6), before=self.lbl_mat_rango)
+            elif tipo == "Splines de suavizado":
+                self.lbl_spline_s.pack(side="left", before=self.lbl_mat_rango)
+                self.spin_spline_s.pack(side="left", padx=(2, 6), before=self.lbl_mat_rango)
+            else:  # Savitzky-Golay
+                self.lbl_sg_win.pack(side="left", before=self.lbl_mat_rango)
+                self.spin_sg_win.pack(side="left", padx=(2, 6), before=self.lbl_mat_rango)
+                self.lbl_sg_ord.pack(side="left", before=self.lbl_mat_rango)
+                self.spin_sg_ord.pack(side="left", padx=(2, 6), before=self.lbl_mat_rango)
 
-            self.lbl_sg_win.pack(side="left")
-            self.spin_sg_win.pack(side="left", padx=(2, 6))
-            self.spin_sg_win.configure(state="normal")
-            self.lbl_sg_ord.pack(side="left")
-            self.spin_sg_ord.pack(side="left", padx=(2, 6))
-            self.spin_sg_ord.configure(state="normal")
+        self.lbl_mat_rango.configure(state=estado)
+        self.radio_mat_rango_todo.configure(state=estado)
+        self.radio_mat_rango_sub.configure(state=estado)
+
+        es_rango = (self.var_mat_rango.get() == "rango")
+        if activo and es_rango:
+            self.lbl_mat_f1.pack(side="left")
+            self.spin_mat_f1.pack(side="left", padx=(2, 6))
+            self.lbl_mat_f2.pack(side="left")
+            self.spin_mat_f2.pack(side="left", padx=(2, 6))
         else:
-            self.lbl_pb_ord.pack_forget()
-            self.spin_pb_ord.pack_forget()
-            self.lbl_pb_fc.pack_forget()
-            self.spin_pb_fc.pack_forget()
-            self.lbl_sg_win.pack_forget()
-            self.spin_sg_win.pack_forget()
-            self.lbl_sg_ord.pack_forget()
-            self.spin_sg_ord.pack_forget()
+            self.lbl_mat_f1.pack_forget()
+            self.spin_mat_f1.pack_forget()
+            self.lbl_mat_f2.pack_forget()
+            self.spin_mat_f2.pack_forget()
 
     def _al_cambiar_filtrar_sg(self):
         self._al_cambiar_filtrar_s11()
@@ -1136,7 +1199,13 @@ class DialogoMaterial(tk.Toplevel):
             temperatura = float(self.var_temperatura.get())
         except (tk.TclError, ValueError):
             temperatura = 25.0
-        tipo_f = 'pasabajos' if self.var_filtro_tipo.get() == "Pasabajos (Butterworth)" else 'savitzky_golay'
+        tipo_map = {
+            "Pasabajos (Butterworth)": "pasabajos",
+            "Savitzky-Golay": "savitzky_golay",
+            "Mediana móvil": "mediana_movil",
+            "Splines de suavizado": "splines",
+        }
+        tipo_f = tipo_map.get(self.var_filtro_tipo.get(), 'savitzky_golay')
         self.resultado = {
             'nombre': nombre,
             'archivo': self.var_archivo.get().strip(),
@@ -1150,9 +1219,13 @@ class DialogoMaterial(tk.Toplevel):
             'sg_polyorder': int(self.var_sg_ord.get() or 3),
             'pb_orden': int(self.var_pb_ord.get() or 2),
             'pb_fcorte': float(self.var_pb_fc.get() or 0.10),
+            'med_window': int(self.var_med_win.get() or 15),
+            'spline_s': float(self.var_spline_s.get() or 0.10),
+            'modo_rango': self.var_mat_rango.get(),
+            'f1_ghz': float(self.var_mat_f1.get() or 0.5),
+            'f2_ghz': float(self.var_mat_f2.get() or 6.0),
         }
         self.destroy()
-
 
 # ===========================================================================
 # Ventana principal
@@ -1423,7 +1496,7 @@ class AppPermitividad(tk.Tk):
         self.var_patrones_tipo_filtro = tk.StringVar(value="Pasabajos (Butterworth)")
         self.combo_patrones_tipo_filtro = ttk.Combobox(
             frm_filtro_pat_f1, textvariable=self.var_patrones_tipo_filtro, state="readonly", width=22,
-            values=["Pasabajos (Butterworth)", "Savitzky-Golay"])
+            values=["Pasabajos (Butterworth)", "Savitzky-Golay", "Mediana móvil", "Splines de suavizado"])
         self.combo_patrones_tipo_filtro.pack(side="left", padx=(4, 10))
         self.combo_patrones_tipo_filtro.bind("<<ComboboxSelected>>", lambda _e: self._al_cambiar_filtrar_patrones_sg())
 
@@ -1460,6 +1533,42 @@ class AppPermitividad(tk.Tk):
             frm_filtro_pat_f1, from_=1, to=5, increment=1,
             textvariable=self.var_patrones_sg_ord, width=3)
         self.spin_patrones_sg_ord.pack(side="left", padx=(2, 10))
+
+        # Parametros Mediana móvil
+        self.lbl_patrones_med_win = ttk.Label(frm_filtro_pat_f1, text="Ventana Med:")
+        self.var_patrones_med_win = tk.IntVar(value=15)
+        self.spin_patrones_med_win = ttk.Spinbox(
+            frm_filtro_pat_f1, from_=3, to=101, increment=2,
+            textvariable=self.var_patrones_med_win, width=4)
+
+        # Parametros Splines
+        self.lbl_patrones_spline_s = ttk.Label(frm_filtro_pat_f1, text="Factor s:")
+        self.var_patrones_spline_s = tk.DoubleVar(value=0.10)
+        self.spin_patrones_spline_s = ttk.Spinbox(
+            frm_filtro_pat_f1, from_=0.0001, to=50.0, increment=0.01,
+            textvariable=self.var_patrones_spline_s, width=6)
+
+        # Rango
+        self.lbl_patrones_rango = ttk.Label(frm_filtro_pat_f1, text="  Rango:")
+        self.lbl_patrones_rango.pack(side="left")
+        self.var_patrones_rango = tk.StringVar(value="todo")
+        self.radio_pat_rango_todo = ttk.Radiobutton(
+            frm_filtro_pat_f1, text="Todo", value="todo", variable=self.var_patrones_rango,
+            command=self._al_cambiar_filtrar_patrones_sg)
+        self.radio_pat_rango_todo.pack(side="left", padx=(2, 4))
+        self.radio_pat_rango_sub = ttk.Radiobutton(
+            frm_filtro_pat_f1, text="[f1, f2]:", value="rango", variable=self.var_patrones_rango,
+            command=self._al_cambiar_filtrar_patrones_sg)
+        self.radio_pat_rango_sub.pack(side="left", padx=(2, 6))
+
+        self.lbl_pat_f1 = ttk.Label(frm_filtro_pat_f1, text="f1 (GHz):")
+        self.var_pat_f1 = tk.DoubleVar(value=0.5)
+        self.spin_pat_f1 = ttk.Spinbox(
+            frm_filtro_pat_f1, from_=0.0, to=100.0, increment=0.05, textvariable=self.var_pat_f1, width=6)
+        self.lbl_pat_f2 = ttk.Label(frm_filtro_pat_f1, text="f2 (GHz):")
+        self.var_pat_f2 = tk.DoubleVar(value=6.0)
+        self.spin_pat_f2 = ttk.Spinbox(
+            frm_filtro_pat_f1, from_=0.0, to=100.0, increment=0.05, textvariable=self.var_pat_f2, width=6)
 
         # Fila 2: Aplicar en
         frm_filtro_pat_f2 = ttk.Frame(frm_filtro_pat_box)
@@ -1568,6 +1677,8 @@ class AppPermitividad(tk.Tk):
                 "Transicion orden 5 (f^5)",
                 "Filtro Pasabajos (Butterworth)",
                 "Filtro Savitzky-Golay",
+                "Filtro Mediana móvil",
+                "Splines de suavizado",
                 "Transicion orden 5 + Pasabajos",
                 "Transicion orden 5 + Savitzky-Golay",
                 "Cero clamping (corte duro)",
@@ -1665,6 +1776,22 @@ class AppPermitividad(tk.Tk):
             textvariable=self.var_acond_sg_polyorder, width=3)
         self.spin_acond_sg_polyorder.pack(side="left", padx=(4, 10))
         _tooltip(self.spin_acond_sg_polyorder, "Orden del polinomio local para el filtro Savitzky-Golay.")
+
+        # Parametros Mediana móvil Gn
+        self.lbl_acond_med_window = ttk.Label(self.frm_acond_f2, text="Ventana Med:")
+        self.var_acond_med_window = tk.IntVar(value=15)
+        self.spin_acond_med_window = ttk.Spinbox(
+            self.frm_acond_f2, from_=3, to=101, increment=2,
+            textvariable=self.var_acond_med_window, width=4)
+        _tooltip(self.spin_acond_med_window, "Longitud de ventana del filtro de mediana móvil (debe ser impar).")
+
+        # Parametros Splines Gn
+        self.lbl_acond_spline_s = ttk.Label(self.frm_acond_f2, text="Factor s (Spline):")
+        self.var_acond_spline_s = tk.DoubleVar(value=0.10)
+        self.spin_acond_spline_s = ttk.Spinbox(
+            self.frm_acond_f2, from_=0.0001, to=50.0, increment=0.01,
+            textvariable=self.var_acond_spline_s, width=6)
+        _tooltip(self.spin_acond_spline_s, "Factor de suavizado del spline regularizado (0 = interpolación, mayor = más suave).")
         fila += 1
 
         ttk.Separator(f).grid(row=fila, column=0, columnspan=8, sticky="ew", pady=10)
@@ -1701,47 +1828,51 @@ class AppPermitividad(tk.Tk):
     def _al_cambiar_filtrar_patrones_sg(self):
         activo = bool(self.var_filtrar_patrones_sg.get())
         estado = "normal" if activo else "disabled"
-        es_pb = (getattr(self, 'var_patrones_tipo_filtro', None) and
-                 self.var_patrones_tipo_filtro.get() == "Pasabajos (Butterworth)")
+        tipo_p = self.var_patrones_tipo_filtro.get() if hasattr(self, 'var_patrones_tipo_filtro') else ''
 
         if hasattr(self, 'combo_patrones_tipo_filtro'):
             self.combo_patrones_tipo_filtro.configure(state=("readonly" if activo else "disabled"))
         if hasattr(self, 'lbl_pat_filtro_tipo'):
             self.lbl_pat_filtro_tipo.configure(state=estado)
 
-        if activo and es_pb:
-            self.lbl_patrones_pb_ord.pack(side="left")
-            self.spin_patrones_pb_ord.pack(side="left", padx=(2, 6))
-            self.spin_patrones_pb_ord.configure(state="normal")
-            self.lbl_patrones_pb_fc.pack(side="left")
-            self.spin_patrones_pb_fc.pack(side="left", padx=(2, 10))
-            self.spin_patrones_pb_fc.configure(state="normal")
+        for w in (self.lbl_patrones_pb_ord, self.spin_patrones_pb_ord, self.lbl_patrones_pb_fc, self.spin_patrones_pb_fc,
+                  self.lbl_patrones_sg_win, self.spin_patrones_sg_win, self.lbl_patrones_sg_ord, self.spin_patrones_sg_ord,
+                  self.lbl_patrones_med_win, self.spin_patrones_med_win, self.lbl_patrones_spline_s, self.spin_patrones_spline_s):
+            w.pack_forget()
 
-            self.lbl_patrones_sg_win.pack_forget()
-            self.spin_patrones_sg_win.pack_forget()
-            self.lbl_patrones_sg_ord.pack_forget()
-            self.spin_patrones_sg_ord.pack_forget()
-        elif activo and not es_pb:
-            self.lbl_patrones_pb_ord.pack_forget()
-            self.spin_patrones_pb_ord.pack_forget()
-            self.lbl_patrones_pb_fc.pack_forget()
-            self.spin_patrones_pb_fc.pack_forget()
+        if activo:
+            if tipo_p == "Pasabajos (Butterworth)":
+                self.lbl_patrones_pb_ord.pack(side="left", before=self.lbl_patrones_rango)
+                self.spin_patrones_pb_ord.pack(side="left", padx=(2, 6), before=self.lbl_patrones_rango)
+                self.lbl_patrones_pb_fc.pack(side="left", before=self.lbl_patrones_rango)
+                self.spin_patrones_pb_fc.pack(side="left", padx=(2, 10), before=self.lbl_patrones_rango)
+            elif tipo_p == "Mediana móvil":
+                self.lbl_patrones_med_win.pack(side="left", before=self.lbl_patrones_rango)
+                self.spin_patrones_med_win.pack(side="left", padx=(2, 10), before=self.lbl_patrones_rango)
+            elif tipo_p == "Splines de suavizado":
+                self.lbl_patrones_spline_s.pack(side="left", before=self.lbl_patrones_rango)
+                self.spin_patrones_spline_s.pack(side="left", padx=(2, 10), before=self.lbl_patrones_rango)
+            else:  # Savitzky-Golay
+                self.lbl_patrones_sg_win.pack(side="left", before=self.lbl_patrones_rango)
+                self.spin_patrones_sg_win.pack(side="left", padx=(2, 6), before=self.lbl_patrones_rango)
+                self.lbl_patrones_sg_ord.pack(side="left", before=self.lbl_patrones_rango)
+                self.spin_patrones_sg_ord.pack(side="left", padx=(2, 10), before=self.lbl_patrones_rango)
 
-            self.lbl_patrones_sg_win.pack(side="left")
-            self.spin_patrones_sg_win.pack(side="left", padx=(2, 6))
-            self.spin_patrones_sg_win.configure(state="normal")
-            self.lbl_patrones_sg_ord.pack(side="left")
-            self.spin_patrones_sg_ord.pack(side="left", padx=(2, 10))
-            self.spin_patrones_sg_ord.configure(state="normal")
+        self.lbl_patrones_rango.configure(state=estado)
+        self.radio_pat_rango_todo.configure(state=estado)
+        self.radio_pat_rango_sub.configure(state=estado)
+
+        es_rango = (self.var_patrones_rango.get() == "rango")
+        if activo and es_rango:
+            self.lbl_pat_f1.pack(side="left")
+            self.spin_pat_f1.pack(side="left", padx=(2, 6))
+            self.lbl_pat_f2.pack(side="left")
+            self.spin_pat_f2.pack(side="left", padx=(2, 6))
         else:
-            self.lbl_patrones_pb_ord.pack_forget()
-            self.spin_patrones_pb_ord.pack_forget()
-            self.lbl_patrones_pb_fc.pack_forget()
-            self.spin_patrones_pb_fc.pack_forget()
-            self.lbl_patrones_sg_win.pack_forget()
-            self.spin_patrones_sg_win.pack_forget()
-            self.lbl_patrones_sg_ord.pack_forget()
-            self.spin_patrones_sg_ord.pack_forget()
+            self.lbl_pat_f1.pack_forget()
+            self.spin_pat_f1.pack_forget()
+            self.lbl_pat_f2.pack_forget()
+            self.spin_pat_f2.pack_forget()
 
         for w in (getattr(self, 'lbl_patrones_sg_en', None),
                   getattr(self, 'chk_sg_pat_corto', None),
@@ -1987,8 +2118,11 @@ class AppPermitividad(tk.Tk):
 
         usa_pb = (tipo_clave in ('pasabajos', 'transicion_pasabajos'))
         usa_sg = (tipo_clave in ('savitzky_golay', 'transicion_savgol'))
+        usa_med = (tipo_clave == 'mediana_movil')
+        usa_spl = (tipo_clave == 'splines')
         usa_freq = (tipo_clave in ('cero_clamping', 'transicion_polinomica_cero', 'tapering',
-                                  'transicion_savgol', 'transicion_pasabajos'))
+                                  'transicion_savgol', 'transicion_pasabajos',
+                                  'pasabajos', 'savitzky_golay', 'mediana_movil', 'splines'))
 
         # Radiobutton modo auto/manual
         if activo_acond and usa_freq:
@@ -2029,6 +2163,26 @@ class AppPermitividad(tk.Tk):
                 self.spin_acond_sg_window.pack_forget()
                 self.lbl_acond_sg_polyorder.pack_forget()
                 self.spin_acond_sg_polyorder.pack_forget()
+
+        # Controles Mediana móvil
+        if hasattr(self, 'lbl_acond_med_window'):
+            if activo_acond and usa_med:
+                self.lbl_acond_med_window.pack(side="left")
+                self.spin_acond_med_window.pack(side="left", padx=(4, 10))
+                self.spin_acond_med_window.configure(state="normal")
+            else:
+                self.lbl_acond_med_window.pack_forget()
+                self.spin_acond_med_window.pack_forget()
+
+        # Controles Splines
+        if hasattr(self, 'lbl_acond_spline_s'):
+            if activo_acond and usa_spl:
+                self.lbl_acond_spline_s.pack(side="left")
+                self.spin_acond_spline_s.pack(side="left", padx=(4, 10))
+                self.spin_acond_spline_s.configure(state="normal")
+            else:
+                self.lbl_acond_spline_s.pack_forget()
+                self.spin_acond_spline_s.pack_forget()
 
         # Controles de frecuencia y umbral
         if not (activo_acond and usa_freq):
@@ -2097,7 +2251,7 @@ class AppPermitividad(tk.Tk):
 
         columnas = ("nombre", "archivo", "modelo", "temperatura", "filtro", "metodos")
         self.tabla_materiales = ttk.Treeview(
-            frm_tabla, columns=columnas, show="headings", selectmode="browse", height=12)
+            frm_tabla, columns=columnas, show="headings", selectmode="extended", height=12)
         titulos = {"nombre": "Nombre", "archivo": "Archivo", "modelo": "Modelo teorico",
                    "temperatura": "T (°C)", "filtro": "Filtro S11", "metodos": "Metodos"}
         anchos = {"nombre": 140, "archivo": 240, "modelo": 160, "temperatura": 65, "filtro": 130, "metodos": 140}
@@ -2124,6 +2278,100 @@ class AppPermitividad(tk.Tk):
         ttk.Button(frm_botones, text="Subir", command=lambda: self._mover_material(-1)).pack(side="left")
         ttk.Button(frm_botones, text="Bajar", command=lambda: self._mover_material(1)).pack(side="left", padx=6)
 
+        # --- Configuración en lote de filtro S11 para materiales ---
+        lf_filtro_lote = ttk.LabelFrame(f, text="Filtrado de S11 para materiales (configuración en lote)", padding=8)
+        lf_filtro_lote.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+
+        frm_fl_1 = ttk.Frame(lf_filtro_lote)
+        frm_fl_1.pack(anchor="w")
+
+        ttk.Label(frm_fl_1, text="Tipo de filtro:").pack(side="left")
+        self.var_lote_mat_tipo = tk.StringVar(value="Pasabajos (Butterworth)")
+        self.combo_lote_mat_tipo = ttk.Combobox(
+            frm_fl_1, textvariable=self.var_lote_mat_tipo, state="readonly", width=22,
+            values=["Pasabajos (Butterworth)", "Savitzky-Golay", "Mediana móvil", "Splines de suavizado"])
+        self.combo_lote_mat_tipo.pack(side="left", padx=(4, 10))
+        self.combo_lote_mat_tipo.bind("<<ComboboxSelected>>", lambda _e: self._al_cambiar_filtro_lote_mat())
+
+        # Parámetros Pasabajos
+        self.lbl_lote_pb_ord = ttk.Label(frm_fl_1, text="Orden PB:")
+        self.lbl_lote_pb_ord.pack(side="left")
+        self.var_lote_pb_ord = tk.IntVar(value=2)
+        self.spin_lote_pb_ord = ttk.Spinbox(
+            frm_fl_1, from_=1, to=5, increment=1, textvariable=self.var_lote_pb_ord, width=3)
+        self.spin_lote_pb_ord.pack(side="left", padx=(2, 6))
+
+        self.lbl_lote_pb_fc = ttk.Label(frm_fl_1, text="Corte PB (fc/fn):")
+        self.lbl_lote_pb_fc.pack(side="left")
+        self.var_lote_pb_fc = tk.DoubleVar(value=0.10)
+        self.spin_lote_pb_fc = ttk.Spinbox(
+            frm_fl_1, from_=0.01, to=0.50, increment=0.01, textvariable=self.var_lote_pb_fc, width=5)
+        self.spin_lote_pb_fc.pack(side="left", padx=(2, 10))
+
+        # Parámetros Savitzky-Golay
+        self.lbl_lote_sg_win = ttk.Label(frm_fl_1, text="Ventana SG:")
+        self.lbl_lote_sg_win.pack(side="left")
+        self.var_lote_sg_win = tk.IntVar(value=15)
+        self.spin_lote_sg_win = ttk.Spinbox(
+            frm_fl_1, from_=3, to=101, increment=2, textvariable=self.var_lote_sg_win, width=4)
+        self.spin_lote_sg_win.pack(side="left", padx=(2, 6))
+
+        self.lbl_lote_sg_ord = ttk.Label(frm_fl_1, text="Orden SG:")
+        self.lbl_lote_sg_ord.pack(side="left")
+        self.var_lote_sg_ord = tk.IntVar(value=3)
+        self.spin_lote_sg_ord = ttk.Spinbox(
+            frm_fl_1, from_=1, to=5, increment=1, textvariable=self.var_lote_sg_ord, width=3)
+        self.spin_lote_sg_ord.pack(side="left", padx=(2, 10))
+
+        # Parametros Mediana móvil lote
+        self.lbl_lote_med_win = ttk.Label(frm_fl_1, text="Ventana Med:")
+        self.var_lote_med_win = tk.IntVar(value=15)
+        self.spin_lote_med_win = ttk.Spinbox(
+            frm_fl_1, from_=3, to=101, increment=2, textvariable=self.var_lote_med_win, width=4)
+
+        # Parametros Splines lote
+        self.lbl_lote_spline_s = ttk.Label(frm_fl_1, text="Factor s:")
+        self.var_lote_spline_s = tk.DoubleVar(value=0.10)
+        self.spin_lote_spline_s = ttk.Spinbox(
+            frm_fl_1, from_=0.0001, to=50.0, increment=0.01, textvariable=self.var_lote_spline_s, width=6)
+
+        # Rango lote
+        self.lbl_lote_rango = ttk.Label(frm_fl_1, text="  Rango:")
+        self.lbl_lote_rango.pack(side="left")
+        self.var_lote_rango = tk.StringVar(value="todo")
+        self.radio_lote_rango_todo = ttk.Radiobutton(
+            frm_fl_1, text="Todo", value="todo", variable=self.var_lote_rango,
+            command=self._al_cambiar_filtro_lote_mat)
+        self.radio_lote_rango_todo.pack(side="left", padx=(2, 4))
+        self.radio_lote_rango_sub = ttk.Radiobutton(
+            frm_fl_1, text="[f1, f2]:", value="rango", variable=self.var_lote_rango,
+            command=self._al_cambiar_filtro_lote_mat)
+        self.radio_lote_rango_sub.pack(side="left", padx=(2, 6))
+
+        self.lbl_lote_f1 = ttk.Label(frm_fl_1, text="f1 (GHz):")
+        self.var_lote_f1 = tk.DoubleVar(value=0.5)
+        self.spin_lote_f1 = ttk.Spinbox(
+            frm_fl_1, from_=0.0, to=100.0, increment=0.05, textvariable=self.var_lote_f1, width=6)
+        self.lbl_lote_f2 = ttk.Label(frm_fl_1, text="f2 (GHz):")
+        self.var_lote_f2 = tk.DoubleVar(value=6.0)
+        self.spin_lote_f2 = ttk.Spinbox(
+            frm_fl_1, from_=0.0, to=100.0, increment=0.05, textvariable=self.var_lote_f2, width=6)
+
+        self.btn_copiar_patrones_lote = ttk.Button(frm_fl_1, text="Copiar de patrones", command=self._copiar_filtro_patrones_a_lote)
+        self.btn_copiar_patrones_lote.pack(side="left", padx=(4, 0))
+        _tooltip(frm_fl_1, "Configurá los parámetros del filtro S11 y aplicalos a todos los materiales cargados o solo a los seleccionados.")
+
+        frm_fl_2 = ttk.Frame(lf_filtro_lote)
+        frm_fl_2.pack(anchor="w", pady=(6, 0))
+
+        ttk.Button(frm_fl_2, text="Aplicar a todos", command=self._aplicar_filtro_lote_todos).pack(side="left")
+        ttk.Button(frm_fl_2, text="Aplicar a seleccionados", command=self._aplicar_filtro_lote_seleccionados).pack(side="left", padx=6)
+        ttk.Separator(frm_fl_2, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Button(frm_fl_2, text="Quitar filtro de todos", command=self._quitar_filtro_lote_todos).pack(side="left")
+        ttk.Button(frm_fl_2, text="Quitar filtro de seleccionados", command=self._quitar_filtro_lote_seleccionados).pack(side="left", padx=6)
+
+        self._al_cambiar_filtro_lote_mat()
+
     def _refrescar_tabla_materiales(self):
         self.tabla_materiales.delete(*self.tabla_materiales.get_children())
         for i, m in enumerate(self._materiales):
@@ -2146,19 +2394,175 @@ class AppPermitividad(tk.Tk):
                     ord_pb = m.get('pb_orden', 2) or 2
                     fc_pb = m.get('pb_fcorte', 0.10) or 0.10
                     col_filtro = f"Pasabajos ({ord_pb}, fc={fc_pb:.2f})"
+                elif tipo_f == 'mediana_movil':
+                    w_med = m.get('med_window', 15) or 15
+                    col_filtro = f"Mediana ({w_med})"
+                elif tipo_f == 'splines':
+                    s_spl = m.get('spline_s', 0.10) or 0.10
+                    col_filtro = f"Splines (s={s_spl:.3f})"
                 else:
                     w = m.get('sg_window', 15) or 15
                     p = m.get('sg_polyorder', 3) or 3
                     col_filtro = f"Savitzky-Golay ({w}, {p})"
+                if m.get('modo_rango') == 'rango':
+                    f1_m = m.get('f1_ghz', 0.5) or 0.5
+                    f2_m = m.get('f2_ghz', 6.0) or 6.0
+                    col_filtro += f" [{f1_m:.2f}-{f2_m:.2f} GHz]"
             else:
                 col_filtro = "—"
             self.tabla_materiales.insert(
                 "", "end", iid=str(i),
                 values=(m['nombre'], m['archivo'], etiqueta_modelo, temp, col_filtro, metodos))
 
+    def _indices_seleccionados(self):
+        return [int(x) for x in self.tabla_materiales.selection()]
+
     def _indice_seleccionado(self):
-        sel = self.tabla_materiales.selection()
-        return int(sel[0]) if sel else None
+        sel = self._indices_seleccionados()
+        return sel[0] if sel else None
+
+    def _al_cambiar_filtro_lote_mat(self):
+        tipo_l = self.var_lote_mat_tipo.get()
+        for w in (self.lbl_lote_pb_ord, self.spin_lote_pb_ord, self.lbl_lote_pb_fc, self.spin_lote_pb_fc,
+                  self.lbl_lote_sg_win, self.spin_lote_sg_win, self.lbl_lote_sg_ord, self.spin_lote_sg_ord,
+                  self.lbl_lote_med_win, self.spin_lote_med_win, self.lbl_lote_spline_s, self.spin_lote_spline_s):
+            w.pack_forget()
+
+        before_w = getattr(self, 'lbl_lote_rango', None)
+        if tipo_l == "Pasabajos (Butterworth)":
+            self.lbl_lote_pb_ord.pack(side="left", before=before_w)
+            self.spin_lote_pb_ord.pack(side="left", padx=(2, 6), before=before_w)
+            self.lbl_lote_pb_fc.pack(side="left", before=before_w)
+            self.spin_lote_pb_fc.pack(side="left", padx=(2, 10), before=before_w)
+        elif tipo_l == "Mediana móvil":
+            self.lbl_lote_med_win.pack(side="left", before=before_w)
+            self.spin_lote_med_win.pack(side="left", padx=(2, 10), before=before_w)
+        elif tipo_l == "Splines de suavizado":
+            self.lbl_lote_spline_s.pack(side="left", before=before_w)
+            self.spin_lote_spline_s.pack(side="left", padx=(2, 10), before=before_w)
+        else:  # Savitzky-Golay
+            self.lbl_lote_sg_win.pack(side="left", before=before_w)
+            self.spin_lote_sg_win.pack(side="left", padx=(2, 6), before=before_w)
+            self.lbl_lote_sg_ord.pack(side="left", before=before_w)
+            self.spin_lote_sg_ord.pack(side="left", padx=(2, 10), before=before_w)
+
+        es_rango = (self.var_lote_rango.get() == "rango")
+        btn_copiar = getattr(self, 'btn_copiar_patrones_lote', None)
+        if es_rango:
+            self.lbl_lote_f1.pack(side="left", before=btn_copiar)
+            self.spin_lote_f1.pack(side="left", padx=(2, 6), before=btn_copiar)
+            self.lbl_lote_f2.pack(side="left", before=btn_copiar)
+            self.spin_lote_f2.pack(side="left", padx=(2, 6), before=btn_copiar)
+        else:
+            self.lbl_lote_f1.pack_forget()
+            self.spin_lote_f1.pack_forget()
+            self.lbl_lote_f2.pack_forget()
+            self.spin_lote_f2.pack_forget()
+
+    def _copiar_filtro_patrones_a_lote(self):
+        if hasattr(self, 'var_patrones_tipo_filtro'):
+            self.var_lote_mat_tipo.set(self.var_patrones_tipo_filtro.get())
+        if hasattr(self, 'var_patrones_pb_ord'):
+            self.var_lote_pb_ord.set(self.var_patrones_pb_ord.get())
+        if hasattr(self, 'var_patrones_pb_fc'):
+            self.var_lote_pb_fc.set(self.var_patrones_pb_fc.get())
+        if hasattr(self, 'var_patrones_sg_win'):
+            self.var_lote_sg_win.set(self.var_patrones_sg_win.get())
+        if hasattr(self, 'var_patrones_sg_ord'):
+            self.var_lote_sg_ord.set(self.var_patrones_sg_ord.get())
+        if hasattr(self, 'var_patrones_med_win'):
+            self.var_lote_med_win.set(self.var_patrones_med_win.get())
+        if hasattr(self, 'var_patrones_spline_s'):
+            self.var_lote_spline_s.set(self.var_patrones_spline_s.get())
+        if hasattr(self, 'var_patrones_rango'):
+            self.var_lote_rango.set(self.var_patrones_rango.get())
+        if hasattr(self, 'var_pat_f1'):
+            self.var_lote_f1.set(self.var_pat_f1.get())
+        if hasattr(self, 'var_pat_f2'):
+            self.var_lote_f2.set(self.var_pat_f2.get())
+        self._al_cambiar_filtro_lote_mat()
+        self._status("Parámetros de filtro copiados desde la pestaña de Patrones.")
+
+    def _aplicar_filtro_a_materiales(self, indices):
+        if not indices:
+            messagebox.showinfo("Filtrado de materiales", "No hay materiales seleccionados para aplicar el filtro.", parent=self)
+            return
+        tipo_map = {
+            "Pasabajos (Butterworth)": "pasabajos",
+            "Savitzky-Golay": "savitzky_golay",
+            "Mediana móvil": "mediana_movil",
+            "Splines de suavizado": "splines",
+        }
+        tipo_f = tipo_map.get(self.var_lote_mat_tipo.get(), 'savitzky_golay')
+        pb_ord = int(self.var_lote_pb_ord.get() or 2)
+        pb_fc = float(self.var_lote_pb_fc.get() or 0.10)
+        sg_win = int(self.var_lote_sg_win.get() or 15)
+        sg_ord = int(self.var_lote_sg_ord.get() or 3)
+        med_win = int(self.var_lote_med_win.get() or 15)
+        spline_s = float(self.var_lote_spline_s.get() or 0.10)
+        modo_rango = self.var_lote_rango.get()
+        f1_ghz = float(self.var_lote_f1.get() or 0.5)
+        f2_ghz = float(self.var_lote_f2.get() or 6.0)
+
+        for idx in indices:
+            m = self._materiales[idx]
+            m['filtrar_s11'] = True
+            m['filtrar_sg'] = (tipo_f == 'savitzky_golay')
+            m['tipo_filtro'] = tipo_f
+            m['pb_orden'] = pb_ord
+            m['pb_fcorte'] = pb_fc
+            m['sg_window'] = sg_win
+            m['sg_polyorder'] = sg_ord
+            m['med_window'] = med_win
+            m['spline_s'] = spline_s
+            m['modo_rango'] = modo_rango
+            m['f1_ghz'] = f1_ghz
+            m['f2_ghz'] = f2_ghz
+
+        self._refrescar_tabla_materiales()
+        for idx in indices:
+            if idx < len(self._materiales):
+                self.tabla_materiales.selection_add(str(idx))
+        self._status(f"Filtro '{tipo_f}' aplicado a {len(indices)} material(es).")
+
+    def _aplicar_filtro_lote_todos(self):
+        if not self._materiales:
+            messagebox.showinfo("Filtrado de materiales", "No hay materiales cargados en la lista.", parent=self)
+            return
+        self._aplicar_filtro_a_materiales(list(range(len(self._materiales))))
+
+    def _aplicar_filtro_lote_seleccionados(self):
+        idxs = self._indices_seleccionados()
+        if not idxs:
+            messagebox.showinfo("Filtrado de materiales", "Seleccioná al menos un material de la tabla.", parent=self)
+            return
+        self._aplicar_filtro_a_materiales(idxs)
+
+    def _quitar_filtro_a_materiales(self, indices):
+        if not indices:
+            messagebox.showinfo("Quitar filtro", "No hay materiales seleccionados.", parent=self)
+            return
+        for idx in indices:
+            m = self._materiales[idx]
+            m['filtrar_s11'] = False
+            m['filtrar_sg'] = False
+        self._refrescar_tabla_materiales()
+        for idx in indices:
+            if idx < len(self._materiales):
+                self.tabla_materiales.selection_add(str(idx))
+        self._status(f"Filtro quitado de {len(indices)} material(es).")
+
+    def _quitar_filtro_lote_todos(self):
+        if not self._materiales:
+            return
+        self._quitar_filtro_a_materiales(list(range(len(self._materiales))))
+
+    def _quitar_filtro_lote_seleccionados(self):
+        idxs = self._indices_seleccionados()
+        if not idxs:
+            messagebox.showinfo("Quitar filtro", "Seleccioná al menos un material de la tabla.", parent=self)
+            return
+        self._quitar_filtro_a_materiales(idxs)
 
     def _agregar_material(self):
         dialogo = DialogoMaterial(self)
@@ -2256,13 +2660,19 @@ class AppPermitividad(tk.Tk):
             self._refrescar_tabla_materiales()
 
     def _quitar_material(self):
-        idx = self._indice_seleccionado()
-        if idx is None:
+        idxs = self._indices_seleccionados()
+        if not idxs:
             return
-        nombre = self._materiales[idx]['nombre']
-        if messagebox.askyesno("Quitar material", f"¿Quitar '{nombre}' de la lista?", parent=self):
+        if len(idxs) == 1:
+            nombre = self._materiales[idxs[0]]['nombre']
+            if not messagebox.askyesno("Quitar material", f"¿Quitar '{nombre}' de la lista?", parent=self):
+                return
+        else:
+            if not messagebox.askyesno("Quitar materiales", f"¿Quitar los {len(idxs)} materiales seleccionados de la lista?", parent=self):
+                return
+        for idx in sorted(idxs, reverse=True):
             del self._materiales[idx]
-            self._refrescar_tabla_materiales()
+        self._refrescar_tabla_materiales()
 
     def _mover_material(self, delta):
         idx = self._indice_seleccionado()
@@ -2440,6 +2850,11 @@ class AppPermitividad(tk.Tk):
         sg_p = 3
         pb_ord = 2
         pb_fc = 0.10
+        med_w = 15
+        spl_s = 0.10
+        m_rango = "todo"
+        f1_g = 0.5
+        f2_g = 6.0
         tipo_item = "elemento"
 
         if mat_info is not None:
@@ -2449,6 +2864,11 @@ class AppPermitividad(tk.Tk):
             sg_p = int(mat_info.get('sg_polyorder', 3) or 3)
             pb_ord = int(mat_info.get('pb_orden', 2) or 2)
             pb_fc = float(mat_info.get('pb_fcorte', 0.10) or 0.10)
+            med_w = int(mat_info.get('med_window', 15) or 15)
+            spl_s = float(mat_info.get('spline_s', 0.10) or 0.10)
+            m_rango = mat_info.get('modo_rango', 'todo')
+            f1_g = float(mat_info.get('f1_ghz', 0.5) or 0.5)
+            f2_g = float(mat_info.get('f2_ghz', 6.0) or 6.0)
             tipo_item = "material"
         elif clave_patron is not None:
             cfg_filtro_pat = self._config_desde_gui().get('filtrar_patrones_sg', {})
@@ -2461,19 +2881,25 @@ class AppPermitividad(tk.Tk):
                     sg_p = int(cfg_filtro_pat.get('sg_polyorder', 3) or 3)
                     pb_ord = int(cfg_filtro_pat.get('pb_orden', 2) or 2)
                     pb_fc = float(cfg_filtro_pat.get('pb_fcorte', 0.10) or 0.10)
+                    med_w = int(cfg_filtro_pat.get('med_window', 15) or 15)
+                    spl_s = float(cfg_filtro_pat.get('spline_s', 0.10) or 0.10)
+                    m_rango = cfg_filtro_pat.get('modo_rango', 'todo')
+                    f1_g = float(cfg_filtro_pat.get('f1_ghz', 0.5) or 0.5)
+                    f2_g = float(cfg_filtro_pat.get('f2_ghz', 6.0) or 6.0)
             tipo_item = "patrón de calibración"
 
         if filtrar_s11:
-            if tipo_filtro == 'pasabajos':
-                self.var_preview_s11_acond.set(
-                    f"Filtro Pasabajos Butterworth activado para este {tipo_item} (orden={pb_ord}, fc={pb_fc:.2f}). "
-                    f"Mostrando S11 original y filtrado simultáneamente."
-                )
-            else:
-                self.var_preview_s11_acond.set(
-                    f"Filtro Savitzky-Golay activado para este {tipo_item} (ventana={sg_w}, orden={sg_p}). "
-                    f"Mostrando S11 original y filtrado simultáneamente."
-                )
+            desc_filtro = {
+                'pasabajos': f"Pasabajos Butterworth (orden={pb_ord}, fc={pb_fc:.2f})",
+                'savitzky_golay': f"Savitzky-Golay (ventana={sg_w}, orden={sg_p})",
+                'mediana_movil': f"Mediana móvil (ventana={med_w})",
+                'splines': f"Splines de suavizado (s={spl_s:.4f})",
+            }.get(tipo_filtro, tipo_filtro)
+            if m_rango == 'rango':
+                desc_filtro += f" en [{f1_g:.2f}, {f2_g:.2f}] GHz"
+            self.var_preview_s11_acond.set(
+                f"Filtro {desc_filtro} activado para este {tipo_item}. Mostrando S11 original y filtrado simultáneamente."
+            )
         else:
             if hasattr(self, 'var_preview_s11_acond'):
                 self.var_preview_s11_acond.set("")
@@ -2485,7 +2911,9 @@ class AppPermitividad(tk.Tk):
                 ruta, log_x=bool(self.var_log_x.get()),
                 filtrar_s11=filtrar_s11, tipo_filtro=tipo_filtro,
                 sg_window=sg_w, sg_polyorder=sg_p,
-                pb_orden=pb_ord, pb_fcorte=pb_fc)
+                pb_orden=pb_ord, pb_fcorte=pb_fc,
+                med_window=med_w, spline_s=spl_s,
+                modo_rango=m_rango, f1_ghz=f1_g, f2_ghz=f2_g)
         except Exception as exc:
             self._limpiar_preview_s11(
                 f"No se pudo generar la vista previa de '{etiqueta}':\n{exc}")
@@ -2496,14 +2924,19 @@ class AppPermitividad(tk.Tk):
 
         frec = datos['Frec']
         msg_status = (
-            f"{etiqueta}  ({os.path.basename(ruta)})  \u2014  {len(frec)} puntos, "
+            f"{etiqueta}  ({os.path.basename(ruta)})  —  {len(frec)} puntos, "
             f"{frec[0] / 1e9:.3f}-{frec[-1] / 1e9:.3f} GHz"
         )
         if filtrar_s11:
-            if tipo_filtro == 'pasabajos':
-                msg_status += f"  \u2014  [Filtro Pasabajos: ord={pb_ord}, fc={pb_fc:.2f}]"
-            else:
-                msg_status += f"  \u2014  [Filtro Savitzky-Golay: N={sg_w}, p={sg_p}]"
+            resumen_f = {
+                'pasabajos': f"Pasabajos: ord={pb_ord}, fc={pb_fc:.2f}",
+                'savitzky_golay': f"Savitzky-Golay: N={sg_w}, p={sg_p}",
+                'mediana_movil': f"Mediana: N={med_w}",
+                'splines': f"Splines: s={spl_s:.4f}",
+            }.get(tipo_filtro, tipo_filtro)
+            if m_rango == 'rango':
+                resumen_f += f", [{f1_g:.2f}-{f2_g:.2f} GHz]"
+            msg_status += f"  —  [{resumen_f}]"
         self.var_preview_s11_status.set(msg_status)
 
     def _mostrar_preview_gn(self):
@@ -2760,10 +3193,101 @@ class AppPermitividad(tk.Tk):
                  "distingue nada. En log, cada decada ocupa el mismo ancho visual.\n"
                  "Se ignora automaticamente (cae a lineal) si el rango incluye 0 Hz.")
 
-        ttk.Separator(f).grid(row=6, column=0, columnspan=3, sticky="ew", pady=12)
+        # --- Filtrado de curvas de salida (er', er'') ---
+        lf_filtro_salida = ttk.LabelFrame(f, text="Filtrado de curvas de salida (er', er'')", padding=8)
+        lf_filtro_salida.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+
+        frm_fs_f0 = ttk.Frame(lf_filtro_salida)
+        frm_fs_f0.pack(anchor="w", pady=(0, 4))
+
+        self.var_filtro_salida_activo = tk.BooleanVar(value=False)
+        self.chk_filtro_salida = ttk.Checkbutton(
+            frm_fs_f0, text="Aplicar filtro a permitividad calculada (er', er'')",
+            variable=self.var_filtro_salida_activo,
+            command=self._al_cambiar_filtro_salida)
+        self.chk_filtro_salida.pack(side="left")
+
+        self.var_filtro_salida_mostrar_original = tk.BooleanVar(value=True)
+        self.chk_filtro_salida_orig = ttk.Checkbutton(
+            frm_fs_f0, text="Mostrar curva sin filtro en el gráfico",
+            variable=self.var_filtro_salida_mostrar_original)
+        self.chk_filtro_salida_orig.pack(side="left", padx=(16, 0))
+        _tooltip(self.chk_filtro_salida_orig,
+                 "Muestra la curva original (sin filtrar) superpuesta con línea punteada\n"
+                 "en el gráfico de permitividad para comparar el efecto del filtro.")
+
+        self.frm_fs_f1 = ttk.Frame(lf_filtro_salida)
+        self.frm_fs_f1.pack(anchor="w", pady=(2, 0))
+
+        self.lbl_salida_filtro_tipo = ttk.Label(self.frm_fs_f1, text="Tipo:")
+        self.lbl_salida_filtro_tipo.pack(side="left")
+        self.var_filtro_salida_tipo = tk.StringVar(value="Savitzky-Golay")
+        self.combo_filtro_salida_tipo = ttk.Combobox(
+            self.frm_fs_f1, textvariable=self.var_filtro_salida_tipo, state="readonly", width=22,
+            values=["Pasabajos (Butterworth)", "Savitzky-Golay", "Mediana móvil", "Splines de suavizado"])
+        self.combo_filtro_salida_tipo.pack(side="left", padx=(4, 10))
+        self.combo_filtro_salida_tipo.bind("<<ComboboxSelected>>", lambda _e: self._al_cambiar_filtro_salida())
+
+        # Parametros Pasabajos salida
+        self.lbl_salida_pb_ord = ttk.Label(self.frm_fs_f1, text="Orden PB:")
+        self.var_salida_pb_ord = tk.IntVar(value=2)
+        self.spin_salida_pb_ord = ttk.Spinbox(
+            self.frm_fs_f1, from_=1, to=5, increment=1, textvariable=self.var_salida_pb_ord, width=3)
+        self.lbl_salida_pb_fc = ttk.Label(self.frm_fs_f1, text="Corte PB (fc/fn):")
+        self.var_salida_pb_fc = tk.DoubleVar(value=0.10)
+        self.spin_salida_pb_fc = ttk.Spinbox(
+            self.frm_fs_f1, from_=0.01, to=0.50, increment=0.01, textvariable=self.var_salida_pb_fc, width=5)
+
+        # Parametros Savitzky-Golay salida
+        self.lbl_salida_sg_win = ttk.Label(self.frm_fs_f1, text="Ventana SG:")
+        self.var_salida_sg_win = tk.IntVar(value=15)
+        self.spin_salida_sg_win = ttk.Spinbox(
+            self.frm_fs_f1, from_=3, to=101, increment=2, textvariable=self.var_salida_sg_win, width=4)
+        self.lbl_salida_sg_ord = ttk.Label(self.frm_fs_f1, text="Orden SG:")
+        self.var_salida_sg_ord = tk.IntVar(value=3)
+        self.spin_salida_sg_ord = ttk.Spinbox(
+            self.frm_fs_f1, from_=1, to=5, increment=1, textvariable=self.var_salida_sg_ord, width=3)
+
+        # Parametros Mediana móvil salida
+        self.lbl_salida_med_win = ttk.Label(self.frm_fs_f1, text="Ventana Med:")
+        self.var_salida_med_win = tk.IntVar(value=15)
+        self.spin_salida_med_win = ttk.Spinbox(
+            self.frm_fs_f1, from_=3, to=101, increment=2, textvariable=self.var_salida_med_win, width=4)
+
+        # Parametros Splines salida
+        self.lbl_salida_spline_s = ttk.Label(self.frm_fs_f1, text="Factor s:")
+        self.var_salida_spline_s = tk.DoubleVar(value=0.10)
+        self.spin_salida_spline_s = ttk.Spinbox(
+            self.frm_fs_f1, from_=0.0001, to=50.0, increment=0.01, textvariable=self.var_salida_spline_s, width=6)
+
+        # Rango
+        self.lbl_salida_rango = ttk.Label(self.frm_fs_f1, text="  Rango:")
+        self.lbl_salida_rango.pack(side="left")
+        self.var_filtro_salida_rango = tk.StringVar(value="todo")
+        self.radio_salida_rango_todo = ttk.Radiobutton(
+            self.frm_fs_f1, text="Todo", value="todo", variable=self.var_filtro_salida_rango,
+            command=self._al_cambiar_filtro_salida)
+        self.radio_salida_rango_todo.pack(side="left", padx=(2, 4))
+        self.radio_salida_rango_sub = ttk.Radiobutton(
+            self.frm_fs_f1, text="[f1, f2]:", value="rango", variable=self.var_filtro_salida_rango,
+            command=self._al_cambiar_filtro_salida)
+        self.radio_salida_rango_sub.pack(side="left", padx=(2, 6))
+
+        self.lbl_salida_f1 = ttk.Label(self.frm_fs_f1, text="f1 (GHz):")
+        self.var_salida_f1 = tk.DoubleVar(value=0.5)
+        self.spin_salida_f1 = ttk.Spinbox(
+            self.frm_fs_f1, from_=0.0, to=100.0, increment=0.05, textvariable=self.var_salida_f1, width=6)
+        self.lbl_salida_f2 = ttk.Label(self.frm_fs_f1, text="f2 (GHz):")
+        self.var_salida_f2 = tk.DoubleVar(value=6.0)
+        self.spin_salida_f2 = ttk.Spinbox(
+            self.frm_fs_f1, from_=0.0, to=100.0, increment=0.05, textvariable=self.var_salida_f2, width=6)
+
+        self._al_cambiar_filtro_salida()
+
+        ttk.Separator(f).grid(row=7, column=0, columnspan=3, sticky="ew", pady=12)
 
         frm_acciones = ttk.Frame(f)
-        frm_acciones.grid(row=7, column=0, columnspan=3, sticky="w")
+        frm_acciones.grid(row=8, column=0, columnspan=3, sticky="w")
         ttk.Button(frm_acciones, text="Verificar archivos", command=self._verificar_archivos).pack(side="left")
         self.boton_ejecutar = ttk.Button(
             frm_acciones, text="▶  Ejecutar analisis", style="Ejecutar.TButton",
@@ -2778,15 +3302,15 @@ class AppPermitividad(tk.Tk):
 
         self.var_paso_actual = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.var_paso_actual, style="Ayuda.TLabel").grid(
-            row=8, column=0, columnspan=3, sticky="w", pady=(10, 0))
+            row=9, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
         self.barra_progreso = ttk.Progressbar(f, orient="horizontal", mode="determinate")
-        self.barra_progreso.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+        self.barra_progreso.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(2, 0))
 
         # --- Consola + vista previa, lado a lado ---
         frm_abajo = ttk.Frame(f)
-        frm_abajo.grid(row=10, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
-        f.rowconfigure(10, weight=1)
+        frm_abajo.grid(row=11, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
+        f.rowconfigure(11, weight=1)
         frm_abajo.columnconfigure(0, weight=2)
         frm_abajo.columnconfigure(1, weight=3)
         frm_abajo.rowconfigure(0, weight=1)
@@ -2839,6 +3363,53 @@ class AppPermitividad(tk.Tk):
     def _al_cambiar_limitar_eje_y(self):
         if hasattr(self, '_resultado_analisis') and self._resultado_analisis:
             self._mostrar_figuras_disponibles(self._figuras_desde_resultado(self._resultado_analisis))
+
+    def _al_cambiar_filtro_salida(self):
+        activo = bool(self.var_filtro_salida_activo.get())
+        estado = "normal" if activo else "disabled"
+        self.chk_filtro_salida_orig.configure(state=estado)
+        self.lbl_salida_filtro_tipo.configure(state=estado)
+        self.combo_filtro_salida_tipo.configure(state=("readonly" if activo else "disabled"))
+        self.lbl_salida_rango.configure(state=estado)
+        self.radio_salida_rango_todo.configure(state=estado)
+        self.radio_salida_rango_sub.configure(state=estado)
+
+        tipo = self.var_filtro_salida_tipo.get()
+
+        for w in (self.lbl_salida_pb_ord, self.spin_salida_pb_ord, self.lbl_salida_pb_fc, self.spin_salida_pb_fc,
+                  self.lbl_salida_sg_win, self.spin_salida_sg_win, self.lbl_salida_sg_ord, self.spin_salida_sg_ord,
+                  self.lbl_salida_med_win, self.spin_salida_med_win, self.lbl_salida_spline_s, self.spin_salida_spline_s):
+            w.pack_forget()
+
+        if activo:
+            if tipo == "Pasabajos (Butterworth)":
+                self.lbl_salida_pb_ord.pack(side="left", before=self.lbl_salida_rango)
+                self.spin_salida_pb_ord.pack(side="left", padx=(2, 6), before=self.lbl_salida_rango)
+                self.lbl_salida_pb_fc.pack(side="left", before=self.lbl_salida_rango)
+                self.spin_salida_pb_fc.pack(side="left", padx=(2, 10), before=self.lbl_salida_rango)
+            elif tipo == "Mediana móvil":
+                self.lbl_salida_med_win.pack(side="left", before=self.lbl_salida_rango)
+                self.spin_salida_med_win.pack(side="left", padx=(2, 10), before=self.lbl_salida_rango)
+            elif tipo == "Splines de suavizado":
+                self.lbl_salida_spline_s.pack(side="left", before=self.lbl_salida_rango)
+                self.spin_salida_spline_s.pack(side="left", padx=(2, 10), before=self.lbl_salida_rango)
+            else:  # Savitzky-Golay
+                self.lbl_salida_sg_win.pack(side="left", before=self.lbl_salida_rango)
+                self.spin_salida_sg_win.pack(side="left", padx=(2, 6), before=self.lbl_salida_rango)
+                self.lbl_salida_sg_ord.pack(side="left", before=self.lbl_salida_rango)
+                self.spin_salida_sg_ord.pack(side="left", padx=(2, 10), before=self.lbl_salida_rango)
+
+        es_rango = (self.var_filtro_salida_rango.get() == "rango")
+        if activo and es_rango:
+            self.lbl_salida_f1.pack(side="left")
+            self.spin_salida_f1.pack(side="left", padx=(2, 6))
+            self.lbl_salida_f2.pack(side="left")
+            self.spin_salida_f2.pack(side="left", padx=(2, 6))
+        else:
+            self.lbl_salida_f1.pack_forget()
+            self.spin_salida_f1.pack_forget()
+            self.lbl_salida_f2.pack_forget()
+            self.spin_salida_f2.pack_forget()
 
     def _examinar_carpeta_salida(self):
         ruta = filedialog.askdirectory(title="Carpeta de salida", parent=self)
@@ -3298,11 +3869,21 @@ class AppPermitividad(tk.Tk):
             'estrategia_gn': self.var_estrategia_gn.get(),
             'filtrar_patrones_sg': {
                 'habilitado': bool(self.var_filtrar_patrones_sg.get()) if hasattr(self, 'var_filtrar_patrones_sg') else False,
-                'tipo': 'pasabajos' if (getattr(self, 'var_patrones_tipo_filtro', None) and self.var_patrones_tipo_filtro.get() == "Pasabajos (Butterworth)") else 'savitzky_golay',
+                'tipo': {
+                    "Pasabajos (Butterworth)": "pasabajos",
+                    "Savitzky-Golay": "savitzky_golay",
+                    "Mediana móvil": "mediana_movil",
+                    "Splines de suavizado": "splines",
+                }.get(self.var_patrones_tipo_filtro.get() if hasattr(self, 'var_patrones_tipo_filtro') else '', 'savitzky_golay'),
                 'sg_window': int(self.var_patrones_sg_win.get() if hasattr(self, 'var_patrones_sg_win') else 15),
                 'sg_polyorder': int(self.var_patrones_sg_ord.get() if hasattr(self, 'var_patrones_sg_ord') else 3),
                 'pb_orden': int(self.var_patrones_pb_ord.get() if hasattr(self, 'var_patrones_pb_ord') else 2),
                 'pb_fcorte': float(self._obtener_double(getattr(self, 'var_patrones_pb_fc', None), 0.10)),
+                'med_window': int(self.var_patrones_med_win.get() if hasattr(self, 'var_patrones_med_win') else 15),
+                'spline_s': float(self._obtener_double(getattr(self, 'var_patrones_spline_s', None), 0.10)),
+                'modo_rango': self.var_patrones_rango.get() if hasattr(self, 'var_patrones_rango') else 'todo',
+                'f1_ghz': float(self._obtener_double(getattr(self, 'var_pat_f1', None), 0.5)),
+                'f2_ghz': float(self._obtener_double(getattr(self, 'var_pat_f2', None), 6.0)),
                 'aplicar_en': aplicar_en_pat,
             },
             'acondicionar_gn': {
@@ -3317,9 +3898,28 @@ class AppPermitividad(tk.Tk):
                 'pb_fcorte': float(self._obtener_double(getattr(self, 'var_acond_pb_fcorte', None), 0.10)),
                 'sg_window': int(self.var_acond_sg_window.get() if hasattr(self, 'var_acond_sg_window') else 15),
                 'sg_polyorder': int(self.var_acond_sg_polyorder.get() if hasattr(self, 'var_acond_sg_polyorder') else 3),
+                'med_window': int(self.var_acond_med_window.get() if hasattr(self, 'var_acond_med_window') else 15),
+                'spline_s': float(self._obtener_double(getattr(self, 'var_acond_spline_s', None), 0.10)),
                 'comparar_original': bool(self.var_comparar_gn_original.get()),
             },
             'materiales': copy.deepcopy(self._materiales),
+            'filtro_lote_materiales': {
+                'tipo': {
+                    "Pasabajos (Butterworth)": "pasabajos",
+                    "Savitzky-Golay": "savitzky_golay",
+                    "Mediana móvil": "mediana_movil",
+                    "Splines de suavizado": "splines",
+                }.get(self.var_lote_mat_tipo.get() if hasattr(self, 'var_lote_mat_tipo') else '', 'savitzky_golay'),
+                'pb_orden': int(self.var_lote_pb_ord.get() if hasattr(self, 'var_lote_pb_ord') else 2),
+                'pb_fcorte': float(self._obtener_double(getattr(self, 'var_lote_pb_fc', None), 0.10)),
+                'sg_window': int(self.var_lote_sg_win.get() if hasattr(self, 'var_lote_sg_win') else 15),
+                'sg_polyorder': int(self.var_lote_sg_ord.get() if hasattr(self, 'var_lote_sg_ord') else 3),
+                'med_window': int(self.var_lote_med_win.get() if hasattr(self, 'var_lote_med_win') else 15),
+                'spline_s': float(self._obtener_double(getattr(self, 'var_lote_spline_s', None), 0.10)),
+                'modo_rango': self.var_lote_rango.get() if hasattr(self, 'var_lote_rango') else 'todo',
+                'f1_ghz': float(self._obtener_double(getattr(self, 'var_lote_f1', None), 0.5)),
+                'f2_ghz': float(self._obtener_double(getattr(self, 'var_lote_f2', None), 6.0)),
+            },
             'carpeta_salida': self.var_carpeta_salida.get().strip(),
             'nombre_informe_pdf': self.var_nombre_pdf.get().strip() or "informe_permitividad.pdf",
             'f_min_ghz': float(self._obtener_double(self.var_f_min, 0.5)),
@@ -3327,6 +3927,25 @@ class AppPermitividad(tk.Tk):
             'f_err_int1_ghz': float(self._obtener_double(self.var_f_err_int1, 2.0)),
             'f_err_int2_ghz': float(self._obtener_double(self.var_f_err_int2, 4.0)),
             'escala_log_frecuencia': bool(self.var_log_x.get()),
+            'filtro_salida': {
+                'habilitado': bool(self.var_filtro_salida_activo.get()) if hasattr(self, 'var_filtro_salida_activo') else False,
+                'mostrar_sin_filtro': bool(self.var_filtro_salida_mostrar_original.get()) if hasattr(self, 'var_filtro_salida_mostrar_original') else True,
+                'tipo': {
+                    "Pasabajos (Butterworth)": "pasabajos",
+                    "Savitzky-Golay": "savitzky_golay",
+                    "Mediana móvil": "mediana_movil",
+                    "Splines de suavizado": "splines",
+                }.get(self.var_filtro_salida_tipo.get() if hasattr(self, 'var_filtro_salida_tipo') else '', 'savitzky_golay'),
+                'pb_orden': int(self.var_salida_pb_ord.get() if hasattr(self, 'var_salida_pb_ord') else 2),
+                'pb_fcorte': float(self._obtener_double(getattr(self, 'var_salida_pb_fc', None), 0.10)),
+                'sg_window': int(self.var_salida_sg_win.get() if hasattr(self, 'var_salida_sg_win') else 15),
+                'sg_polyorder': int(self.var_salida_sg_ord.get() if hasattr(self, 'var_salida_sg_ord') else 3),
+                'med_window': int(self.var_salida_med_win.get() if hasattr(self, 'var_salida_med_win') else 15),
+                'spline_s': float(self._obtener_double(getattr(self, 'var_salida_spline_s', None), 0.10)),
+                'modo_rango': self.var_filtro_salida_rango.get() if hasattr(self, 'var_filtro_salida_rango') else 'todo',
+                'f1_ghz': float(self._obtener_double(getattr(self, 'var_salida_f1', None), 0.5)),
+                'f2_ghz': float(self._obtener_double(getattr(self, 'var_salida_f2', None), 6.0)),
+            },
             'limitar_eje_y': bool(self.var_limitar_eje_y.get()) if hasattr(self, 'var_limitar_eje_y') else True,
             'curvas_comparacion': copy.deepcopy(self._curvas_comparar),
             'curvas_modelos': copy.deepcopy(self._curvas_modelos),
@@ -3362,9 +3981,14 @@ class AppPermitividad(tk.Tk):
         if hasattr(self, 'var_filtrar_patrones_sg'):
             self.var_filtrar_patrones_sg.set(bool(cfg_filtro_pat.get('habilitado', False)))
         tipo_f_pat = cfg_filtro_pat.get('tipo', cfg_filtro_pat.get('tipo_filtro', 'savitzky_golay'))
+        map_inv_pat = {
+            'pasabajos': "Pasabajos (Butterworth)",
+            'savitzky_golay': "Savitzky-Golay",
+            'mediana_movil': "Mediana móvil",
+            'splines': "Splines de suavizado",
+        }
         if hasattr(self, 'var_patrones_tipo_filtro'):
-            self.var_patrones_tipo_filtro.set(
-                "Pasabajos (Butterworth)" if tipo_f_pat == 'pasabajos' else "Savitzky-Golay")
+            self.var_patrones_tipo_filtro.set(map_inv_pat.get(tipo_f_pat, "Savitzky-Golay"))
         if hasattr(self, 'var_patrones_pb_ord'):
             self.var_patrones_pb_ord.set(int(cfg_filtro_pat.get('pb_orden', 2) or 2))
         if hasattr(self, 'var_patrones_pb_fc'):
@@ -3373,6 +3997,16 @@ class AppPermitividad(tk.Tk):
             self.var_patrones_sg_win.set(int(cfg_filtro_pat.get('sg_window', 15) or 15))
         if hasattr(self, 'var_patrones_sg_ord'):
             self.var_patrones_sg_ord.set(int(cfg_filtro_pat.get('sg_polyorder', 3) or 3))
+        if hasattr(self, 'var_patrones_med_win'):
+            self.var_patrones_med_win.set(int(cfg_filtro_pat.get('med_window', 15) or 15))
+        if hasattr(self, 'var_patrones_spline_s'):
+            self.var_patrones_spline_s.set(float(cfg_filtro_pat.get('spline_s', 0.10) or 0.10))
+        if hasattr(self, 'var_patrones_rango'):
+            self.var_patrones_rango.set(cfg_filtro_pat.get('modo_rango', 'todo'))
+        if hasattr(self, 'var_pat_f1'):
+            self.var_pat_f1.set(float(cfg_filtro_pat.get('f1_ghz', 0.5) or 0.5))
+        if hasattr(self, 'var_pat_f2'):
+            self.var_pat_f2.set(float(cfg_filtro_pat.get('f2_ghz', 6.0) or 6.0))
         aplicar_en_pat = cfg_filtro_pat.get('aplicar_en', ['corto', 'aire', 'patron3', 'patron4', 'adicionales'])
         if hasattr(self, 'var_sg_pat_corto'):
             self.var_sg_pat_corto.set('corto' in aplicar_en_pat)
@@ -3404,12 +4038,45 @@ class AppPermitividad(tk.Tk):
             self.var_acond_sg_window.set(int(acond_cfg.get('sg_window', 15) or 15))
         if hasattr(self, 'var_acond_sg_polyorder'):
             self.var_acond_sg_polyorder.set(int(acond_cfg.get('sg_polyorder', 3) or 3))
+        if hasattr(self, 'var_acond_med_window'):
+            self.var_acond_med_window.set(int(acond_cfg.get('med_window', 15) or 15))
+        if hasattr(self, 'var_acond_spline_s'):
+            self.var_acond_spline_s.set(float(acond_cfg.get('spline_s', 0.10) or 0.10))
         self.var_comparar_gn_original.set(bool(acond_cfg.get('comparar_original', True)))
 
         self._al_cambiar_usar_metodo_completo()
         self._al_cambiar_usar_mc(actualizar_materiales=False)
         self._materiales = copy.deepcopy(config.get('materiales', []) or [])
         self._refrescar_tabla_materiales()
+        flm = config.get('filtro_lote_materiales', {}) or {}
+        if hasattr(self, 'var_lote_mat_tipo') and flm:
+            tipo_flm = flm.get('tipo', 'pasabajos')
+            map_inv_lote = {
+                'pasabajos': "Pasabajos (Butterworth)",
+                'savitzky_golay': "Savitzky-Golay",
+                'mediana_movil': "Mediana móvil",
+                'splines': "Splines de suavizado",
+            }
+            self.var_lote_mat_tipo.set(map_inv_lote.get(tipo_flm, "Savitzky-Golay"))
+            if 'pb_orden' in flm:
+                self.var_lote_pb_ord.set(int(flm['pb_orden']))
+            if 'pb_fcorte' in flm:
+                self.var_lote_pb_fc.set(float(flm['pb_fcorte']))
+            if 'sg_window' in flm:
+                self.var_lote_sg_win.set(int(flm['sg_window']))
+            if 'sg_polyorder' in flm:
+                self.var_lote_sg_ord.set(int(flm['sg_polyorder']))
+            if 'med_window' in flm:
+                self.var_lote_med_win.set(int(flm['med_window']))
+            if 'spline_s' in flm:
+                self.var_lote_spline_s.set(float(flm['spline_s']))
+            if 'modo_rango' in flm:
+                self.var_lote_rango.set(flm['modo_rango'])
+            if 'f1_ghz' in flm:
+                self.var_lote_f1.set(float(flm['f1_ghz']))
+            if 'f2_ghz' in flm:
+                self.var_lote_f2.set(float(flm['f2_ghz']))
+            self._al_cambiar_filtro_lote_mat()
         self.var_carpeta_salida.set(config.get('carpeta_salida', "") or "")
         self.var_nombre_pdf.set(config.get('nombre_informe_pdf', "informe_permitividad.pdf"))
         self.var_f_min.set(float(config.get('f_min_ghz', 0.5) or 0.5))
@@ -3417,6 +4084,35 @@ class AppPermitividad(tk.Tk):
         self.var_f_err_int1.set(float(config.get('f_err_int1_ghz', 2.0) or 2.0))
         self.var_f_err_int2.set(float(config.get('f_err_int2_ghz', 4.0) or 4.0))
         self.var_log_x.set(bool(config.get('escala_log_frecuencia', True)))
+        fs_cfg = config.get('filtro_salida') or {}
+        if hasattr(self, 'var_filtro_salida_activo'):
+            self.var_filtro_salida_activo.set(bool(fs_cfg.get('habilitado', False)))
+            self.var_filtro_salida_mostrar_original.set(bool(fs_cfg.get('mostrar_sin_filtro', True)))
+            tipo_fs_inv = {
+                'pasabajos': "Pasabajos (Butterworth)",
+                'savitzky_golay': "Savitzky-Golay",
+                'mediana_movil': "Mediana móvil",
+                'splines': "Splines de suavizado",
+            }
+            self.var_filtro_salida_tipo.set(tipo_fs_inv.get(fs_cfg.get('tipo', 'savitzky_golay'), "Savitzky-Golay"))
+            if 'pb_orden' in fs_cfg:
+                self.var_salida_pb_ord.set(int(fs_cfg['pb_orden']))
+            if 'pb_fcorte' in fs_cfg:
+                self.var_salida_pb_fc.set(float(fs_cfg['pb_fcorte']))
+            if 'sg_window' in fs_cfg:
+                self.var_salida_sg_win.set(int(fs_cfg['sg_window']))
+            if 'sg_polyorder' in fs_cfg:
+                self.var_salida_sg_ord.set(int(fs_cfg['sg_polyorder']))
+            if 'med_window' in fs_cfg:
+                self.var_salida_med_win.set(int(fs_cfg['med_window']))
+            if 'spline_s' in fs_cfg:
+                self.var_salida_spline_s.set(float(fs_cfg['spline_s']))
+            self.var_filtro_salida_rango.set(fs_cfg.get('modo_rango', 'todo'))
+            if 'f1_ghz' in fs_cfg:
+                self.var_salida_f1.set(float(fs_cfg['f1_ghz']))
+            if 'f2_ghz' in fs_cfg:
+                self.var_salida_f2.set(float(fs_cfg['f2_ghz']))
+            self._al_cambiar_filtro_salida()
         if hasattr(self, 'var_limitar_eje_y'):
             self.var_limitar_eje_y.set(bool(config.get('limitar_eje_y', True)))
         self._curvas_comparar = copy.deepcopy(config.get('curvas_comparacion', []) or [])

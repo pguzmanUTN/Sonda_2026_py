@@ -106,7 +106,8 @@ from funciones import (get_er_DUTm, get_er_DUT_completo, error_absoluto,
                        calibrar_minimos_cuadrados, reajustar_abc_con_gn_fijo,
                        get_er_DUT_minimos_cuadrados,
                        validacion_cruzada_minimos_cuadrados, filtrar_s11_savgol,
-                       filtrar_s11_pasabajos)
+                       filtrar_s11_pasabajos, filtrar_s11_mediana, filtrar_s11_splines,
+                       aplicar_filtro_por_rango, aplicar_filtro_permitividad, aplicar_filtro_s11)
 from Patrones import (PATRONES_TEORICOS, ER_AIRE, etiqueta_patron,
                        advertencia_patron, nivel_advertencia_patron,
                        es_modelo_estatico, modela_perdidas, perdidas_comparables,
@@ -455,7 +456,11 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
     if er_teorico is not None:
         ax_re.plot(frecs / 1e9, er_teorico.real, 'k--', linewidth=2, label=etiqueta_teorico)
     for etiqueta, er in er_medido_dict.items():
-        ax_re.plot(frecs / 1e9, er.real, linewidth=1.6, label=etiqueta)
+        es_sf = ("(sin filtro" in etiqueta.lower() or "(crudo" in etiqueta.lower())
+        lw = 1.2 if es_sf else 1.6
+        ls = ':' if es_sf else '-'
+        alpha = 0.65 if es_sf else 1.0
+        ax_re.plot(frecs / 1e9, er.real, linewidth=lw, linestyle=ls, alpha=alpha, label=etiqueta)
     ax_re.set_ylabel("er'  (parte real)")
     ax_re.set_title(titulo)
     ax_re.minorticks_on()
@@ -466,7 +471,11 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
     if er_teorico is not None:
         ax_im.plot(frecs / 1e9, er_teorico.imag, 'k--', linewidth=2, label=etiqueta_teorico)
     for etiqueta, er in er_medido_dict.items():
-        ax_im.plot(frecs / 1e9, er.imag, linewidth=1.6, label=etiqueta)
+        es_sf = ("(sin filtro" in etiqueta.lower() or "(crudo" in etiqueta.lower())
+        lw = 1.2 if es_sf else 1.6
+        ls = ':' if es_sf else '-'
+        alpha = 0.65 if es_sf else 1.0
+        ax_im.plot(frecs / 1e9, er.imag, linewidth=lw, linestyle=ls, alpha=alpha, label=etiqueta)
     ax_im.set_xlabel("Frecuencia (GHz)")
     ax_im.set_ylabel("er''  (perdidas, Im)")
     ax_im.minorticks_on()
@@ -1124,7 +1133,8 @@ def procesar_material(material, carpeta_datos, cache, frecs,
                        intervalos_error=None,
                        calibracion_mc=None,
                        calibracion_mc_acond=None,
-                       limitar_eje_y=True):
+                       limitar_eje_y=True,
+                       cfg_filtro_salida=None):
     """Procesa una entrada de MATERIALES: lee su .s1p, calcula la
     permitividad con los metodos indicados, grafica (contra la curva
     teorica si se conoce, o solo lo medido si no), exporta CSV y devuelve
@@ -1185,16 +1195,8 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     filtrar_s11 = bool(material.get('filtrar_s11') or material.get('filtrar_sg', False))
     tipo_filtro = material.get('tipo_filtro', 'savitzky_golay')
     if filtrar_s11:
-        if tipo_filtro == 'pasabajos':
-            pb_ord = int(material.get('pb_orden', 2) or 2)
-            pb_fc = float(material.get('pb_fcorte', 0.10) or 0.10)
-            s11_dut = filtrar_s11_pasabajos(s11_dut, orden=pb_ord, f_corte=pb_fc)
-            print(f"  [info] Filtro Pasabajos Butterworth aplicado a S11 de '{nombre}' (orden={pb_ord}, corte={pb_fc:.3f}).")
-        else:
-            sg_w = int(material.get('sg_window', 15) or 15)
-            sg_p = int(material.get('sg_polyorder', 3) or 3)
-            s11_dut = filtrar_s11_savgol(s11_dut, window_length=sg_w, polyorder=sg_p)
-            print(f"  [info] Filtro Savitzky-Golay aplicado a S11 de '{nombre}' (ventana={sg_w}, orden={sg_p}).")
+        s11_dut = aplicar_filtro_s11(frecs, s11_dut, material)
+        print(f"  [info] Filtro '{tipo_filtro}' aplicado a S11 de '{nombre}'.")
 
     default_metodos = ['simplificado', 'completo']
     if calibracion_mc is not None:
@@ -1240,6 +1242,16 @@ def procesar_material(material, carpeta_datos, cache, frecs,
             if linea.strip():
                 print(f"    {linea.strip()}")
 
+    if cfg_filtro_salida and cfg_filtro_salida.get('habilitado', False):
+        resultados_filtrados = {}
+        mostrar_sin_filtro = bool(cfg_filtro_salida.get('mostrar_sin_filtro', True))
+        for met_k, er_v in resultados.items():
+            er_filt = aplicar_filtro_permitividad(frecs, er_v, cfg_filtro_salida)
+            resultados_filtrados[met_k] = er_filt
+            if mostrar_sin_filtro:
+                resultados_filtrados[f"{met_k} (sin filtro)"] = er_v
+        resultados = resultados_filtrados
+
     mascara = (frecs >= f_min_ghz * 1e9) & (frecs <= f_max_ghz * 1e9)
     f_r = frecs[mascara]
     resultados_r = {k: v[mascara] for k, v in resultados.items()}
@@ -1263,7 +1275,13 @@ def procesar_material(material, carpeta_datos, cache, frecs,
     s11_dut_r = s11_dut[mascara]
     if filtrar_s11:
         s11_orig_r = s11_dut_orig[mascara]
-        et_filt = f"{nombre} (filtrado PB)" if tipo_filtro == 'pasabajos' else f"{nombre} (filtrado SG)"
+        et_map = {
+            'pasabajos': f"{nombre} (filtrado PB)",
+            'savitzky_golay': f"{nombre} (filtrado SG)",
+            'mediana_movil': f"{nombre} (filtrado Med)",
+            'splines': f"{nombre} (filtrado Spline)",
+        }
+        et_filt = et_map.get(tipo_filtro, f"{nombre} (filtrado)")
         datos_s11_r = {
             f"{nombre} (original)": {'Frec': f_r, 'Complex': s11_orig_r},
             et_filt: {'Frec': f_r, 'Complex': s11_dut_r},
@@ -1485,12 +1503,9 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         aplicar_en = cfg_filtro_pat.get('aplicar_en', ['corto', 'aire', 'patron3', 'patron4', 'adicionales'])
 
         def _filtrar_pat_fn(s11_arr, nombre_pat):
-            if tipo_filtro_pat == 'pasabajos':
-                s11_f = filtrar_s11_pasabajos(s11_arr, orden=pb_ord_pat, f_corte=pb_fc_pat)
-                log(f"  [info] Filtro Pasabajos aplicado a '{nombre_pat}' (orden={pb_ord_pat}, f_corte={pb_fc_pat:.2f}).")
-            else:
-                s11_f = filtrar_s11_savgol(s11_arr, window_length=sg_w_pat, polyorder=sg_p_pat)
-                log(f"  [info] Filtro Savitzky-Golay aplicado a '{nombre_pat}' (ventana={sg_w_pat}, orden={sg_p_pat}).")
+            s11_f = aplicar_filtro_s11(frecs, s11_arr, cfg_filtro_pat)
+            tipo_desc = cfg_filtro_pat.get('tipo', 'savitzky_golay')
+            log(f"  [info] Filtro '{tipo_desc}' aplicado a patrón '{nombre_pat}'.")
             return s11_f
         _filtrar_pat = _filtrar_pat_fn
 
@@ -1529,7 +1544,10 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     sg_p_acond = int(cfg_acond.get('sg_polyorder', 3) or 3)
     pb_ord_acond = int(cfg_acond.get('pb_orden', 2) or 2)
     pb_fc_acond = float(cfg_acond.get('pb_fcorte', 0.10) or 0.10)
+    med_w_acond = int(cfg_acond.get('med_window', 15) or 15)
+    spline_s_acond = float(cfg_acond.get('spline_s', 0.10) or 0.10)
     comparar_gn = bool(cfg_acond.get('comparar_original', True)) if acond_habilitado else False
+    cfg_filtro_salida = config.get('filtro_salida') or {}
 
     # -----------------------------------------------------------------
     # Diagnostico y acondicionamiento de Gn(f) (si el metodo completo
@@ -1552,7 +1570,8 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
                 frecs, Gn_cal, modo=modo_acond, tipo=tipo_acond,
                 f1=f1_acond, f2=f2_acond, umbral_pct=umbral_acond,
                 sg_window=sg_w_acond, sg_polyorder=sg_p_acond,
-                pb_orden=pb_ord_acond, pb_fcorte=pb_fc_acond)
+                pb_orden=pb_ord_acond, pb_fcorte=pb_fc_acond,
+                med_window=med_w_acond, spline_s=spline_s_acond)
             if info_acond.get('aviso'):
                 log(f"    {info_acond['aviso']}")
             if info_acond.get('disparo_detectado'):
@@ -1625,7 +1644,8 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
                     frecs, calibracion_mc['Gn'], modo=modo_acond, tipo=tipo_acond,
                     f1=f1_acond, f2=f2_acond, umbral_pct=umbral_acond,
                     sg_window=sg_w_acond, sg_polyorder=sg_p_acond,
-                    pb_orden=pb_ord_acond, pb_fcorte=pb_fc_acond)
+                    pb_orden=pb_ord_acond, pb_fcorte=pb_fc_acond,
+                    med_window=med_w_acond, spline_s=spline_s_acond)
                 calibracion_mc_acond = reajustar_abc_con_gn_fijo(
                     frecs, patrones_mc, gn_mc_acond, calibracion_base=calibracion_mc)
                 if info_acond_mc.get('aviso'):
@@ -1874,6 +1894,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             calibracion_mc=calibracion_mc,
             calibracion_mc_acond=calibracion_mc_acond,
             limitar_eje_y=limitar_eje_y,
+            cfg_filtro_salida=cfg_filtro_salida,
         )
         if resultado is not None:
             resultados_materiales.append(resultado)
@@ -1897,6 +1918,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         'filtrar_patrones_sg': cfg_filtro_pat,
         'acondicionar_gn': cfg_acond,
         'info_acond_Gn': info_acond,
+        'filtro_salida': cfg_filtro_salida,
         'usar_minimos_cuadrados': usar_mc and chequeo_mc is not None,
         'minimos_cuadrados': chequeo_mc,
         'f_min_ghz': f_min_ghz,
