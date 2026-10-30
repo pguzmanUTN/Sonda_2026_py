@@ -218,6 +218,7 @@ def config_default():
         ],
         'usar_metodo_completo': True,
         'estrategia_gn': 'minimo_gn',
+        'f_semilla_ghz': 3.0,
         'filtrar_patrones_sg': {
             'habilitado': False,
             'sg_window': 15,

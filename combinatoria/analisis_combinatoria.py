@@ -104,6 +104,8 @@ def ejecutar_analisis_combinatoria(config, callback_progreso=None, callback_log=
         raise ValueError("Debe seleccionar al menos un método de cálculo para evaluar.")
 
     estrategia_gn = config.get('estrategia_gn', 'minimo_gn')
+    f_semilla_ghz = float(config.get('f_semilla_ghz', 3.0) or 3.0)
+    f_semilla_hz = f_semilla_ghz * 1e9
     cfg_acond = config.get('acondicionar_gn', {})
     mc_k_cfg = config.get('mc_k_liquidos', 'todos')
 
@@ -366,12 +368,15 @@ def ejecutar_analisis_combinatoria(config, callback_progreso=None, callback_log=
                     frecs, patrones_mc, Gn_eval, calibracion_base=cal_mc_base
                 )
 
-            if estrategia_gn in ('minimo_gn', 'comparar_ambas'):
+            if estrategia_gn in ('minimo_gn', 'comparar_ambas', 'comparar_tres'):
                 idx_auto = int(np.argmin(np.abs(Gn_eval)))
                 marcas_inicio_gn[ETIQUETA_ESTRATEGIA_GN['minimo_gn']] = frecs[idx_auto]
-            if estrategia_gn in ('frecuencia_maxima', 'comparar_ambas'):
+            if estrategia_gn in ('frecuencia_maxima', 'comparar_ambas', 'comparar_tres'):
                 idx_clasico = int(np.argmax(frecs))
                 marcas_inicio_gn[ETIQUETA_ESTRATEGIA_GN['frecuencia_maxima']] = frecs[idx_clasico]
+            if estrategia_gn in ('frecuencia_fija', 'comparar_tres'):
+                idx_fija = int(np.argmin(np.abs(frecs - f_semilla_hz)))
+                marcas_inicio_gn[f"Frecuencia fija ({frecs[idx_fija] / 1e9:.3f} GHz)"] = frecs[idx_fija]
 
         elif p4 is not None:
             d_p4 = datos_cand_raw[p4_nom]
@@ -399,12 +404,15 @@ def ejecutar_analisis_combinatoria(config, callback_progreso=None, callback_log=
                     f1=f1_ac, f2=f2_ac, umbral_pct=umbral_ac
                 )
 
-            if estrategia_gn in ('minimo_gn', 'comparar_ambas'):
+            if estrategia_gn in ('minimo_gn', 'comparar_ambas', 'comparar_tres'):
                 idx_auto = int(np.argmin(np.abs(Gn_eval)))
                 marcas_inicio_gn[ETIQUETA_ESTRATEGIA_GN['minimo_gn']] = frecs[idx_auto]
-            if estrategia_gn in ('frecuencia_maxima', 'comparar_ambas'):
+            if estrategia_gn in ('frecuencia_maxima', 'comparar_ambas', 'comparar_tres'):
                 idx_clasico = int(np.argmax(frecs))
                 marcas_inicio_gn[ETIQUETA_ESTRATEGIA_GN['frecuencia_maxima']] = frecs[idx_clasico]
+            if estrategia_gn in ('frecuencia_fija', 'comparar_tres'):
+                idx_fija = int(np.argmin(np.abs(frecs - f_semilla_hz)))
+                marcas_inicio_gn[f"Frecuencia fija ({frecs[idx_fija] / 1e9:.3f} GHz)"] = frecs[idx_fija]
 
         # Evaluar líquidos con esta calibración (igual que procesar_material)
         muestras_resultados = {}
@@ -430,15 +438,17 @@ def ejecutar_analisis_combinatoria(config, callback_progreso=None, callback_log=
             if tipo_metodo == 'simplificado':
                 er_med = get_er_DUTm(frecs, s11_m, s11_p3, s11_aire, s11_corto, Er_p3)
             elif es_mc:
-                semilla = 'minimo_gn' if estrategia_gn == 'comparar_ambas' else estrategia_gn
+                semilla = 'minimo_gn' if estrategia_gn in ('comparar_ambas', 'comparar_tres') else estrategia_gn
                 er_med = get_er_DUT_minimos_cuadrados(
-                    frecs, s11_m, cal_mc_eval, estrategia_semilla=semilla
+                    frecs, s11_m, cal_mc_eval, estrategia_semilla=semilla,
+                    f_semilla_hz=f_semilla_hz
                 )
             else:
-                semilla = 'minimo_gn' if estrategia_gn == 'comparar_ambas' else estrategia_gn
+                semilla = 'minimo_gn' if estrategia_gn in ('comparar_ambas', 'comparar_tres') else estrategia_gn
                 er_med = get_er_DUT_completo(
                     frecs, s11_m, s11_p3, s11_aire, s11_p4, s11_corto,
-                    Er_p3, Er_p4, Gn=Gn_eval, estrategia_semilla=semilla
+                    Er_p3, Er_p4, Gn=Gn_eval, estrategia_semilla=semilla,
+                    f_semilla_hz=f_semilla_hz
                 )
 
             # Recortar a rango de frecuencias de análisis

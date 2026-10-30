@@ -391,10 +391,13 @@ def _tabla_metadata(metadata):
         filas.append(_fila_temperatura(f"Patron 4 ({etiqueta_p4}) - T (CAL)",
                                         metadata.get('patron4_temperatura')))
         estrategia = metadata.get('estrategia_gn') or "minimo_gn"
+        f_sem = metadata.get('f_semilla_ghz')
         etiquetas_estrategia = {
             'minimo_gn': "m\u00ednimo de |Gn| en el barrido (autom\u00e1tico)",
             'frecuencia_maxima': "frecuencia m\u00e1s alta (cl\u00e1sico)",
-            'comparar_ambas': "ambas estrategias, comparadas",
+            'frecuencia_fija': f"frecuencia fija ({f_sem:.3f} GHz)" if f_sem else "frecuencia fija elegida",
+            'comparar_ambas': "ambas estrategias, comparadas (automático vs. clásico)",
+            'comparar_tres': f"las 3 estrategias comparadas (auto, clásico y fija {f_sem:.3f} GHz)" if f_sem else "las 3 estrategias comparadas",
         }
         etiqueta_estrategia = etiquetas_estrategia.get(estrategia, estrategia)
         filas.append(["Arranque de Gn (m\u00e9todo completo)", etiqueta_estrategia])

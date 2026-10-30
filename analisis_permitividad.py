@@ -1013,7 +1013,9 @@ def graficar_residuos_minimos_cuadrados(frecs, residuos, archivo_salida=None, lo
 ETIQUETA_ESTRATEGIA_GN = {
     'minimo_gn': "Autom\u00e1tico (m\u00ednimo de |Gn|)",
     'frecuencia_maxima': "Cl\u00e1sico (frecuencia m\u00e1s alta)",
-    'comparar_ambas': "Comparar ambas",
+    'frecuencia_fija': "Frecuencia fija elegida",
+    'comparar_ambas': "Comparar ambas (m\u00ednimo vs. cl\u00e1sico)",
+    'comparar_tres': "Comparar las 3",
 }
 
 
@@ -1021,7 +1023,7 @@ def _calcular_metodo_completo(frecs, s11_dut, s11_patron3, s11_aire, s11_patron4
                                s11_corto, Er_patron3, Er_patron4, estrategia_gn,
                                prefijo="Medido (completo", verbose=False,
                                gn_original=None, gn_acondicionado=None,
-                               comparar_gn=False):
+                               comparar_gn=False, f_semilla_hz=None):
     """
     Calcula el metodo completo para un DUT (`s11_dut`), respetando
     `estrategia_gn` y el posible acondicionamiento de Gn:
@@ -1036,17 +1038,19 @@ def _calcular_metodo_completo(frecs, s11_dut, s11_patron3, s11_aire, s11_patron4
 
     Retorna un dict {etiqueta: ndarray complejo} con 1 o 2 entradas.
     """
-    semilla = 'minimo_gn' if estrategia_gn == 'comparar_ambas' else estrategia_gn
+    semilla = 'minimo_gn' if estrategia_gn in ('comparar_ambas', 'comparar_tres') else estrategia_gn
 
     if gn_acondicionado is not None and comparar_gn:
         return {
             f"{prefijo}, Gn original)": get_er_DUT_completo(
                 frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
                 Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla=semilla,
+                f_semilla_hz=f_semilla_hz,
                 Gn=gn_original),
             f"{prefijo}, Gn acondicionado)": get_er_DUT_completo(
                 frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
                 Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla=semilla,
+                f_semilla_hz=f_semilla_hz,
                 Gn=gn_acondicionado),
         }
     elif gn_acondicionado is not None:
@@ -1054,31 +1058,53 @@ def _calcular_metodo_completo(frecs, s11_dut, s11_patron3, s11_aire, s11_patron4
             f"{prefijo}, Gn acondicionado)": get_er_DUT_completo(
                 frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
                 Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla=semilla,
+                f_semilla_hz=f_semilla_hz,
                 Gn=gn_acondicionado),
         }
 
+    if estrategia_gn == 'comparar_tres':
+        return {
+            f"{prefijo}, Autom\u00e1tico)": get_er_DUT_completo(
+                frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='minimo_gn',
+                f_semilla_hz=f_semilla_hz,
+                Gn=gn_original),
+            f"{prefijo}, Cl\u00e1sico)": get_er_DUT_completo(
+                frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='frecuencia_maxima',
+                f_semilla_hz=f_semilla_hz,
+                Gn=gn_original),
+            f"{prefijo}, Frecuencia fija)": get_er_DUT_completo(
+                frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
+                Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='frecuencia_fija',
+                f_semilla_hz=f_semilla_hz,
+                Gn=gn_original),
+        }
     if estrategia_gn == 'comparar_ambas':
         return {
             f"{prefijo}, Autom\u00e1tico)": get_er_DUT_completo(
                 frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
                 Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='minimo_gn',
+                f_semilla_hz=f_semilla_hz,
                 Gn=gn_original),
             f"{prefijo}, Cl\u00e1sico)": get_er_DUT_completo(
                 frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
                 Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla='frecuencia_maxima',
+                f_semilla_hz=f_semilla_hz,
                 Gn=gn_original),
         }
     return {
         f"{prefijo})": get_er_DUT_completo(
             frecs, s11_dut, s11_patron3, s11_aire, s11_patron4, s11_corto,
             Er_patron3, Er_patron4, verbose=verbose, estrategia_semilla=estrategia_gn,
+            f_semilla_hz=f_semilla_hz,
             Gn=gn_original),
     }
 
 
 def _calcular_metodo_mc(frecs, s11_dut, estrategia_gn, calibracion_mc,
                         calibracion_mc_acond=None, comparar_gn=False,
-                        prefijo=None, verbose=False):
+                        prefijo=None, verbose=False, f_semilla_hz=None):
     """
     Calcula el metodo de cuadrados minimos para un DUT (`s11_dut`),
     respetando `estrategia_gn` y el posible acondicionamiento de Gn (con
@@ -1089,37 +1115,49 @@ def _calcular_metodo_mc(frecs, s11_dut, estrategia_gn, calibracion_mc,
     n_pat = len(calibracion_mc.get('nombres', []))
     if prefijo is None:
         prefijo = f"Medido (cuadrados m\u00ednimos, {n_pat} patrones"
-    semilla = 'minimo_gn' if estrategia_gn == 'comparar_ambas' else estrategia_gn
+    semilla = 'minimo_gn' if estrategia_gn in ('comparar_ambas', 'comparar_tres') else estrategia_gn
 
     if calibracion_mc_acond is not None and comparar_gn:
         return {
             f"{prefijo}, Gn original)": get_er_DUT_minimos_cuadrados(
                 frecs, s11_dut, calibracion_mc, verbose=verbose,
-                estrategia_semilla=semilla),
+                estrategia_semilla=semilla, f_semilla_hz=f_semilla_hz),
             f"{prefijo}, Gn acondicionado)": get_er_DUT_minimos_cuadrados(
                 frecs, s11_dut, calibracion_mc_acond, verbose=verbose,
-                estrategia_semilla=semilla),
+                estrategia_semilla=semilla, f_semilla_hz=f_semilla_hz),
         }
     elif calibracion_mc_acond is not None:
         return {
             f"{prefijo}, Gn acondicionado)": get_er_DUT_minimos_cuadrados(
                 frecs, s11_dut, calibracion_mc_acond, verbose=verbose,
-                estrategia_semilla=semilla),
+                estrategia_semilla=semilla, f_semilla_hz=f_semilla_hz),
         }
 
+    if estrategia_gn == 'comparar_tres':
+        return {
+            f"{prefijo}, Autom\u00e1tico)": get_er_DUT_minimos_cuadrados(
+                frecs, s11_dut, calibracion_mc, verbose=verbose,
+                estrategia_semilla='minimo_gn', f_semilla_hz=f_semilla_hz),
+            f"{prefijo}, Cl\u00e1sico)": get_er_DUT_minimos_cuadrados(
+                frecs, s11_dut, calibracion_mc, verbose=verbose,
+                estrategia_semilla='frecuencia_maxima', f_semilla_hz=f_semilla_hz),
+            f"{prefijo}, Frecuencia fija)": get_er_DUT_minimos_cuadrados(
+                frecs, s11_dut, calibracion_mc, verbose=verbose,
+                estrategia_semilla='frecuencia_fija', f_semilla_hz=f_semilla_hz),
+        }
     if estrategia_gn == 'comparar_ambas':
         return {
             f"{prefijo}, Autom\u00e1tico)": get_er_DUT_minimos_cuadrados(
                 frecs, s11_dut, calibracion_mc, verbose=verbose,
-                estrategia_semilla='minimo_gn'),
+                estrategia_semilla='minimo_gn', f_semilla_hz=f_semilla_hz),
             f"{prefijo}, Cl\u00e1sico)": get_er_DUT_minimos_cuadrados(
                 frecs, s11_dut, calibracion_mc, verbose=verbose,
-                estrategia_semilla='frecuencia_maxima'),
+                estrategia_semilla='frecuencia_maxima', f_semilla_hz=f_semilla_hz),
         }
     return {
         f"{prefijo})": get_er_DUT_minimos_cuadrados(
             frecs, s11_dut, calibracion_mc, verbose=verbose,
-            estrategia_semilla=estrategia_gn),
+            estrategia_semilla=estrategia_gn, f_semilla_hz=f_semilla_hz),
     }
 
 
@@ -1128,6 +1166,7 @@ def procesar_material(material, carpeta_datos, cache, frecs,
                        Er_patron3, Er_patron4, carpeta_salida=None,
                        f_min_ghz=None, f_max_ghz=None, log_x=None,
                        estrategia_gn='minimo_gn',
+                       f_semilla_ghz=None,
                        gn_original=None, gn_acondicionado=None,
                        comparar_gn=False,
                        intervalos_error=None,
@@ -1198,6 +1237,7 @@ def procesar_material(material, carpeta_datos, cache, frecs,
         s11_dut = aplicar_filtro_s11(frecs, s11_dut, material)
         print(f"  [info] Filtro '{tipo_filtro}' aplicado a S11 de '{nombre}'.")
 
+    f_semilla_hz = float(f_semilla_ghz) * 1e9 if f_semilla_ghz is not None else None
     default_metodos = ['simplificado', 'completo']
     if calibracion_mc is not None:
         default_metodos.append('minimos_cuadrados')
@@ -1217,12 +1257,12 @@ def procesar_material(material, carpeta_datos, cache, frecs,
                 Er_patron3, Er_patron4, estrategia_gn,
                 prefijo="Medido (completo, 4 patrones", verbose=True,
                 gn_original=gn_original, gn_acondicionado=gn_acondicionado,
-                comparar_gn=comparar_gn))
+                comparar_gn=comparar_gn, f_semilla_hz=f_semilla_hz))
     if 'minimos_cuadrados' in metodos and calibracion_mc is not None:
         resultados.update(_calcular_metodo_mc(
             frecs, s11_dut, estrategia_gn, calibracion_mc,
             calibracion_mc_acond=calibracion_mc_acond,
-            comparar_gn=comparar_gn, verbose=True))
+            comparar_gn=comparar_gn, verbose=True, f_semilla_hz=f_semilla_hz))
 
     modelo = material.get('modelo') or None
     temperatura_material = float(material.get('temperatura', 25.0)) if modelo else None
@@ -1441,6 +1481,8 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     usar_mc = bool(config.get('usar_minimos_cuadrados', False))
     adicionales = [p for p in (config.get('patrones_adicionales') or []) if p.get('archivo')]
     estrategia_gn = config.get('estrategia_gn', 'minimo_gn')
+    f_semilla_ghz = float(config.get('f_semilla_ghz', 3.0) or 3.0)
+    f_semilla_hz = f_semilla_ghz * 1e9
     f_min_ghz = config['f_min_ghz']
     f_max_ghz = config['f_max_ghz']
     f_int1_ghz = config.get('f_err_int1_ghz')
@@ -1737,7 +1779,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         resultados_p3_mc = _calcular_metodo_mc(
             frecs, s11_patron3, estrategia_gn, calibracion_mc,
             calibracion_mc_acond=calibracion_mc_acond,
-            comparar_gn=comparar_gn)
+            comparar_gn=comparar_gn, f_semilla_hz=f_semilla_hz)
         for etiqueta, arr in resultados_p3_mc.items():
             medido_p3[etiqueta] = arr[mascara]
             errores_p3[etiqueta] = reportar_error_intervalos(
@@ -1791,7 +1833,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             frecs, s11_patron4, s11_patron3, s11_aire, s11_patron4, s11_corto,
             Er_patron3, Er_patron4, estrategia_gn, prefijo="Medido (completo",
             gn_original=gn_original, gn_acondicionado=gn_acondicionado,
-            comparar_gn=comparar_gn)
+            comparar_gn=comparar_gn, f_semilla_hz=f_semilla_hz)
         for etiqueta, arr in resultados_p4_completo.items():
             medido_p4[etiqueta] = arr[mascara]
             errores_p4[etiqueta] = reportar_error_intervalos(
@@ -1801,7 +1843,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             resultados_p4_mc = _calcular_metodo_mc(
                 frecs, s11_patron4, estrategia_gn, calibracion_mc,
                 calibracion_mc_acond=calibracion_mc_acond,
-                comparar_gn=comparar_gn)
+                comparar_gn=comparar_gn, f_semilla_hz=f_semilla_hz)
             for etiqueta, arr in resultados_p4_mc.items():
                 medido_p4[etiqueta] = arr[mascara]
                 errores_p4[etiqueta] = reportar_error_intervalos(
@@ -1839,13 +1881,16 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
     # -----------------------------------------------------------------
     if (usar_metodo_completo or usar_mc) and Gn_cal is not None:
         marcas_inicio_gn = {}
-        if estrategia_gn in ('minimo_gn', 'comparar_ambas'):
+        if estrategia_gn in ('minimo_gn', 'comparar_ambas', 'comparar_tres'):
             gn_referencia_marcas = gn_acondicionado if gn_acondicionado is not None else Gn_cal
             idx_auto = int(np.argmin(np.abs(gn_referencia_marcas)))
             marcas_inicio_gn[ETIQUETA_ESTRATEGIA_GN['minimo_gn']] = frecs[idx_auto]
-        if estrategia_gn in ('frecuencia_maxima', 'comparar_ambas'):
+        if estrategia_gn in ('frecuencia_maxima', 'comparar_ambas', 'comparar_tres'):
             idx_clasico = int(np.argmax(frecs))
             marcas_inicio_gn[ETIQUETA_ESTRATEGIA_GN['frecuencia_maxima']] = frecs[idx_clasico]
+        if estrategia_gn in ('frecuencia_fija', 'comparar_tres'):
+            idx_fija = int(np.argmin(np.abs(frecs - f_semilla_hz)))
+            marcas_inicio_gn[f"Frecuencia fija ({frecs[idx_fija] / 1e9:.3f} GHz)"] = frecs[idx_fija]
 
         ruta_figura_Gn = os.path.join(carpeta_salida, "chequeo_calibracion_Gn.png")
         graficar_Gn(frecs[mascara], Gn_cal[mascara], ruta_figura_Gn, log_x=log_x,
@@ -1888,6 +1933,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             Er_patron3, Er_patron4, carpeta_salida=carpeta_salida,
             f_min_ghz=f_min_ghz, f_max_ghz=f_max_ghz, log_x=log_x,
             estrategia_gn=estrategia_gn,
+            f_semilla_ghz=f_semilla_ghz,
             gn_original=gn_original, gn_acondicionado=gn_acondicionado,
             comparar_gn=comparar_gn,
             intervalos_error=intervalos_error,
@@ -1915,6 +1961,7 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
         'patron4_etiqueta': etiqueta_p4 if usar_metodo_completo else None,
         'patron4_temperatura': T_patron4 if usar_metodo_completo else None,
         'estrategia_gn': estrategia_gn if (usar_metodo_completo or usar_mc) else None,
+        'f_semilla_ghz': f_semilla_ghz if (estrategia_gn in ('frecuencia_fija', 'comparar_tres')) else None,
         'filtrar_patrones_sg': cfg_filtro_pat,
         'acondicionar_gn': cfg_acond,
         'info_acond_Gn': info_acond,

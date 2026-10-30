@@ -271,7 +271,8 @@ def _resolver_raiz_fisica(coeficientes, semilla):
 def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
                          S11_patron4, S11_corto, Er_patron3, Er_patron4,
                          Er_aire=ER_AIRE, verbose=False,
-                         estrategia_semilla='minimo_gn', Gn=None):
+                         estrategia_semilla='minimo_gn', f_semilla_hz=None,
+                         Gn=None):
     """
     Calcula la permitividad relativa compleja del DUT a partir del modelo
     de admitancia "completo" (con conductancia de radiacion normalizada Gn),
@@ -414,11 +415,12 @@ def get_er_DUT_completo(frecs, S11_medido, S11_patron3, S11_aire,
     c0 = X * coef_X + Z * coef_1
 
     return _marchar_en_frecuencia(frecs, Gn, c0, semillas, estrategia_semilla,
+                                  f_semilla_hz=f_semilla_hz,
                                   verbose=verbose, etiqueta="get_er_DUT_completo")
 
 
 def _marchar_en_frecuencia(frecs, Gn, c0, semillas, estrategia_semilla='minimo_gn',
-                           verbose=False, etiqueta="marcha"):
+                           f_semilla_hz=None, verbose=False, etiqueta="marcha"):
     """
     Resuelve, frecuencia por frecuencia, el polinomio Gn*u^5 + u^2 + c0 = 0
     (u = sqrt(er)) eligiendo la raiz fisica por "marcha en frecuencia":
@@ -445,10 +447,16 @@ def _marchar_en_frecuencia(frecs, Gn, c0, semillas, estrategia_semilla='minimo_g
         # es exactamente el comportamiento clasico: una sola marcha
         # descendente arrancando en la frecuencia mas alta.
         pos_inicio = len(orden) - 1
+    elif estrategia_semilla == 'frecuencia_fija':
+        if f_semilla_hz is None:
+            idx_fija = len(frecs) // 2
+        else:
+            idx_fija = int(np.argmin(np.abs(frecs - float(f_semilla_hz))))
+        pos_inicio = int(np.where(orden == idx_fija)[0][0])
     else:
         raise ValueError(
             f"estrategia_semilla invalida: {estrategia_semilla!r} "
-            f"(opciones validas: 'minimo_gn', 'frecuencia_maxima')")
+            f"(opciones validas: 'minimo_gn', 'frecuencia_maxima', 'frecuencia_fija')")
 
     if verbose:
         print(f"  [{etiqueta}] estrategia='{estrategia_semilla}': "
@@ -762,7 +770,7 @@ def reajustar_abc_con_gn_fijo(frecs, patrones, Gn_fijo, calibracion_base=None, v
 
 
 def get_er_DUT_minimos_cuadrados(frecs, S11_medido, calibracion, verbose=False,
-                                 estrategia_semilla='minimo_gn'):
+                                 estrategia_semilla='minimo_gn', f_semilla_hz=None):
     """
     Permitividad del DUT a partir de una calibracion hecha con
     `calibrar_minimos_cuadrados` (o `reajustar_abc_con_gn_fijo`).
@@ -781,6 +789,7 @@ def get_er_DUT_minimos_cuadrados(frecs, S11_medido, calibracion, verbose=False,
     a, b, c, Gn = (calibracion[k] for k in ('a', 'b', 'c', 'Gn'))
     F = (a * rho + b) / (c * rho + 1.0)
     return _marchar_en_frecuencia(frecs, Gn, -F, F, estrategia_semilla,
+                                  f_semilla_hz=f_semilla_hz,
                                   verbose=verbose, etiqueta="minimos_cuadrados")
 
 

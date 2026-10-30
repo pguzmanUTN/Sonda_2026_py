@@ -511,9 +511,19 @@ class AppCombinatoria(tk.Tk):
         ttk.Label(frm_semilla, text="Arranque marcha Gn:").pack(side="left")
         self.var_estrategia_gn = tk.StringVar(value="minimo_gn")
         ttk.Radiobutton(frm_semilla, text="Automático (mín |Gn|)", variable=self.var_estrategia_gn,
-                        value="minimo_gn").pack(side="left", padx=(6, 6))
+                        value="minimo_gn", command=self._al_cambiar_estrategia_gn_comb).pack(side="left", padx=(6, 6))
         ttk.Radiobutton(frm_semilla, text="Clásico (f máx)", variable=self.var_estrategia_gn,
-                        value="frecuencia_maxima").pack(side="left")
+                        value="frecuencia_maxima", command=self._al_cambiar_estrategia_gn_comb).pack(side="left", padx=(0, 6))
+        ttk.Radiobutton(frm_semilla, text="Frecuencia fija:", variable=self.var_estrategia_gn,
+                        value="frecuencia_fija", command=self._al_cambiar_estrategia_gn_comb).pack(side="left")
+        self.var_f_semilla_gn = tk.DoubleVar(value=3.0)
+        self.spin_f_semilla_gn = ttk.Spinbox(
+            frm_semilla, from_=0.001, to=100.0, increment=0.1,
+            textvariable=self.var_f_semilla_gn, width=6)
+        self.spin_f_semilla_gn.pack(side="left", padx=(3, 2))
+        ttk.Label(frm_semilla, text="GHz").pack(side="left")
+        ttk.Radiobutton(frm_semilla, text="Comparar las 3", variable=self.var_estrategia_gn,
+                        value="comparar_tres", command=self._al_cambiar_estrategia_gn_comb).pack(side="left", padx=(10, 0))
 
         self.frm_sub_acond = ttk.Frame(lf_metodos, padding=(16, 2, 4, 2))
         self.frm_sub_acond.pack(fill="x", expand=True)
@@ -636,6 +646,12 @@ class AppCombinatoria(tk.Tk):
         sc_consola = ttk.Scrollbar(lf_consola, orient="vertical", command=self.txt_consola.yview)
         sc_consola.grid(row=0, column=1, sticky="ns")
         self.txt_consola.configure(yscrollcommand=sc_consola.set)
+
+    def _al_cambiar_estrategia_gn_comb(self):
+        est = self.var_estrategia_gn.get()
+        estado = "normal" if est in ("frecuencia_fija", "comparar_tres") else "disabled"
+        if hasattr(self, 'spin_f_semilla_gn'):
+            self.spin_f_semilla_gn.configure(state=estado)
 
     def _al_cambiar_acond(self):
         activo = self.var_metodo_comp_con.get() or self.var_metodo_mc_con.get()
@@ -1122,6 +1138,7 @@ class AppCombinatoria(tk.Tk):
             },
             'mc_k_liquidos': self._obtener_mc_k_config(),
             'estrategia_gn': self.var_estrategia_gn.get(),
+            'f_semilla_ghz': float(self.var_f_semilla_gn.get()) if hasattr(self, 'var_f_semilla_gn') else 3.0,
             'acondicionar_gn': {
                 'tipo': _TIPOS_ACOND_MAP.get(self.var_acond_tipo.get(), 'transicion_polinomica_cero'),
                 'modo': self.var_acond_modo.get(),
@@ -1872,6 +1889,7 @@ class AppCombinatoria(tk.Tk):
             'f_err_int2_ghz': float(self.var_f_int2.get()),
             'escala_log_frecuencia': bool(self.var_escala_log.get()),
             'estrategia_gn': self.var_estrategia_gn.get(),
+            'f_semilla_ghz': float(self.var_f_semilla_gn.get()) if hasattr(self, 'var_f_semilla_gn') else 3.0,
             'metodos_calculo': {
                 'simplificado': bool(self.var_metodo_simpl.get()),
                 'completo_sin_acond': bool(self.var_metodo_comp_sin.get()),
@@ -1916,6 +1934,9 @@ class AppCombinatoria(tk.Tk):
             self.var_f_int2.set(float(cfg.get('f_err_int2_ghz', 4.0)))
             self.var_escala_log.set(bool(cfg.get('escala_log_frecuencia', True)))
             self.var_estrategia_gn.set(cfg.get('estrategia_gn', 'minimo_gn'))
+            if hasattr(self, 'var_f_semilla_gn'):
+                self.var_f_semilla_gn.set(float(cfg.get('f_semilla_ghz', 3.0) or 3.0))
+            self._al_cambiar_estrategia_gn_comb()
 
             m = cfg.get('metodos_calculo', {})
             self.var_metodo_simpl.set(bool(m.get('simplificado', False)))

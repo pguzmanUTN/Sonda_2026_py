@@ -139,7 +139,8 @@ def _generar_preview_s11(ruta_s1p, log_x=True, filtrar_s11=False, tipo_filtro='s
         fig_sm = graficar_smith(datos_dict, titulo=f"{nombre}: S11 medido (diagrama de Smith)")
         return fig_mf, fig_sm, datos
 
-def _generar_preview_gn(frecs, Gn, Gn_acondicionado=None, log_x=True, info_acond=None):
+def _generar_preview_gn(frecs, Gn, Gn_acondicionado=None, log_x=True, info_acond=None,
+                        estrategia_gn='minimo_gn', f_semilla_ghz=None):
     """
     Genera dos Figures de matplotlib (parte real y parte imaginaria) para la vista previa
     interactiva de Gn(f) en la pestaña 'Vista previa S11'.
@@ -184,6 +185,57 @@ def _generar_preview_gn(frecs, Gn, Gn_acondicionado=None, log_x=True, info_acond
                           label=lbl_trans, zorder=2)
             ax_im.axvline(f_disp_ghz, color='#8856a7', linestyle=':', linewidth=1.4,
                           label=lbl_trans, zorder=2)
+
+    # Marca vertical de la semilla segun estrategia_gn
+    if estrategia_gn == 'frecuencia_fija' and f_semilla_ghz is not None:
+        try:
+            f_sem_val = float(f_semilla_ghz)
+            lbl_sem = f"Semilla fija: {f_sem_val:.3f} GHz"
+            ax_re.axvline(f_sem_val, color='#d95f02', linestyle='--', linewidth=1.6,
+                          label=lbl_sem, zorder=5)
+            ax_im.axvline(f_sem_val, color='#d95f02', linestyle='--', linewidth=1.6,
+                          label=lbl_sem, zorder=5)
+        except (ValueError, TypeError):
+            pass
+    elif estrategia_gn == 'minimo_gn':
+        gn_ref = Gn_acondicionado if tiene_acond else Gn
+        idx_min = int(np.argmin(np.abs(gn_ref)))
+        f_min_ghz = frecs[idx_min] / 1e9
+        lbl_sem = f"Semilla m\u00edn |Gn|: {f_min_ghz:.3f} GHz"
+        ax_re.axvline(f_min_ghz, color='#2ca02c', linestyle=':', linewidth=1.4,
+                      label=lbl_sem, zorder=5)
+        ax_im.axvline(f_min_ghz, color='#2ca02c', linestyle=':', linewidth=1.4,
+                      label=lbl_sem, zorder=5)
+    elif estrategia_gn == 'frecuencia_maxima':
+        f_max_ghz = np.max(frecs) / 1e9
+        lbl_sem = f"Semilla f m\u00e1x: {f_max_ghz:.3f} GHz"
+        ax_re.axvline(f_max_ghz, color='#d62728', linestyle=':', linewidth=1.4,
+                      label=lbl_sem, zorder=5)
+        ax_im.axvline(f_max_ghz, color='#d62728', linestyle=':', linewidth=1.4,
+                      label=lbl_sem, zorder=5)
+    elif estrategia_gn in ('comparar_ambas', 'comparar_tres'):
+        gn_ref = Gn_acondicionado if tiene_acond else Gn
+        idx_min = int(np.argmin(np.abs(gn_ref)))
+        f_min_ghz = frecs[idx_min] / 1e9
+        f_max_ghz = np.max(frecs) / 1e9
+        ax_re.axvline(f_min_ghz, color='#2ca02c', linestyle=':', linewidth=1.4,
+                      label=f"Semilla m\u00edn: {f_min_ghz:.3f} GHz", zorder=5)
+        ax_im.axvline(f_min_ghz, color='#2ca02c', linestyle=':', linewidth=1.4,
+                      label=f"Semilla m\u00edn: {f_min_ghz:.3f} GHz", zorder=5)
+        ax_re.axvline(f_max_ghz, color='#d62728', linestyle=':', linewidth=1.4,
+                      label=f"Semilla m\u00e1x: {f_max_ghz:.3f} GHz", zorder=5)
+        ax_im.axvline(f_max_ghz, color='#d62728', linestyle=':', linewidth=1.4,
+                      label=f"Semilla m\u00e1x: {f_max_ghz:.3f} GHz", zorder=5)
+        if estrategia_gn == 'comparar_tres' and f_semilla_ghz is not None:
+            try:
+                f_sem_val = float(f_semilla_ghz)
+                lbl_sem = f"Semilla fija: {f_sem_val:.3f} GHz"
+                ax_re.axvline(f_sem_val, color='#d95f02', linestyle='--', linewidth=1.6,
+                              label=lbl_sem, zorder=5)
+                ax_im.axvline(f_sem_val, color='#d95f02', linestyle='--', linewidth=1.6,
+                              label=lbl_sem, zorder=5)
+            except (ValueError, TypeError):
+                pass
 
     if log_x:
         ax_re.set_xscale('log')
@@ -1619,16 +1671,39 @@ class AppPermitividad(tk.Tk):
         self.var_estrategia_gn = tk.StringVar(value="minimo_gn")
         self.radio_estrategia_minimo = ttk.Radiobutton(
             frm_estrategia, text="Autom\u00e1tico (m\u00ednimo de |Gn|)",
-            value="minimo_gn", variable=self.var_estrategia_gn)
+            value="minimo_gn", variable=self.var_estrategia_gn,
+            command=self._al_cambiar_estrategia_gn)
         self.radio_estrategia_minimo.pack(side="left", padx=(6, 0))
         self.radio_estrategia_max = ttk.Radiobutton(
             frm_estrategia, text="Frecuencia m\u00e1s alta (cl\u00e1sico)",
-            value="frecuencia_maxima", variable=self.var_estrategia_gn)
+            value="frecuencia_maxima", variable=self.var_estrategia_gn,
+            command=self._al_cambiar_estrategia_gn)
         self.radio_estrategia_max.pack(side="left", padx=(10, 0))
+        self.radio_estrategia_fija = ttk.Radiobutton(
+            frm_estrategia, text="Frecuencia fija:",
+            value="frecuencia_fija", variable=self.var_estrategia_gn,
+            command=self._al_cambiar_estrategia_gn)
+        self.radio_estrategia_fija.pack(side="left", padx=(10, 0))
+        self.var_f_semilla_gn = tk.DoubleVar(value=3.0)
+        self.spin_f_semilla_gn = ttk.Spinbox(
+            frm_estrategia, from_=0.001, to=100.0, increment=0.1,
+            textvariable=self.var_f_semilla_gn, width=6,
+            command=self._al_cambiar_f_semilla_gn)
+        self.spin_f_semilla_gn.pack(side="left", padx=(3, 0))
+        self.spin_f_semilla_gn.bind('<FocusOut>', lambda e: self._al_cambiar_f_semilla_gn())
+        self.spin_f_semilla_gn.bind('<Return>', lambda e: self._al_cambiar_f_semilla_gn())
+        self.lbl_f_semilla_unit = ttk.Label(frm_estrategia, text="GHz")
+        self.lbl_f_semilla_unit.pack(side="left", padx=(2, 0))
         self.radio_estrategia_comparar = ttk.Radiobutton(
             frm_estrategia, text="Comparar ambas",
-            value="comparar_ambas", variable=self.var_estrategia_gn)
+            value="comparar_ambas", variable=self.var_estrategia_gn,
+            command=self._al_cambiar_estrategia_gn)
         self.radio_estrategia_comparar.pack(side="left", padx=(10, 0))
+        self.radio_estrategia_comparar_tres = ttk.Radiobutton(
+            frm_estrategia, text="Comparar las 3",
+            value="comparar_tres", variable=self.var_estrategia_gn,
+            command=self._al_cambiar_estrategia_gn)
+        self.radio_estrategia_comparar_tres.pack(side="left", padx=(10, 0))
         _tooltip(frm_estrategia,
                  "Donde arranca la 'marcha en frecuencia' del metodo completo:\n"
                  "- Automatico: en el punto donde |Gn(f)| es realmente minimo en\n"
@@ -1637,10 +1712,10 @@ class AppPermitividad(tk.Tk):
                  "- Clasico: siempre en la frecuencia mas alta. Valido solo si Gn\n"
                  "  decrece en forma monotona con la frecuencia; se deja disponible\n"
                  "  para comparar contra el automatico.\n"
-                 "- Comparar ambas: corre las dos y las muestra juntas (patrones 3/4\n"
-                 "  y cada material con metodo completo), para ver de un vistazo si\n"
-                 "  la eleccion cambia algo con tus datos, sin correr el analisis dos\n"
-                 "  veces a mano.")
+                 "- Frecuencia fija: se escoge la semilla en la frecuencia indicada (GHz).\n"
+                 "- Comparar ambas: corre automatico vs clasico y las muestra juntas.\n"
+                 "- Comparar las 3: corre las tres estrategias (automatico, clasico y\n"
+                 "  frecuencia fija) y las muestra superpuestas en el mismo grafico.")
         fila += 1
 
         # --- Acondicionamiento de Gn ---
@@ -1971,7 +2046,14 @@ class AppPermitividad(tk.Tk):
         estado_est = "normal" if (activo_completo or activo) else "disabled"
         self.radio_estrategia_minimo.configure(state=estado_est)
         self.radio_estrategia_max.configure(state=estado_est)
+        if hasattr(self, 'radio_estrategia_fija'):
+            self.radio_estrategia_fija.configure(state=estado_est)
+        if hasattr(self, 'spin_f_semilla_gn'):
+            est_spin = "normal" if (estado_est == "normal" and self.var_estrategia_gn.get() in ("frecuencia_fija", "comparar_tres")) else "disabled"
+            self.spin_f_semilla_gn.configure(state=est_spin)
         self.radio_estrategia_comparar.configure(state=estado_est)
+        if hasattr(self, 'radio_estrategia_comparar_tres'):
+            self.radio_estrategia_comparar_tres.configure(state=estado_est)
         self._al_cambiar_acondicionar_gn()
         self._refrescar_cartel_calibracion()
         if actualizar_materiales and hasattr(self, '_materiales'):
@@ -2093,11 +2175,37 @@ class AppPermitividad(tk.Tk):
         estado_est = "normal" if (activo or activo_mc) else "disabled"
         self.radio_estrategia_minimo.configure(state=estado_est)
         self.radio_estrategia_max.configure(state=estado_est)
+        if hasattr(self, 'radio_estrategia_fija'):
+            self.radio_estrategia_fija.configure(state=estado_est)
+        if hasattr(self, 'spin_f_semilla_gn'):
+            est_spin = "normal" if (estado_est == "normal" and self.var_estrategia_gn.get() in ("frecuencia_fija", "comparar_tres")) else "disabled"
+            self.spin_f_semilla_gn.configure(state=est_spin)
         self.radio_estrategia_comparar.configure(state=estado_est)
+        if hasattr(self, 'radio_estrategia_comparar_tres'):
+            self.radio_estrategia_comparar_tres.configure(state=estado_est)
         self._al_cambiar_acondicionar_gn()
         # El patron 4 deja de contar (o vuelve a contar) para el cartel de
         # advertencia de calibracion segun si el metodo completo esta on/off.
         self._refrescar_cartel_calibracion()
+
+    def _al_cambiar_estrategia_gn(self):
+        est = self.var_estrategia_gn.get()
+        activo_completo = bool(self.var_usar_metodo_completo.get())
+        activo_mc = bool(self.var_usar_mc.get()) if hasattr(self, 'var_usar_mc') else False
+        activo = activo_completo or activo_mc
+        estado_spin = "normal" if (activo and est in ("frecuencia_fija", "comparar_tres")) else "disabled"
+        if hasattr(self, 'spin_f_semilla_gn'):
+            self.spin_f_semilla_gn.configure(state=estado_spin)
+        self._refrescar_preview_gn_si_activo()
+
+    def _al_cambiar_f_semilla_gn(self):
+        self._refrescar_preview_gn_si_activo()
+
+    def _refrescar_preview_gn_si_activo(self):
+        if hasattr(self, '_rutas_preview_s11') and hasattr(self, 'combo_preview_s11'):
+            sel = self.combo_preview_s11.get()
+            if self._rutas_preview_s11.get(sel) == "__gn_preview__":
+                self._mostrar_preview_gn()
 
     def _al_cambiar_acondicionar_gn(self):
         activo_completo = bool(self.var_usar_metodo_completo.get())
@@ -3043,9 +3151,11 @@ class AppPermitividad(tk.Tk):
                 gn_acond_plot = gn_acond
 
             log_x = bool(cfg.get('escala_log_frecuencia', True))
+            estrategia_gn = self.var_estrategia_gn.get() if hasattr(self, 'var_estrategia_gn') else 'minimo_gn'
+            f_sem_val = float(self.var_f_semilla_gn.get()) if hasattr(self, 'var_f_semilla_gn') else 3.0
             fig_re, fig_im = _generar_preview_gn(
                 frecs_plot, gn_plot, Gn_acondicionado=gn_acond_plot, log_x=log_x,
-                info_acond=info_acond)
+                info_acond=info_acond, estrategia_gn=estrategia_gn, f_semilla_ghz=f_sem_val)
 
         except Exception as exc:
             self._limpiar_preview_s11(
@@ -3867,6 +3977,7 @@ class AppPermitividad(tk.Tk):
             'usar_minimos_cuadrados': bool(self.var_usar_mc.get()),
             'patrones_adicionales': copy.deepcopy(self._patrones_adicionales),
             'estrategia_gn': self.var_estrategia_gn.get(),
+            'f_semilla_ghz': float(self.var_f_semilla_gn.get()) if hasattr(self, 'var_f_semilla_gn') else 3.0,
             'filtrar_patrones_sg': {
                 'habilitado': bool(self.var_filtrar_patrones_sg.get()) if hasattr(self, 'var_filtrar_patrones_sg') else False,
                 'tipo': {
@@ -3976,6 +4087,9 @@ class AppPermitividad(tk.Tk):
         self._patrones_adicionales = copy.deepcopy(config.get('patrones_adicionales', []) or [])
         self._refrescar_tabla_adicionales()
         self.var_estrategia_gn.set(config.get('estrategia_gn') or 'minimo_gn')
+        if hasattr(self, 'var_f_semilla_gn'):
+            self.var_f_semilla_gn.set(float(config.get('f_semilla_ghz', 3.0) or 3.0))
+        self._al_cambiar_estrategia_gn()
 
         cfg_filtro_pat = config.get('filtrar_patrones_sg') or config.get('filtrar_patrones') or {}
         if hasattr(self, 'var_filtrar_patrones_sg'):
