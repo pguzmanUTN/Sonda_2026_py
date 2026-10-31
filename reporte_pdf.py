@@ -395,9 +395,9 @@ def _tabla_metadata(metadata):
         etiquetas_estrategia = {
             'minimo_gn': "m\u00ednimo de |Gn| en el barrido (autom\u00e1tico)",
             'frecuencia_maxima': "frecuencia m\u00e1s alta (cl\u00e1sico)",
-            'frecuencia_fija': f"frecuencia fija ({f_sem:.3f} GHz)" if f_sem else "frecuencia fija elegida",
+            'frecuencia_fija': f"frecuencia fija ({float(f_sem):.3f} GHz)" if f_sem else "frecuencia fija elegida",
             'comparar_ambas': "ambas estrategias, comparadas (automático vs. clásico)",
-            'comparar_tres': f"las 3 estrategias comparadas (auto, clásico y fija {f_sem:.3f} GHz)" if f_sem else "las 3 estrategias comparadas",
+            'comparar_tres': f"las 3 estrategias comparadas (auto, clásico y fija {float(f_sem):.3f} GHz)" if f_sem else "las 3 estrategias comparadas",
         }
         etiqueta_estrategia = etiquetas_estrategia.get(estrategia, estrategia)
         filas.append(["Arranque de Gn (m\u00e9todo completo)", etiqueta_estrategia])

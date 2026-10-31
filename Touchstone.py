@@ -14,6 +14,7 @@ Requiere: pip install scikit-rf --break-system-packages
 """
 import numpy as np
 import skrf as rf
+from matplotlib.ticker import FuncFormatter
 
 
 def leer_s1p(path):
@@ -281,6 +282,9 @@ def graficar_s11_mag_fase(datos_dict, titulo="S11: modulo y fase", archivo_salid
     if log_x and frecs_concat.size > 0 and np.all(frecs_concat > 0):
         ax_mag.set_xscale('log')
         ax_fase.set_xscale('log')  # sharex ya lo propaga, se deja explicito
+        _fmt_log = FuncFormatter(lambda x, _: f"{x:g}")
+        ax_mag.xaxis.set_major_formatter(_fmt_log)
+        ax_fase.xaxis.set_major_formatter(_fmt_log)
 
     fig.tight_layout()
     if archivo_salida is not None:

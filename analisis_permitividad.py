@@ -97,7 +97,7 @@ import functools
 from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FormatStrFormatter
+from matplotlib.ticker import FormatStrFormatter, FuncFormatter
 
 from Touchstone import (leer_s1p, mismas_frecuencias, resamplear,
                          graficar_s11_mag_fase, graficar_smith)
@@ -525,6 +525,9 @@ def graficar_comparacion(frecs, er_medido_dict, er_teorico, titulo, archivo_sali
         # se deja explicito por las dudas (p.ej. si en algun momento se
         # deja de compartir eje entre los dos subplots).
         ax_im.set_xscale('log')
+        _fmt_log = FuncFormatter(lambda x, _: f"{x:g}")
+        ax_re.xaxis.set_major_formatter(_fmt_log)
+        ax_im.xaxis.set_major_formatter(_fmt_log)
         # Con escala log, las grillas menores (2,3,4...x10^n) ayudan mucho
         # a ubicarse; minorticks_on() ya las habilita arriba.
 
@@ -634,6 +637,9 @@ def graficar_Gn(frecs, Gn, archivo_salida=None, log_x=True, marcas_inicio=None,
     if log_x and frecs.size > 0 and np.all(frecs > 0):
         ax_re.set_xscale('log')
         ax_im.set_xscale('log')
+        _fmt_log = FuncFormatter(lambda x, _: f"{x:g}")
+        ax_re.xaxis.set_major_formatter(_fmt_log)
+        ax_im.xaxis.set_major_formatter(_fmt_log)
 
     fig.tight_layout()
     if archivo_salida is not None:
@@ -946,6 +952,9 @@ def graficar_series_multiples(series, titulo="Comparaci\u00f3n de mediciones", l
     if log_x and frecs_concat.size > 0 and np.all(frecs_concat > 0):
         ax_re.set_xscale('log')
         ax_im.set_xscale('log')
+        _fmt_log = FuncFormatter(lambda x, _: f"{x:g}")
+        ax_re.xaxis.set_major_formatter(_fmt_log)
+        ax_im.xaxis.set_major_formatter(_fmt_log)
 
     fig.tight_layout()
     return fig
@@ -999,6 +1008,7 @@ def graficar_residuos_minimos_cuadrados(frecs, residuos, archivo_salida=None, lo
 
     if log_x and frecs.size > 0 and np.all(frecs > 0):
         ax.set_xscale('log')
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x:g}"))
 
     fig.tight_layout()
     if archivo_salida is not None:
@@ -1889,7 +1899,8 @@ def ejecutar_analisis(config, log=print, progreso=None, cancelado=None):
             idx_clasico = int(np.argmax(frecs))
             marcas_inicio_gn[ETIQUETA_ESTRATEGIA_GN['frecuencia_maxima']] = frecs[idx_clasico]
         if estrategia_gn in ('frecuencia_fija', 'comparar_tres'):
-            idx_fija = int(np.argmin(np.abs(frecs - f_semilla_hz)))
+            f_sem_hz = f_semilla_hz if f_semilla_hz is not None else 3e9
+            idx_fija = int(np.argmin(np.abs(frecs - f_sem_hz)))
             marcas_inicio_gn[f"Frecuencia fija ({frecs[idx_fija] / 1e9:.3f} GHz)"] = frecs[idx_fija]
 
         ruta_figura_Gn = os.path.join(carpeta_salida, "chequeo_calibracion_Gn.png")

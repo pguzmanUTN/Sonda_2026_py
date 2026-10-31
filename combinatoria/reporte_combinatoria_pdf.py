@@ -167,8 +167,8 @@ def _tabla_metadata_combinatoria(config, resultados, etiqueta_criterio, omitir_r
     etiquetas_estrategia = {
         'minimo_gn': "Mínimo de |Gn| en el barrido (automático)",
         'frecuencia_maxima': "Frecuencia más alta (clásico)",
-        'frecuencia_fija': f"Frecuencia fija ({f_sem:.3f} GHz)" if f_sem else "Frecuencia fija elegida",
-        'comparar_tres': f"Las 3 estrategias comparadas (auto, clásico y fija {f_sem:.3f} GHz)" if f_sem else "Las 3 estrategias comparadas",
+        'frecuencia_fija': f"Frecuencia fija ({float(f_sem):.3f} GHz)" if f_sem else "Frecuencia fija elegida",
+        'comparar_tres': f"Las 3 estrategias comparadas (auto, clásico y fija {float(f_sem):.3f} GHz)" if f_sem else "Las 3 estrategias comparadas",
     }
 
     filas = [

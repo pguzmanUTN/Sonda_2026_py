@@ -34,6 +34,7 @@ import Patrones as P
 # desde el hilo principal (Tkinter) mientras el hilo de fondo genera sus
 # propias figuras con pyplot/Agg por su lado, sin que se pisen entre si.
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.ticker import FuncFormatter
 from Touchstone import leer_s1p, graficar_s11_mag_fase, graficar_smith
 from funciones import filtrar_s11_savgol, filtrar_s11_pasabajos, filtrar_s11_mediana, filtrar_s11_splines, aplicar_filtro_s11
 
@@ -240,6 +241,9 @@ def _generar_preview_gn(frecs, Gn, Gn_acondicionado=None, log_x=True, info_acond
     if log_x:
         ax_re.set_xscale('log')
         ax_im.set_xscale('log')
+        _fmt_log = FuncFormatter(lambda x, _: f"{x:g}")
+        ax_re.xaxis.set_major_formatter(_fmt_log)
+        ax_im.xaxis.set_major_formatter(_fmt_log)
 
     ax_re.set_xlabel("Frecuencia (GHz)")
     ax_re.set_ylabel("Re(Gn)")
