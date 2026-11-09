@@ -26,6 +26,7 @@ from funciones import (
     get_er_DUT_completo,
     calcular_Gn,
     acondicionar_gn,
+    aplicar_filtro_permitividad,
     error_absoluto,
     calibrar_minimos_cuadrados,
     reajustar_abc_con_gn_fijo,
@@ -86,8 +87,8 @@ def ejecutar_analisis_combinatoria(config, callback_progreso=None, callback_log=
 
     f_min_ghz = float(config.get('f_min_ghz', 0.5))
     f_max_ghz = float(config.get('f_max_ghz', 6.0))
-    f_int1_ghz = config.get('f_err_int1_ghz', 2.0)
-    f_int2_ghz = config.get('f_err_int2_ghz', 4.0)
+    f_int1_ghz = config.get('f_err_int1_ghz', None)
+    f_int2_ghz = config.get('f_err_int2_ghz', None)
     log_x = bool(config.get('escala_log_frecuencia', True))
 
     intervalos = construir_intervalos_error(f_min_ghz, f_max_ghz, f_int1_ghz, f_int2_ghz)
@@ -108,6 +109,10 @@ def ejecutar_analisis_combinatoria(config, callback_progreso=None, callback_log=
     f_semilla_hz = f_semilla_ghz * 1e9
     cfg_acond = config.get('acondicionar_gn', {})
     mc_k_cfg = config.get('mc_k_liquidos', 'todos')
+    cfg_filtro_er = config.get('filtro_er') or config.get('filtro_salida') or {}
+    if cfg_filtro_er and cfg_filtro_er.get('habilitado', False):
+        tipo_f_nom = cfg_filtro_er.get('tipo', cfg_filtro_er.get('tipo_filtro', 'savitzky_golay'))
+        log(f"Filtro de permitividad activado: {tipo_f_nom}")
 
     # Filtrar candidatos habilitados y verificar existencia de archivos
     candidatos_todos = config.get('candidatos', [])
@@ -451,6 +456,13 @@ def ejecutar_analisis_combinatoria(config, callback_progreso=None, callback_log=
                     f_semilla_hz=f_semilla_hz
                 )
 
+            if cfg_filtro_er and cfg_filtro_er.get('habilitado', False):
+                er_med_orig = np.copy(er_med)
+                er_med = aplicar_filtro_permitividad(frecs, er_med, cfg_filtro_er)
+                er_med_orig_r = er_med_orig[mascara_f]
+            else:
+                er_med_orig_r = None
+
             # Recortar a rango de frecuencias de análisis
             er_med_r = er_med[mascara_f]
             er_teo_r = er_teo_m[mascara_f]
@@ -486,6 +498,7 @@ def ejecutar_analisis_combinatoria(config, callback_progreso=None, callback_log=
                 'etiqueta_teorico': etiq_teo,
                 'frecs_r': frecs_r,
                 'er_medido': er_med_r,
+                'er_medido_orig': er_med_orig_r,
                 'er_teorico': er_teo_r,
                 'intervalos': stats_ints,
                 'puntaje_int1': stats_ints[0]['puntaje'] if len(stats_ints) > 0 else float('nan'),
@@ -516,6 +529,7 @@ def ejecutar_analisis_combinatoria(config, callback_progreso=None, callback_log=
                 'puntaje_int3': datos_muestra_combo['puntaje_int3'],
                 'puntaje_global': score_global_muestra,
                 'er_medido': er_med_r,
+                'er_medido_orig': er_med_orig_r,
                 'er_teorico': er_teo_r,
                 'intervalos': stats_ints,
             })
@@ -569,6 +583,7 @@ def ejecutar_analisis_combinatoria(config, callback_progreso=None, callback_log=
         'resultados_por_combinacion': resultados_por_combinacion,
         'resultados_por_muestra': resultados_por_muestra,
         'resumen_ranking_global': resumen_ranking_global,
+        'filtro_er': cfg_filtro_er,
         'cancelado': interrumpido,
     }
 
@@ -678,4 +693,43 @@ def filtrar_combinaciones_redundantes(combos_ordenados, clave_sort='puntaje_glob
             break
 
     return resultado
+
+
+def calcular_score_intervalo(frecs_r, er_medido, er_teorico, f_a_hz, f_b_hz, modelo=None):
+    """
+    Calcula el puntaje de error promedio (|er' - er'_teo| + |er'' - er''_teo|)/2
+    (o sólo error en real si no modela pérdidas comparables) sobre un intervalo [f_a_hz, f_b_hz].
+    """
+    if frecs_r is None or er_medido is None or er_teorico is None:
+        return float('nan')
+    frecs_r = np.asarray(frecs_r, dtype=float)
+    er_med = np.asarray(er_medido, dtype=complex)
+    er_teo = np.asarray(er_teorico, dtype=complex)
+
+    mascara = (frecs_r >= f_a_hz) & (frecs_r <= f_b_hz)
+    if not np.any(mascara):
+        return float('nan')
+
+    comparar_im = perdidas_comparables(modelo) if modelo else True
+
+    err_re = np.abs(np.real(er_med[mascara]) - np.real(er_teo[mascara]))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        err_re_val = float(np.nanmean(err_re)) if np.any(~np.isnan(err_re)) else float('nan')
+
+    if comparar_im:
+        err_im = np.abs(np.imag(er_med[mascara]) - np.imag(er_teo[mascara]))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            err_im_val = float(np.nanmean(err_im)) if np.any(~np.isnan(err_im)) else float('nan')
+    else:
+        err_im_val = float('nan')
+
+    if np.isnan(err_im_val):
+        return err_re_val
+    elif np.isnan(err_re_val):
+        return err_im_val
+    else:
+        return float((err_re_val + err_im_val) / 2.0)
+
 

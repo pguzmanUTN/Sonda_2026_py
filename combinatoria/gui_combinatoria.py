@@ -48,7 +48,11 @@ from matplotlib.ticker import FormatStrFormatter
 import Patrones as P
 import gui_funciones as gf
 from analisis_permitividad import graficar_comparacion, graficar_Gn, _slug
-from combinatoria.analisis_combinatoria import ejecutar_analisis_combinatoria, filtrar_combinaciones_redundantes
+from combinatoria.analisis_combinatoria import (
+    ejecutar_analisis_combinatoria,
+    filtrar_combinaciones_redundantes,
+    calcular_score_intervalo,
+)
 from combinatoria.reporte_combinatoria_pdf import generar_reporte_combinatoria_pdf, generar_reporte_combinacion_pdf
 
 
@@ -58,6 +62,14 @@ _TIPOS_ACOND_MAP = {
     "Cero clamping": "cero_clamping",
 }
 _TIPOS_ACOND_INV = {v: k for k, v in _TIPOS_ACOND_MAP.items()}
+
+_TIPOS_FILTRO_ER_MAP = {
+    "Pasabajos (Butterworth)": 'pasabajos',
+    "Savitzky-Golay": 'savitzky_golay',
+    "Mediana móvil": 'mediana_movil',
+    "Splines de suavizado": 'splines',
+}
+_TIPOS_FILTRO_ER_INV = {v: k for k, v in _TIPOS_FILTRO_ER_MAP.items()}
 
 
 def _normalizar_ruta_s1p(ruta, carpeta_datos):
@@ -343,7 +355,13 @@ class AppCombinatoria(tk.Tk):
 
         self._datos_resultados = None
         self._ultima_config = None
-        self.var_criterio_orden = tk.StringVar(value="Promedio Global")
+        self.var_criterio_orden = tk.StringVar(value="Score Global")
+        self.var_f_din_desde = tk.StringVar(value="")
+        self.var_f_din_hasta = tk.StringVar(value="")
+        self.var_estado_criterio = tk.StringVar(value="Criterio activo: Score Global (toda la banda)")
+        self._intervalo_dinamico = None
+        self.var_f_int1 = tk.DoubleVar(value=2.0)
+        self.var_f_int2 = tk.DoubleVar(value=4.0)
         self.var_omitir_redundantes = tk.BooleanVar(value=True)
         self.var_excluir_patrones_pdf = tk.BooleanVar(value=True)
         self.var_orden_combos = tk.StringVar(value="Menor error (mejor primero)")
@@ -363,6 +381,19 @@ class AppCombinatoria(tk.Tk):
         self.var_guardar_fechayhora = tk.BooleanVar(value=True)
         self.var_exportar_imagenes_csv = tk.BooleanVar(value=True)
         self._ultima_carpeta_salida = None
+
+        # Variables para filtro digital de permitividad calculada (er)
+        self.var_filtro_er_activo = tk.BooleanVar(value=False)
+        self.var_filtro_er_tipo = tk.StringVar(value="Savitzky-Golay")
+        self.var_fer_pb_ord = tk.IntVar(value=2)
+        self.var_fer_pb_fc = tk.DoubleVar(value=0.10)
+        self.var_fer_sg_win = tk.IntVar(value=15)
+        self.var_fer_sg_ord = tk.IntVar(value=3)
+        self.var_fer_med_win = tk.IntVar(value=15)
+        self.var_fer_spline_s = tk.DoubleVar(value=0.10)
+        self.var_filtro_er_rango = tk.StringVar(value="todo")
+        self.var_fer_f1 = tk.DoubleVar(value=0.5)
+        self.var_fer_f2 = tk.DoubleVar(value=6.0)
 
         self._candidatos = [
             {'nombre': "Agua", 'alias': "Agu", 'archivo': "agua.s1p", 'modelo': "agua", 'temperatura': 25.0, 'habilitado': True},
@@ -448,26 +479,92 @@ class AppCombinatoria(tk.Tk):
         self.var_escala_log = tk.BooleanVar(value=True)
         ttk.Checkbutton(frm_frecs, text="Escala log en f", variable=self.var_escala_log).pack(side="left")
 
-        frm_ints = ttk.Frame(lf_base)
-        frm_ints.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(4, 2))
-        ttk.Label(frm_ints, text="F interm 1 (GHz):").pack(side="left")
-        self.var_f_int1 = tk.DoubleVar(value=2.0)
-        ttk.Spinbox(frm_ints, from_=0.001, to=50, increment=0.1, textvariable=self.var_f_int1, width=7).pack(side="left", padx=(4, 12))
-        ttk.Label(frm_ints, text="F interm 2 (GHz):").pack(side="left")
-        self.var_f_int2 = tk.DoubleVar(value=4.0)
-        ttk.Spinbox(frm_ints, from_=0.001, to=50, increment=0.1, textvariable=self.var_f_int2, width=7).pack(side="left", padx=(4, 0))
-        _tooltip(frm_ints, "Define 3 intervalos contiguos [F_min, F_int1], [F_int1, F_int2] y [F_int2, F_max] para evaluar el error ponderado.")
-
-        ttk.Label(lf_base, text="Carpeta de salida:").grid(row=5, column=0, sticky="w", pady=(6, 3))
-        ttk.Entry(lf_base, textvariable=self.var_carpeta_salida).grid(row=5, column=1, columnspan=2, sticky="ew", pady=(6, 3))
-        ttk.Button(lf_base, text="Examinar...", command=self._examinar_carpeta_salida).grid(row=5, column=3, padx=(4, 0), pady=(6, 3))
+        ttk.Label(lf_base, text="Carpeta de salida:").grid(row=4, column=0, sticky="w", pady=(6, 3))
+        ttk.Entry(lf_base, textvariable=self.var_carpeta_salida).grid(row=4, column=1, columnspan=2, sticky="ew", pady=(6, 3))
+        ttk.Button(lf_base, text="Examinar...", command=self._examinar_carpeta_salida).grid(row=4, column=3, padx=(4, 0), pady=(6, 3))
 
         frm_salida_opts = ttk.Frame(lf_base)
-        frm_salida_opts.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        frm_salida_opts.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(2, 0))
         ttk.Checkbutton(frm_salida_opts, text=r"Guardar en ..\salidas\fechayhora",
                         variable=self.var_guardar_fechayhora).pack(side="left")
         ttk.Checkbutton(frm_salida_opts, text="Exportar figuras y .csv",
                         variable=self.var_exportar_imagenes_csv).pack(side="left", padx=(10, 0))
+
+        # Checkbox y configuracion del filtro digital sobre er calculado
+        lf_filtro_er = ttk.LabelFrame(lf_base, text="Filtro digital sobre permitividad calculada (εr)", padding=6)
+        lf_filtro_er.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(8, 2))
+
+        frm_fer_0 = ttk.Frame(lf_filtro_er)
+        frm_fer_0.pack(anchor="w")
+
+        chk_fer = ttk.Checkbutton(
+            frm_fer_0, text="Aplicar filtro sobre εr",
+            variable=self.var_filtro_er_activo,
+            command=self._al_cambiar_filtro_er
+        )
+        chk_fer.pack(side="left")
+        _tooltip(chk_fer,
+                 "Aplica un filtro digital a la permitividad calculada (εr) de cada combinación.\n"
+                 "La curva original previa al filtrado se graficará siempre con línea punteada.")
+
+        self.lbl_fer_tipo = ttk.Label(frm_fer_0, text="  Tipo:")
+        self.lbl_fer_tipo.pack(side="left")
+        self.combo_fer_tipo = ttk.Combobox(
+            frm_fer_0, textvariable=self.var_filtro_er_tipo, state="readonly", width=20,
+            values=["Pasabajos (Butterworth)", "Savitzky-Golay", "Mediana móvil", "Splines de suavizado"]
+        )
+        self.combo_fer_tipo.pack(side="left", padx=(4, 6))
+        self.combo_fer_tipo.bind("<<ComboboxSelected>>", lambda _e: self._al_cambiar_filtro_er())
+
+        self.frm_fer_1 = ttk.Frame(lf_filtro_er)
+        self.frm_fer_1.pack(anchor="w", pady=(3, 0))
+
+        # Pasabajos
+        self.lbl_fer_pb_ord = ttk.Label(self.frm_fer_1, text="Orden PB:")
+        self.spin_fer_pb_ord = ttk.Spinbox(
+            self.frm_fer_1, from_=1, to=5, increment=1, textvariable=self.var_fer_pb_ord, width=3)
+        self.lbl_fer_pb_fc = ttk.Label(self.frm_fer_1, text="Corte PB (fc/fn):")
+        self.spin_fer_pb_fc = ttk.Spinbox(
+            self.frm_fer_1, from_=0.01, to=0.50, increment=0.01, textvariable=self.var_fer_pb_fc, width=5)
+
+        # Savitzky-Golay
+        self.lbl_fer_sg_win = ttk.Label(self.frm_fer_1, text="Ventana SG:")
+        self.spin_fer_sg_win = ttk.Spinbox(
+            self.frm_fer_1, from_=3, to=101, increment=2, textvariable=self.var_fer_sg_win, width=4)
+        self.lbl_fer_sg_ord = ttk.Label(self.frm_fer_1, text="Orden SG:")
+        self.spin_fer_sg_ord = ttk.Spinbox(
+            self.frm_fer_1, from_=1, to=5, increment=1, textvariable=self.var_fer_sg_ord, width=3)
+
+        # Mediana móvil
+        self.lbl_fer_med_win = ttk.Label(self.frm_fer_1, text="Ventana Med:")
+        self.spin_fer_med_win = ttk.Spinbox(
+            self.frm_fer_1, from_=3, to=101, increment=2, textvariable=self.var_fer_med_win, width=4)
+
+        # Splines
+        self.lbl_fer_spline_s = ttk.Label(self.frm_fer_1, text="Factor s:")
+        self.spin_fer_spline_s = ttk.Spinbox(
+            self.frm_fer_1, from_=0.0001, to=50.0, increment=0.01, textvariable=self.var_fer_spline_s, width=6)
+
+        # Rango
+        self.lbl_fer_rango = ttk.Label(self.frm_fer_1, text="Rango:")
+        self.lbl_fer_rango.pack(side="left")
+        self.radio_fer_rango_todo = ttk.Radiobutton(
+            self.frm_fer_1, text="Todo", value="todo", variable=self.var_filtro_er_rango,
+            command=self._al_cambiar_filtro_er)
+        self.radio_fer_rango_todo.pack(side="left", padx=(2, 4))
+        self.radio_fer_rango_sub = ttk.Radiobutton(
+            self.frm_fer_1, text="[f1, f2]:", value="rango", variable=self.var_filtro_er_rango,
+            command=self._al_cambiar_filtro_er)
+        self.radio_fer_rango_sub.pack(side="left", padx=(2, 6))
+
+        self.lbl_fer_f1 = ttk.Label(self.frm_fer_1, text="f1 (GHz):")
+        self.spin_fer_f1 = ttk.Spinbox(
+            self.frm_fer_1, from_=0.0, to=100.0, increment=0.05, textvariable=self.var_fer_f1, width=6)
+        self.lbl_fer_f2 = ttk.Label(self.frm_fer_1, text="f2 (GHz):")
+        self.spin_fer_f2 = ttk.Spinbox(
+            self.frm_fer_1, from_=0.0, to=100.0, increment=0.05, textvariable=self.var_fer_f2, width=6)
+
+        self._al_cambiar_filtro_er()
 
         # Panel Superior Derecho: Métodos y Acondicionamiento
         lf_metodos = ttk.LabelFrame(f, text="Métodos de Cálculo y Acondicionamiento Gn", padding=8)
@@ -611,17 +708,11 @@ class AppCombinatoria(tk.Tk):
         self.btn_cancelar.pack(side="left", padx=(0, 14))
 
         ttk.Separator(frm_ctrl, orient="vertical").pack(side="left", fill="y", padx=6)
-        ttk.Label(frm_ctrl, text="Intervalo Informe PDF:").pack(side="left", padx=(4, 4))
-        self.combo_criterio_tab1 = ttk.Combobox(
-            frm_ctrl, textvariable=self.var_criterio_orden, state="readonly",
-            values=["Promedio Global", "Intervalo 1", "Intervalo 2", "Intervalo 3"], width=24)
-        self.combo_criterio_tab1.pack(side="left", padx=(0, 8))
-        self.combo_criterio_tab1.bind("<<ComboboxSelected>>", self._al_cambiar_criterio_ranking)
         self.btn_pdf_tab1 = ttk.Button(
             frm_ctrl, text="📄 Generar Informe PDF (Top 3)...",
             state="disabled", command=self._generar_informe_pdf)
-        self.btn_pdf_tab1.pack(side="left")
-        ttk.Button(frm_ctrl, text="📂 Abrir salida", command=self._abrir_carpeta_salida).pack(side="left", padx=(4, 6))
+        self.btn_pdf_tab1.pack(side="left", padx=(4, 6))
+        ttk.Button(frm_ctrl, text="📂 Abrir salida", command=self._abrir_carpeta_salida).pack(side="left", padx=(0, 6))
         ttk.Checkbutton(frm_ctrl, text="Omitir redundantes (*)", variable=self.var_omitir_redundantes).pack(side="left", padx=(4, 4))
         ttk.Checkbutton(frm_ctrl, text="Excluir patrones en reporte", variable=self.var_excluir_patrones_pdf).pack(side="left", padx=(4, 4))
 
@@ -748,6 +839,156 @@ class AppCombinatoria(tk.Tk):
                 self.lbl_f2.grid(row=2, column=2, sticky="w", padx=(6, 0), pady=2)
                 self.spin_f2.grid(row=2, column=3, sticky="w", pady=2)
 
+    def _al_cambiar_filtro_er(self):
+        activo = bool(self.var_filtro_er_activo.get()) if hasattr(self, 'var_filtro_er_activo') else False
+        estado = "normal" if activo else "disabled"
+        if hasattr(self, 'lbl_fer_tipo'):
+            self.lbl_fer_tipo.configure(state=estado)
+        if hasattr(self, 'combo_fer_tipo'):
+            self.combo_fer_tipo.configure(state=("readonly" if activo else "disabled"))
+        if hasattr(self, 'lbl_fer_rango'):
+            self.lbl_fer_rango.configure(state=estado)
+        if hasattr(self, 'radio_fer_rango_todo'):
+            self.radio_fer_rango_todo.configure(state=estado)
+        if hasattr(self, 'radio_fer_rango_sub'):
+            self.radio_fer_rango_sub.configure(state=estado)
+
+        tipo = self.var_filtro_er_tipo.get() if hasattr(self, 'var_filtro_er_tipo') else "Savitzky-Golay"
+
+        for w in (getattr(self, 'lbl_fer_pb_ord', None), getattr(self, 'spin_fer_pb_ord', None),
+                  getattr(self, 'lbl_fer_pb_fc', None), getattr(self, 'spin_fer_pb_fc', None),
+                  getattr(self, 'lbl_fer_sg_win', None), getattr(self, 'spin_fer_sg_win', None),
+                  getattr(self, 'lbl_fer_sg_ord', None), getattr(self, 'spin_fer_sg_ord', None),
+                  getattr(self, 'lbl_fer_med_win', None), getattr(self, 'spin_fer_med_win', None),
+                  getattr(self, 'lbl_fer_spline_s', None), getattr(self, 'spin_fer_spline_s', None)):
+            if w is not None:
+                w.pack_forget()
+
+        if activo:
+            if tipo == "Pasabajos (Butterworth)":
+                if hasattr(self, 'lbl_fer_pb_ord') and hasattr(self, 'lbl_fer_rango'):
+                    self.lbl_fer_pb_ord.pack(side="left", before=self.lbl_fer_rango)
+                    self.spin_fer_pb_ord.pack(side="left", padx=(2, 6), before=self.lbl_fer_rango)
+                    self.lbl_fer_pb_fc.pack(side="left", before=self.lbl_fer_rango)
+                    self.spin_fer_pb_fc.pack(side="left", padx=(2, 10), before=self.lbl_fer_rango)
+            elif tipo == "Mediana móvil":
+                if hasattr(self, 'lbl_fer_med_win') and hasattr(self, 'lbl_fer_rango'):
+                    self.lbl_fer_med_win.pack(side="left", before=self.lbl_fer_rango)
+                    self.spin_fer_med_win.pack(side="left", padx=(2, 10), before=self.lbl_fer_rango)
+            elif tipo == "Splines de suavizado":
+                if hasattr(self, 'lbl_fer_spline_s') and hasattr(self, 'lbl_fer_rango'):
+                    self.lbl_fer_spline_s.pack(side="left", before=self.lbl_fer_rango)
+                    self.spin_fer_spline_s.pack(side="left", padx=(2, 10), before=self.lbl_fer_rango)
+            else:  # Savitzky-Golay
+                if hasattr(self, 'lbl_fer_sg_win') and hasattr(self, 'lbl_fer_rango'):
+                    self.lbl_fer_sg_win.pack(side="left", before=self.lbl_fer_rango)
+                    self.spin_fer_sg_win.pack(side="left", padx=(2, 6), before=self.lbl_fer_rango)
+                    self.lbl_fer_sg_ord.pack(side="left", before=self.lbl_fer_rango)
+                    self.spin_fer_sg_ord.pack(side="left", padx=(2, 10), before=self.lbl_fer_rango)
+
+        es_rango = (self.var_filtro_er_rango.get() == "rango") if hasattr(self, 'var_filtro_er_rango') else False
+        if activo and es_rango:
+            if hasattr(self, 'lbl_fer_f1'):
+                self.lbl_fer_f1.pack(side="left")
+            if hasattr(self, 'spin_fer_f1'):
+                self.spin_fer_f1.pack(side="left", padx=(2, 6))
+            if hasattr(self, 'lbl_fer_f2'):
+                self.lbl_fer_f2.pack(side="left")
+            if hasattr(self, 'spin_fer_f2'):
+                self.spin_fer_f2.pack(side="left", padx=(2, 6))
+        else:
+            if hasattr(self, 'lbl_fer_f1'):
+                self.lbl_fer_f1.pack_forget()
+            if hasattr(self, 'spin_fer_f1'):
+                self.spin_fer_f1.pack_forget()
+            if hasattr(self, 'lbl_fer_f2'):
+                self.lbl_fer_f2.pack_forget()
+            if hasattr(self, 'spin_fer_f2'):
+                self.spin_fer_f2.pack_forget()
+
+    def _obtener_cfg_filtro_er(self):
+        activo = bool(self.var_filtro_er_activo.get()) if hasattr(self, 'var_filtro_er_activo') else False
+        tipo_str = self.var_filtro_er_tipo.get() if hasattr(self, 'var_filtro_er_tipo') else "Savitzky-Golay"
+        tipo_key = _TIPOS_FILTRO_ER_MAP.get(tipo_str, 'savitzky_golay')
+        try:
+            pb_ord = int(self.var_fer_pb_ord.get())
+        except Exception:
+            pb_ord = 2
+        try:
+            pb_fc = float(self.var_fer_pb_fc.get())
+        except Exception:
+            pb_fc = 0.10
+        try:
+            sg_win = int(self.var_fer_sg_win.get())
+        except Exception:
+            sg_win = 15
+        try:
+            sg_ord = int(self.var_fer_sg_ord.get())
+        except Exception:
+            sg_ord = 3
+        try:
+            med_win = int(self.var_fer_med_win.get())
+        except Exception:
+            med_win = 15
+        try:
+            spline_s = float(self.var_fer_spline_s.get())
+        except Exception:
+            spline_s = 0.10
+        try:
+            f1 = float(self.var_fer_f1.get())
+        except Exception:
+            f1 = 0.5
+        try:
+            f2 = float(self.var_fer_f2.get())
+        except Exception:
+            f2 = 6.0
+
+        return {
+            'habilitado': activo,
+            'tipo': tipo_key,
+            'tipo_filtro': tipo_key,
+            'pb_orden': pb_ord,
+            'pb_fcorte': pb_fc,
+            'sg_window': sg_win,
+            'sg_polyorder': sg_ord,
+            'med_window': med_win,
+            'spline_s': spline_s,
+            'modo_rango': self.var_filtro_er_rango.get() if hasattr(self, 'var_filtro_er_rango') else 'todo',
+            'f1_ghz': f1,
+            'f2_ghz': f2,
+        }
+
+    def _cargar_cfg_filtro_er(self, fer):
+        if not fer:
+            if hasattr(self, 'var_filtro_er_activo'):
+                self.var_filtro_er_activo.set(False)
+            self._al_cambiar_filtro_er()
+            return
+        if hasattr(self, 'var_filtro_er_activo'):
+            self.var_filtro_er_activo.set(bool(fer.get('habilitado', False)))
+        tipo_key = fer.get('tipo', fer.get('tipo_filtro', 'savitzky_golay'))
+        if hasattr(self, 'var_filtro_er_tipo'):
+            self.var_filtro_er_tipo.set(_TIPOS_FILTRO_ER_INV.get(tipo_key, "Savitzky-Golay"))
+        if hasattr(self, 'var_fer_pb_ord'):
+            self.var_fer_pb_ord.set(int(fer.get('pb_orden', 2) or 2))
+        if hasattr(self, 'var_fer_pb_fc'):
+            self.var_fer_pb_fc.set(float(fer.get('pb_fcorte', 0.10) or 0.10))
+        if hasattr(self, 'var_fer_sg_win'):
+            self.var_fer_sg_win.set(int(fer.get('sg_window', 15) or 15))
+        if hasattr(self, 'var_fer_sg_ord'):
+            self.var_fer_sg_ord.set(int(fer.get('sg_polyorder', 3) or 3))
+        if hasattr(self, 'var_fer_med_win'):
+            self.var_fer_med_win.set(int(fer.get('med_window', 15) or 15))
+        if hasattr(self, 'var_fer_spline_s'):
+            self.var_fer_spline_s.set(float(fer.get('spline_s', 0.10) or 0.10))
+        if hasattr(self, 'var_filtro_er_rango'):
+            self.var_filtro_er_rango.set(fer.get('modo_rango', 'todo'))
+        if hasattr(self, 'var_fer_f1'):
+            self.var_fer_f1.set(float(fer.get('f1_ghz', 0.5) or 0.5))
+        if hasattr(self, 'var_fer_f2'):
+            self.var_fer_f2.set(float(fer.get('f2_ghz', 6.0) or 6.0))
+        self._al_cambiar_filtro_er()
+
     def _examinar_carpeta_datos(self):
         d = filedialog.askdirectory(title="Carpeta de datos Touchstone", initialdir=self.var_carpeta_datos.get(), parent=self)
         if d:
@@ -870,45 +1111,73 @@ class AppCombinatoria(tk.Tk):
         f.columnconfigure(1, weight=1)
         f.rowconfigure(1, weight=1)
 
-        # Barra superior de filtros
+        # Barra superior de filtros y controles
         frm_top = ttk.Frame(f)
         frm_top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
 
-        ttk.Label(frm_top, text="Seleccionar Muestra / Líquido evaluado:", style="Subtitulo.TLabel").pack(side="left")
+        # Fila 1: Filtros principales y exportación PDF
+        frm_top_f1 = ttk.Frame(frm_top)
+        frm_top_f1.pack(side="top", fill="x", pady=(0, 4))
+
+        ttk.Label(frm_top_f1, text="Seleccionar Muestra / Líquido evaluado:", style="Subtitulo.TLabel").pack(side="left")
         self.var_muestra_ranking = tk.StringVar()
-        self.combo_muestra_ranking = ttk.Combobox(frm_top, textvariable=self.var_muestra_ranking, state="readonly", width=22)
-        self.combo_muestra_ranking.pack(side="left", padx=(8, 16))
+        self.combo_muestra_ranking = ttk.Combobox(frm_top_f1, textvariable=self.var_muestra_ranking, state="readonly", width=22)
+        self.combo_muestra_ranking.pack(side="left", padx=(8, 14))
         self.combo_muestra_ranking.bind("<<ComboboxSelected>>", self._al_cambiar_muestra_ranking)
 
-        ttk.Label(frm_top, text="Rol:").pack(side="left")
+        ttk.Label(frm_top_f1, text="Rol:").pack(side="left")
         self.var_filtro_rol = tk.StringVar(value="Todos")
         self.combo_filtro_rol = ttk.Combobox(
-            frm_top, textvariable=self.var_filtro_rol, state="readonly",
+            frm_top_f1, textvariable=self.var_filtro_rol, state="readonly",
             values=["Todos", "Sólo Muestras", "Sólo Patrones"], width=15)
-        self.combo_filtro_rol.pack(side="left", padx=(4, 14))
+        self.combo_filtro_rol.pack(side="left", padx=(4, 12))
         self.combo_filtro_rol.bind("<<ComboboxSelected>>", self._al_cambiar_criterio_ranking)
 
-        ttk.Label(frm_top, text="Intervalo / Ordenar por:").pack(side="left")
-        self.combo_criterio = ttk.Combobox(
-            frm_top, textvariable=self.var_criterio_orden, state="readonly",
-            values=["Promedio Global", "Intervalo 1", "Intervalo 2", "Intervalo 3"], width=22)
-        self.combo_criterio.pack(side="left", padx=(6, 10))
-        self.combo_criterio.bind("<<ComboboxSelected>>", self._al_cambiar_criterio_ranking)
-
         self.var_orden_asc = tk.BooleanVar(value=True)
-        ttk.Checkbutton(frm_top, text="Menor error primero", variable=self.var_orden_asc,
+        ttk.Checkbutton(frm_top_f1, text="Menor error primero", variable=self.var_orden_asc,
                         command=self._al_cambiar_criterio_ranking).pack(side="left")
-        ttk.Checkbutton(frm_top, text="Omitir redundantes (*)", variable=self.var_omitir_redundantes,
+        ttk.Checkbutton(frm_top_f1, text="Omitir redundantes (*)", variable=self.var_omitir_redundantes,
                         command=self._al_cambiar_criterio_ranking).pack(side="left", padx=(10, 0))
-        ttk.Checkbutton(frm_top, text="Excluir patrones en reporte", variable=self.var_excluir_patrones_pdf,
+        ttk.Checkbutton(frm_top_f1, text="Excluir patrones en reporte", variable=self.var_excluir_patrones_pdf,
                         command=self._al_cambiar_criterio_ranking).pack(side="left", padx=(10, 0))
-        ttk.Checkbutton(frm_top, text="Limitar eje Y", variable=self.var_limitar_y_tab2,
+        ttk.Checkbutton(frm_top_f1, text="Limitar eje Y", variable=self.var_limitar_y_tab2,
                         command=self._al_cambiar_limitar_y_tab2).pack(side="left", padx=(10, 0))
 
         self.btn_pdf_tab2 = ttk.Button(
-            frm_top, text="📄 Generar Informe PDF (Top 3)...",
+            frm_top_f1, text="📄 Generar Informe PDF (Top 3)...",
             state="disabled", command=self._generar_informe_pdf)
         self.btn_pdf_tab2.pack(side="right", padx=(8, 0))
+
+        # Fila 2: Control dinámico de intervalo de frecuencias para ranking
+        frm_top_f2 = ttk.Frame(frm_top)
+        frm_top_f2.pack(side="top", fill="x", pady=(2, 0))
+
+        ttk.Label(frm_top_f2, text="Intervalo dinámico:", font=("Segoe UI", 9, "bold")).pack(side="left")
+        ttk.Label(frm_top_f2, text="Desde (GHz):").pack(side="left", padx=(8, 2))
+        self.entry_f_din_desde = ttk.Entry(frm_top_f2, textvariable=self.var_f_din_desde, width=8)
+        self.entry_f_din_desde.pack(side="left", padx=(0, 8))
+        self.entry_f_din_desde.bind("<Return>", lambda _e: self._aplicar_intervalo_dinamico())
+
+        ttk.Label(frm_top_f2, text="Hasta (GHz):").pack(side="left", padx=(2, 2))
+        self.entry_f_din_hasta = ttk.Entry(frm_top_f2, textvariable=self.var_f_din_hasta, width=8)
+        self.entry_f_din_hasta.pack(side="left", padx=(0, 10))
+        self.entry_f_din_hasta.bind("<Return>", lambda _e: self._aplicar_intervalo_dinamico())
+
+        self.btn_aplicar_intervalo = ttk.Button(
+            frm_top_f2, text="✓ Validar y Ordenar", command=self._aplicar_intervalo_dinamico
+        )
+        self.btn_aplicar_intervalo.pack(side="left", padx=(0, 6))
+
+        self.btn_restablecer_intervalo = ttk.Button(
+            frm_top_f2, text="↺ Restablecer a Score Global", command=self._restablecer_score_global
+        )
+        self.btn_restablecer_intervalo.pack(side="left", padx=(0, 14))
+
+        self.lbl_estado_criterio = ttk.Label(
+            frm_top_f2, textvariable=self.var_estado_criterio,
+            font=("Segoe UI", 9, "bold"), foreground="#0e6251"
+        )
+        self.lbl_estado_criterio.pack(side="left")
 
         # Panel izquierdo: Treeview con ranking
         lf_tabla = ttk.LabelFrame(f, text="Tabla Clasificatoria de Combinaciones", padding=6)
@@ -916,27 +1185,23 @@ class AppCombinatoria(tk.Tk):
         lf_tabla.columnconfigure(0, weight=1)
         lf_tabla.rowconfigure(0, weight=1)
 
-        cols_r = ("rank", "rol", "p3", "p4", "metodo", "int1", "int2", "int3", "global")
+        cols_r = ("rank", "rol", "p3", "p4", "metodo", "score_int", "global")
         self.tree_ranking = ttk.Treeview(lf_tabla, columns=cols_r, show="headings", height=18, selectmode="browse")
         self.tree_ranking.heading("rank", text="#")
         self.tree_ranking.heading("rol", text="Rol")
         self.tree_ranking.heading("p3", text="Patrón 3 (P3)")
         self.tree_ranking.heading("p4", text="Patrón 4 / Adic. MC")
         self.tree_ranking.heading("metodo", text="Método")
-        self.tree_ranking.heading("int1", text="Int 1")
-        self.tree_ranking.heading("int2", text="Int 2")
-        self.tree_ranking.heading("int3", text="Int 3")
-        self.tree_ranking.heading("global", text="Score Prom")
+        self.tree_ranking.heading("score_int", text="Score Intervalo")
+        self.tree_ranking.heading("global", text="Score Global")
 
         self.tree_ranking.column("rank", width=35, anchor="center")
         self.tree_ranking.column("rol", width=65, anchor="center")
-        self.tree_ranking.column("p3", width=105, anchor="w")
-        self.tree_ranking.column("p4", width=140, anchor="w")
-        self.tree_ranking.column("metodo", width=120, anchor="w")
-        self.tree_ranking.column("int1", width=60, anchor="center")
-        self.tree_ranking.column("int2", width=60, anchor="center")
-        self.tree_ranking.column("int3", width=60, anchor="center")
-        self.tree_ranking.column("global", width=70, anchor="center")
+        self.tree_ranking.column("p3", width=110, anchor="w")
+        self.tree_ranking.column("p4", width=150, anchor="w")
+        self.tree_ranking.column("metodo", width=130, anchor="w")
+        self.tree_ranking.column("score_int", width=110, anchor="center")
+        self.tree_ranking.column("global", width=95, anchor="center")
 
         self.tree_ranking.grid(row=0, column=0, sticky="nsew")
         sc_r = ttk.Scrollbar(lf_tabla, orient="vertical", command=self.tree_ranking.yview)
@@ -1114,8 +1379,6 @@ class AppCombinatoria(tk.Tk):
         try:
             f_min = float(self.var_f_min.get())
             f_max = float(self.var_f_max.get())
-            f_int1 = float(self.var_f_int1.get())
-            f_int2 = float(self.var_f_int2.get())
         except (ValueError, tk.TclError):
             messagebox.showwarning("Frecuencias inválidas", "Las frecuencias ingresadas deben ser números válidos.", parent=self)
             return
@@ -1126,8 +1389,8 @@ class AppCombinatoria(tk.Tk):
             'archivo_aire': self.var_archivo_aire.get().strip(),
             'f_min_ghz': f_min,
             'f_max_ghz': f_max,
-            'f_err_int1_ghz': f_int1,
-            'f_err_int2_ghz': f_int2,
+            'f_err_int1_ghz': None,
+            'f_err_int2_ghz': None,
             'escala_log_frecuencia': bool(self.var_escala_log.get()),
             'metodos_calculo': {
                 'simplificado': bool(self.var_metodo_simpl.get()),
@@ -1146,6 +1409,7 @@ class AppCombinatoria(tk.Tk):
                 'f1_ghz': float(self.var_acond_f1.get()),
                 'f2_ghz': float(self.var_acond_f2.get()),
             },
+            'filtro_er': self._obtener_cfg_filtro_er(),
             'candidatos': copy.deepcopy(self._candidatos),
         }
         self._ultima_config = copy.deepcopy(cfg)
@@ -1192,30 +1456,22 @@ class AppCombinatoria(tk.Tk):
         self.btn_pdf_tab2.configure(state="normal")
         self.var_paso_actual.set("Análisis completado con éxito.")
 
-        # Actualizar opciones de intervalos con sus rangos en GHz
-        ints_str = resultados.get('intervalos_str', [])
-        opciones_crit = ["Promedio Global"]
-        for i in range(3):
-            rango_txt = f" ({ints_str[i]})" if i < len(ints_str) else ""
-            opciones_crit.append(f"Intervalo {i + 1}{rango_txt}")
-        self.combo_criterio.configure(values=opciones_crit)
-        self.combo_criterio_tab1.configure(values=opciones_crit)
-
-        crit_actual = self.var_criterio_orden.get()
-        if crit_actual.startswith("Intervalo 1"):
-            self.var_criterio_orden.set(opciones_crit[1])
-        elif crit_actual.startswith("Intervalo 2"):
-            self.var_criterio_orden.set(opciones_crit[2])
-        elif crit_actual.startswith("Intervalo 3"):
-            self.var_criterio_orden.set(opciones_crit[3])
-        else:
-            self.var_criterio_orden.set(opciones_crit[0])
+        # Por defecto se ordenan los resultados por el score global
+        self._intervalo_dinamico = None
+        self.var_criterio_orden.set("Score Global")
+        self.var_estado_criterio.set("Criterio activo: Score Global (toda la banda)")
+        f_min_val = float(self._ultima_config.get('f_min_ghz', 0.5)) if self._ultima_config else 0.5
+        f_max_val = float(self._ultima_config.get('f_max_ghz', 6.0)) if self._ultima_config else 6.0
+        self.var_f_din_desde.set(f"{f_min_val:.2f}")
+        self.var_f_din_hasta.set(f"{f_max_val:.2f}")
+        self.tree_ranking.heading("score_int", text="Score Intervalo")
 
         # Actualizar pestañas de resultados
         muestras_disp = list(resultados.get('resultados_por_muestra', {}).keys())
 
         self.combo_muestra_ranking.configure(values=muestras_disp)
         if muestras_disp:
+            self.var_muestra_ranking.set(muestras_disp[0])
             self.combo_muestra_ranking.set(muestras_disp[0])
             self._al_cambiar_muestra_ranking()
 
@@ -1285,14 +1541,25 @@ class AppCombinatoria(tk.Tk):
             )
             return
 
-        criterio = self.var_criterio_orden.get()
-        sufijo = "global"
-        if criterio.startswith("Intervalo 1"):
-            sufijo = "int1"
-        elif criterio.startswith("Intervalo 2"):
-            sufijo = "int2"
-        elif criterio.startswith("Intervalo 3"):
-            sufijo = "int3"
+        if self._intervalo_dinamico is not None:
+            f_a, f_b = self._intervalo_dinamico
+            criterio = f"Intervalo dinámico [{f_a:.2f} - {f_b:.2f} GHz]"
+            sufijo = f"int_{f_a:.2f}_{f_b:.2f}".replace('.', '_')
+            f_a_hz = f_a * 1e9
+            f_b_hz = f_b * 1e9
+            for m_items in self._datos_resultados.get('resultados_por_muestra', {}).values():
+                for it in m_items:
+                    it['puntaje_dinamico'] = calcular_score_intervalo(
+                        it.get('frecs_r', self._datos_resultados.get('frecs_r')),
+                        it.get('er_medido'),
+                        it.get('er_teorico'),
+                        f_a_hz,
+                        f_b_hz,
+                        modelo=it.get('modelo')
+                    )
+        else:
+            criterio = "Promedio Global"
+            sufijo = "global"
 
         ruta_pdf, carpeta_run = self._resolver_carpeta_y_archivo("top3", sufijo)
         if not ruta_pdf:
@@ -1327,7 +1594,7 @@ class AppCombinatoria(tk.Tk):
 
             if messagebox.askyesno("Informe PDF generado", msg, parent=self):
                 try:
-                    os.startfile(ruta_pdf)
+                    gf.abrir_carpeta(ruta_pdf)
                 except Exception:
                     pass
         except Exception as exc:
@@ -1341,10 +1608,66 @@ class AppCombinatoria(tk.Tk):
     # -----------------------------------------------------------------------
     # Métodos de la Pestaña 2: Ranking por Muestra
     # -----------------------------------------------------------------------
+    def _aplicar_intervalo_dinamico(self):
+        if not self._datos_resultados:
+            messagebox.showinfo(
+                "Sin resultados",
+                "Primero ejecutá el análisis combinatorio.",
+                parent=self
+            )
+            return
+
+        str_desde = self.var_f_din_desde.get().strip().replace(',', '.')
+        str_hasta = self.var_f_din_hasta.get().strip().replace(',', '.')
+
+        try:
+            f_desde = float(str_desde)
+            f_hasta = float(str_hasta)
+        except ValueError:
+            messagebox.showwarning(
+                "Valores inválidos",
+                "Las frecuencias 'Desde' y 'Hasta' deben ser números válidos en GHz.",
+                parent=self
+            )
+            return
+
+        if f_desde >= f_hasta:
+            messagebox.showwarning(
+                "Intervalo inválido",
+                f"La frecuencia 'Desde' ({f_desde:.3f} GHz) debe ser estrictamente menor a 'Hasta' ({f_hasta:.3f} GHz).",
+                parent=self
+            )
+            return
+
+        frecs_ref = self._datos_resultados.get('frecs_r')
+        if frecs_ref is not None and len(frecs_ref) > 0:
+            f_min_datos = float(np.min(frecs_ref)) / 1e9
+            f_max_datos = float(np.max(frecs_ref)) / 1e9
+            if f_hasta < f_min_datos or f_desde > f_max_datos:
+                messagebox.showwarning(
+                    "Fuera de rango",
+                    f"El intervalo [{f_desde:.2f}, {f_hasta:.2f}] GHz está completamente fuera del rango medido [{f_min_datos:.2f}, {f_max_datos:.2f}] GHz.",
+                    parent=self
+                )
+                return
+
+        self._intervalo_dinamico = (f_desde, f_hasta)
+        self.var_criterio_orden.set(f"Intervalo [{f_desde:.2f} - {f_hasta:.2f} GHz]")
+        self.var_estado_criterio.set(f"Criterio activo: Intervalo [{f_desde:.2f} - {f_hasta:.2f} GHz]")
+        self.tree_ranking.heading("score_int", text=f"Err [{f_desde:.2f}-{f_hasta:.2f} GHz]")
+        self._al_cambiar_criterio_ranking()
+
+    def _restablecer_score_global(self):
+        self._intervalo_dinamico = None
+        self.var_criterio_orden.set("Score Global")
+        self.var_estado_criterio.set("Criterio activo: Score Global (toda la banda)")
+        self.tree_ranking.heading("score_int", text="Score Intervalo")
+        self._al_cambiar_criterio_ranking()
+
     def _al_cambiar_muestra_ranking(self, _event=None):
         if not self._datos_resultados:
             return
-        muestra = self.var_muestra_ranking.get()
+        muestra = self.var_muestra_ranking.get() or self.combo_muestra_ranking.get()
         items = self._datos_resultados.get('resultados_por_muestra', {}).get(muestra, [])
 
         filtro_rol = getattr(self, 'var_filtro_rol', None)
@@ -1355,13 +1678,20 @@ class AppCombinatoria(tk.Tk):
             elif f_val == "Sólo Patrones":
                 items = [x for x in items if x.get('es_patron')]
 
-        crit = self.var_criterio_orden.get()
-        if crit.startswith("Intervalo 1"):
-            clave_sort = 'puntaje_int1'
-        elif crit.startswith("Intervalo 2"):
-            clave_sort = 'puntaje_int2'
-        elif crit.startswith("Intervalo 3"):
-            clave_sort = 'puntaje_int3'
+        if self._intervalo_dinamico is not None:
+            f_a, f_b = self._intervalo_dinamico
+            f_a_hz = f_a * 1e9
+            f_b_hz = f_b * 1e9
+            for it in items:
+                it['puntaje_dinamico'] = calcular_score_intervalo(
+                    it.get('frecs_r', self._datos_resultados.get('frecs_r')),
+                    it.get('er_medido'),
+                    it.get('er_teorico'),
+                    f_a_hz,
+                    f_b_hz,
+                    modelo=it.get('modelo')
+                )
+            clave_sort = 'puntaje_dinamico'
         else:
             clave_sort = 'puntaje_global'
 
@@ -1386,9 +1716,12 @@ class AppCombinatoria(tk.Tk):
             rol_txt = it.get('rol', "Muestra")
             ast = "*" if it.get('orden_indistinto') else ""
             rank_txt = f"{i}{ast}"
-            s_int1 = f"{it['puntaje_int1']:.4f}" if not np.isnan(it['puntaje_int1']) else "n/a"
-            s_int2 = f"{it['puntaje_int2']:.4f}" if not np.isnan(it['puntaje_int2']) else "n/a"
-            s_int3 = f"{it['puntaje_int3']:.4f}" if not np.isnan(it['puntaje_int3']) else "n/a"
+
+            if self._intervalo_dinamico is not None:
+                s_din = it.get('puntaje_dinamico', float('nan'))
+                s_int = f"{s_din:.4f}" if not np.isnan(s_din) else "n/a"
+            else:
+                s_int = "—"
             s_glob = f"{it['puntaje_global']:.4f}" if not np.isnan(it['puntaje_global']) else "n/a"
 
             p3_disp = self._obtener_alias(it.get('p3', ''))
@@ -1398,7 +1731,7 @@ class AppCombinatoria(tk.Tk):
                 p4_disp = self._obtener_alias(it.get('p4', '')) if it.get('p4') and it['p4'] != "—" else "—"
 
             self.tree_ranking.insert("", "end", iid=str(i - 1), values=(
-                rank_txt, rol_txt, p3_disp, p4_disp, it['metodo'], s_int1, s_int2, s_int3, s_glob
+                rank_txt, rol_txt, p3_disp, p4_disp, it['metodo'], s_int, s_glob
             ))
 
         if items_ord:
@@ -1415,7 +1748,7 @@ class AppCombinatoria(tk.Tk):
         if sel and hasattr(self, '_items_ranking_actual'):
             idx = int(sel[0])
             item = self._items_ranking_actual[idx]
-            muestra = self.var_muestra_ranking.get()
+            muestra = self.var_muestra_ranking.get() or self.combo_muestra_ranking.get()
             self._mostrar_grafico_muestra(item, muestra)
 
     def _al_seleccionar_fila_ranking(self, _event=None):
@@ -1424,7 +1757,7 @@ class AppCombinatoria(tk.Tk):
             return
         idx = int(sel[0])
         item = self._items_ranking_actual[idx]
-        muestra = self.var_muestra_ranking.get()
+        muestra = self.var_muestra_ranking.get() or self.combo_muestra_ranking.get()
         self._mostrar_grafico_muestra(item, muestra)
 
     def _mostrar_grafico_muestra(self, item, muestra_nom):
@@ -1442,9 +1775,13 @@ class AppCombinatoria(tk.Tk):
             titulo = f"{muestra_nom}{rol_txt} — Calibración P3: {item['p3']} | P4: {item['p4'] or '—'}{ast_txt}"
 
         # Usamos exactamente `graficar_comparacion` de `analisis_permitividad.py`
+        curvas = {f"Medido ({item['metodo']})": er_med}
+        if item.get('er_medido_orig') is not None:
+            curvas[f"Medido ({item['metodo']}) (sin filtro)"] = item['er_medido_orig']
+
         fig = graficar_comparacion(
             frecs_r,
-            {f"Medido ({item['metodo']})": er_med},
+            curvas,
             er_teo,
             titulo=titulo,
             archivo_salida=None,
@@ -1452,10 +1789,12 @@ class AppCombinatoria(tk.Tk):
             etiqueta_teorico=etiq_teo,
             limitar_eje_y=self.var_limitar_y_tab2.get(),
         )
-        # Marcar los límites de los intervalos de evaluación
-        for _, fb in self._datos_resultados['intervalos'][:-1]:
+        if self._intervalo_dinamico is not None:
+            f_a_ghz, f_b_ghz = self._intervalo_dinamico
             for ax in fig.axes:
-                ax.axvline(fb / 1e9, color='#888888', linestyle=':', lw=1.1)
+                ax.axvline(f_a_ghz, color='#c0392b', linestyle='--', lw=1.3, alpha=0.9)
+                ax.axvline(f_b_ghz, color='#c0392b', linestyle='--', lw=1.3, alpha=0.9)
+                ax.axvspan(f_a_ghz, f_b_ghz, color='#c0392b', alpha=0.08)
 
         self.visor_graf_ranking.mostrar(fig)
 
@@ -1843,13 +2182,19 @@ class AppCombinatoria(tk.Tk):
             met_b = datos_b.get('metodo', 'Medido')
 
             curvas[f"A ({met_a}): {pat_a_alias}"] = m_dat_a.get('er_medido')
+            if m_dat_a.get('er_medido_orig') is not None:
+                curvas[f"A ({met_a}): {pat_a_alias} (sin filtro)"] = m_dat_a.get('er_medido_orig')
             if m_dat_b and m_dat_b.get('er_medido') is not None:
                 curvas[f"B ({met_b}): {pat_b_alias}"] = m_dat_b.get('er_medido')
+                if m_dat_b.get('er_medido_orig') is not None:
+                    curvas[f"B ({met_b}): {pat_b_alias} (sin filtro)"] = m_dat_b.get('er_medido_orig')
             titulo = f"{m_nom} — Comparación Medido A vs Medido B vs Teórico"
         else:
             metodo_str = datos_combo.get('metodo', 'Medido') if datos_combo else 'Medido'
             rol_txt = f" [{m_dat.get('rol')}]" if m_dat.get('rol') else ""
             curvas[f"Medido ({metodo_str})"] = er_med
+            if m_dat.get('er_medido_orig') is not None:
+                curvas[f"Medido ({metodo_str}) (sin filtro)"] = m_dat.get('er_medido_orig')
             titulo = f"{m_nom}{rol_txt}: medido vs. teórico"
 
         fig = graficar_comparacion(
@@ -1885,8 +2230,6 @@ class AppCombinatoria(tk.Tk):
             'archivo_aire': self.var_archivo_aire.get().strip(),
             'f_min_ghz': float(self.var_f_min.get()),
             'f_max_ghz': float(self.var_f_max.get()),
-            'f_err_int1_ghz': float(self.var_f_int1.get()),
-            'f_err_int2_ghz': float(self.var_f_int2.get()),
             'escala_log_frecuencia': bool(self.var_escala_log.get()),
             'estrategia_gn': self.var_estrategia_gn.get(),
             'f_semilla_ghz': float(self.var_f_semilla_gn.get()) if hasattr(self, 'var_f_semilla_gn') else 3.0,
@@ -1905,6 +2248,7 @@ class AppCombinatoria(tk.Tk):
                 'f1_ghz': float(self.var_acond_f1.get()),
                 'f2_ghz': float(self.var_acond_f2.get()),
             },
+            'filtro_er': self._obtener_cfg_filtro_er(),
             'carpeta_salida': self.var_carpeta_salida.get().strip(),
             'guardar_subcarpeta_fechayhora': bool(self.var_guardar_fechayhora.get()),
             'exportar_imagenes_csv': bool(self.var_exportar_imagenes_csv.get()),
@@ -1930,8 +2274,16 @@ class AppCombinatoria(tk.Tk):
             self.var_archivo_aire.set(cfg.get('archivo_aire', 'aire.s1p'))
             self.var_f_min.set(float(cfg.get('f_min_ghz', 0.5)))
             self.var_f_max.set(float(cfg.get('f_max_ghz', 6.0)))
-            self.var_f_int1.set(float(cfg.get('f_err_int1_ghz', 2.0)))
-            self.var_f_int2.set(float(cfg.get('f_err_int2_ghz', 4.0)))
+            if 'f_err_int1_ghz' in cfg and hasattr(self, 'var_f_int1') and self.var_f_int1:
+                try:
+                    self.var_f_int1.set(float(cfg.get('f_err_int1_ghz', 2.0) or 2.0))
+                except Exception:
+                    pass
+            if 'f_err_int2_ghz' in cfg and hasattr(self, 'var_f_int2') and self.var_f_int2:
+                try:
+                    self.var_f_int2.set(float(cfg.get('f_err_int2_ghz', 4.0) or 4.0))
+                except Exception:
+                    pass
             self.var_escala_log.set(bool(cfg.get('escala_log_frecuencia', True)))
             self.var_estrategia_gn.set(cfg.get('estrategia_gn', 'minimo_gn'))
             if hasattr(self, 'var_f_semilla_gn'):
@@ -1963,6 +2315,7 @@ class AppCombinatoria(tk.Tk):
                     c['alias'] = generar_alias_defecto(c.get('nombre', ''))
             self._refrescar_tabla_candidatos()
             self._setear_mc_k_desde_config(cfg.get('mc_k_liquidos', 'todos'))
+            self._cargar_cfg_filtro_er(cfg.get('filtro_er') or cfg.get('filtro_salida') or {})
             self._al_cambiar_acond()
             self._al_cambiar_acond_modo()
             messagebox.showinfo("Configuración cargada", f"Se cargó la configuración de:\n{ruta}", parent=self)

@@ -128,10 +128,13 @@ def _estilo_tabla_base(colorear_filas=True):
 def _resolver_clave_criterio(criterio_str, intervalos_str):
     """
     Traduce la opción elegida por el usuario ('Promedio Global', 'Intervalo 1',
-    'Intervalo 2', 'Intervalo 3' o clave directa) en:
+    'Intervalo 2', 'Intervalo 3', dinámico o clave directa) en:
       (clave_dict, etiqueta_legible, indice_columna_destacada)
     """
     c = (criterio_str or "").strip()
+    if "dinámico" in c.lower() or "dinamico" in c.lower() or c == "puntaje_dinamico" or c.startswith("Intervalo ["):
+        return "puntaje_dinamico", c, 8
+
     int1_lbl = intervalos_str[0] if len(intervalos_str) > 0 else "Intervalo 1"
     int2_lbl = intervalos_str[1] if len(intervalos_str) > 1 else "Intervalo 2"
     int3_lbl = intervalos_str[2] if len(intervalos_str) > 2 else "Intervalo 3"
@@ -142,7 +145,7 @@ def _resolver_clave_criterio(criterio_str, intervalos_str):
         return "puntaje_int2", f"Intervalo 2 ({int2_lbl})", 6
     if c in ("Intervalo 3", "puntaje_int3") or c.startswith("Intervalo 3"):
         return "puntaje_int3", f"Intervalo 3 ({int3_lbl})", 7
-    return "puntaje_global", "Promedio Global (los 3 intervalos)", 8
+    return "puntaje_global", "Score Global (rango completo)", 8
 
 
 def _tabla_metadata_combinatoria(config, resultados, etiqueta_criterio, omitir_redundantes=True, excluir_patrones=True):
@@ -250,16 +253,17 @@ def _tabla_candidatos_config(config):
     return t
 
 
-def _tabla_top3_resumen(top_items, intervalos_str, col_destacada_idx):
+def _tabla_top3_resumen(top_items, intervalos_str, col_destacada_idx, clave_sort='puntaje_global'):
     """
     Tabla compacta que muestra los puntajes (error promedio entre er' y er'')
-    de las 3 mejores combinaciones en cada intervalo y el promedio global,
+    de las 3 mejores combinaciones en cada intervalo y el promedio global/dinámico,
     resaltando la columna usada como criterio de ordenamiento.
     """
     int1_s = intervalos_str[0] if len(intervalos_str) > 0 else "Int 1"
     int2_s = intervalos_str[1] if len(intervalos_str) > 1 else "Int 2"
     int3_s = intervalos_str[2] if len(intervalos_str) > 3 - 1 else "Int 3"
 
+    ult_col_titulo = "Score\nIntervalo" if clave_sort == 'puntaje_dinamico' else "Score\nGlobal"
     encabezado = [
         "Puesto",
         "Rol",
@@ -269,13 +273,14 @@ def _tabla_top3_resumen(top_items, intervalos_str, col_destacada_idx):
         f"Score Int 1\n({int1_s})",
         f"Score Int 2\n({int2_s})",
         f"Score Int 3\n({int3_s})",
-        "Score\nGlobal",
+        ult_col_titulo,
     ]
     datos = [[Paragraph(h, _ESTILOS['CeldaTablaEncabezadoComb']) for h in encabezado]]
 
     for idx, it in enumerate(top_items, 1):
         rol_txt = it.get('rol', 'Muestra')
         ast = "*" if it.get('orden_indistinto') else ""
+        val_ult = it.get('puntaje_dinamico') if clave_sort == 'puntaje_dinamico' else it.get('puntaje_global')
         fila = [
             Paragraph(f"#{idx}{ast}", _ESTILOS['CeldaTablaDestacada']),
             Paragraph(str(rol_txt), _ESTILOS['CeldaTablaComb']),
@@ -288,7 +293,7 @@ def _tabla_top3_resumen(top_items, intervalos_str, col_destacada_idx):
                       _ESTILOS['CeldaTablaDestacada'] if col_destacada_idx == 6 else _ESTILOS['CeldaTablaComb']),
             Paragraph(_fmt_err(it.get('puntaje_int3')),
                       _ESTILOS['CeldaTablaDestacada'] if col_destacada_idx == 7 else _ESTILOS['CeldaTablaComb']),
-            Paragraph(_fmt_err(it.get('puntaje_global')),
+            Paragraph(_fmt_err(val_ult),
                       _ESTILOS['CeldaTablaDestacada'] if col_destacada_idx == 8 else _ESTILOS['CeldaTablaComb']),
         ]
         datos.append(fila)
@@ -508,6 +513,8 @@ def generar_reporte_combinatoria_pdf(ruta_pdf, config, resultados, criterio_orde
                     p4_txt = f", P4={it['p4']}" if it.get('p4') and it['p4'] != "—" else ""
                     etiqueta_curva = f"#{rank_i}{ast}: P3={it['p3']}{p4_txt}{rol_str} [{it['metodo']}] (err={score_txt})"
                 er_medido_top[etiqueta_curva] = it['er_medido']
+                if it.get('er_medido_orig') is not None and rank_i == 1:
+                    er_medido_top[f"#{rank_i}{ast} (sin filtro)"] = it['er_medido_orig']
 
             titulo_graf = f"{muestra_nom} — Top {len(top_items)} mejores combinaciones ({etiqueta_criterio})"
             fig = graficar_comparacion(
@@ -532,6 +539,19 @@ def generar_reporte_combinatoria_pdf(ruta_pdf, config, resultados, criterio_orde
                     fa_sel, fb_sel = intervalos[idx_int_sel]
                     for ax in fig.axes:
                         ax.axvspan(fa_sel / 1e9, fb_sel / 1e9, color='#fff59d', alpha=0.22, zorder=0)
+            elif clave_sort == 'puntaje_dinamico':
+                import re
+                m_match = re.search(r'\[([0-9.]+)\s*-\s*([0-9.]+)', etiqueta_criterio)
+                if m_match:
+                    try:
+                        fa_din = float(m_match.group(1))
+                        fb_din = float(m_match.group(2))
+                        for ax in fig.axes:
+                            ax.axvline(fa_din, color='#c0392b', linestyle='--', lw=1.2, alpha=0.85)
+                            ax.axvline(fb_din, color='#c0392b', linestyle='--', lw=1.2, alpha=0.85)
+                            ax.axvspan(fa_din, fb_din, color='#fff59d', alpha=0.25, zorder=0)
+                    except ValueError:
+                        pass
 
             if carpeta_exportar:
                 ruta_png = os.path.join(carpeta_exportar, f"er_top3_{slug_m}.png")
@@ -551,6 +571,8 @@ def generar_reporte_combinatoria_pdf(ruta_pdf, config, resultados, criterio_orde
                         p4_tag = _slug(it.get('p4', 'none')) if it.get('p4') and it['p4'] != "—" else "none"
                         etiq_col = f"top{rank_i}_p3_{p3_tag}_p4_{p4_tag}{ast}"
                     columnas_csv[etiq_col] = it['er_medido']
+                    if it.get('er_medido_orig') is not None:
+                        columnas_csv[f"{etiq_col}_sin_filtro"] = it['er_medido_orig']
 
                 ruta_csv = os.path.join(carpeta_exportar, f"tabla_top3_{slug_m}.csv")
                 exportar_csv(ruta_csv, frecs_r, columnas_csv)
@@ -575,7 +597,7 @@ def generar_reporte_combinatoria_pdf(ruta_pdf, config, resultados, criterio_orde
                     _ESTILOS['NotaComb']
                 ),
                 Spacer(1, 0.12 * cm),
-                _tabla_top3_resumen(top_items, intervalos_str, col_destacada_idx),
+                _tabla_top3_resumen(top_items, intervalos_str, col_destacada_idx, clave_sort=clave_sort),
             ]
             if hay_indistinto:
                 bloque_tablas.append(Spacer(1, 0.10 * cm))
@@ -881,8 +903,12 @@ def _generar_reporte_combinacion_comparativa_pdf(ruta_pdf, config, resultados, c
             curvas = {}
             if er_med_a is not None:
                 curvas[f"A ({combo_a.get('metodo', 'Medido')}): {combo_id_a}"] = er_med_a
+                if m_a and m_a.get('er_medido_orig') is not None:
+                    curvas[f"A ({combo_a.get('metodo', 'Medido')}): {combo_id_a} (sin filtro)"] = m_a['er_medido_orig']
             if er_med_b is not None:
                 curvas[f"B ({combo_b.get('metodo', 'Medido')}): {combo_id_b}"] = er_med_b
+                if m_b and m_b.get('er_medido_orig') is not None:
+                    curvas[f"B ({combo_b.get('metodo', 'Medido')}): {combo_id_b} (sin filtro)"] = m_b['er_medido_orig']
 
             titulo_graf = f"{m_nom}{rol_a_str}{rol_b_str} — Comparación A vs B vs {etiq_teo}"
             fig_m = graficar_comparacion(
@@ -1157,10 +1183,14 @@ def generar_reporte_combinacion_pdf(ruta_pdf, config, resultados, combo_id,
             rol_txt = m_dat.get('rol', 'Muestra')
             slug_m = _slug(m_nom)
 
+            curvas_m = {f"Medido ({combo_info.get('metodo')})": er_med}
+            if m_dat.get('er_medido_orig') is not None:
+                curvas_m[f"Medido ({combo_info.get('metodo')}) (sin filtro)"] = m_dat['er_medido_orig']
+
             titulo_graf = f"{m_nom} [{rol_txt}] — Medido ({combo_info.get('metodo')}) vs {etiq_teo}"
             fig_m = graficar_comparacion(
                 m_dat.get('frecs_r', frecs_r),
-                {f"Medido ({combo_info.get('metodo')})": er_med},
+                curvas_m,
                 er_teo,
                 titulo=titulo_graf,
                 archivo_salida=None,
@@ -1183,6 +1213,8 @@ def generar_reporte_combinacion_pdf(ruta_pdf, config, resultados, combo_id,
                 if er_teo is not None:
                     cols_m['teorico'] = er_teo
                 cols_m[f"medido_{_slug(combo_info.get('metodo', 'medido'))}"] = er_med
+                if m_dat.get('er_medido_orig') is not None:
+                    cols_m[f"medido_{_slug(combo_info.get('metodo', 'medido'))}_sin_filtro"] = m_dat['er_medido_orig']
                 ruta_csv_m = os.path.join(carpeta_exportar, f"tabla_{slug_combo}_{slug_m}.csv")
                 exportar_csv(ruta_csv_m, frecs_m, cols_m)
             else:
